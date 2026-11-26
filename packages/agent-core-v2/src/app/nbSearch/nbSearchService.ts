@@ -185,6 +185,14 @@ export class NbSearchService implements INbSearchService {
       const slot = instance.credential_slot_id === undefined ? undefined : effective.credential_slots[instance.credential_slot_id];
       const rawKeys = slot === undefined ? [] : (source.env[slot.env] ?? '').split(',').map((key) => key.trim()).filter((key) => key !== '');
       const count = rawKeys.length;
+      if (!balanceSupported) {
+        return nbSearchKeyUsageViewSchema.parse({
+          provider_instance_id: instanceId,
+          provider_id: instance.provider_id,
+          balance_supported: false,
+          keys: Array.from({ length: count }, (_, index) => ({ key_index: index + 1, state: 'unknown' })),
+        });
+      }
       const rawGatewayRoute = parseRawGatewayRoute(instance.base_url);
       if (rawGatewayRoute !== undefined) {
         return fetchRawGatewayKeyUsage({

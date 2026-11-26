@@ -1134,5 +1134,81 @@ describe('PluginHostService extension port bridge', () => {
       await harness.dispose();
     }
   }, 15_000);
+
+  it('returns empty prompt context fast without SIGKILLing a resident plugin host while cold-boot activation is still in flight', async () => {
+    const harness = await createExtensionBridgeHarness();
+    try {
+      await harness.hosts.ready;
+      const activateMarker = join(harness.root, 'resident-activate-count.txt');
+      const gateFile = join(harness.root, 'resident-release.txt');
+      const source = join(harness.root, 'warming-resident-plugin');
+      await mkdir(source, { recursive: true });
+      await writeFile(join(source, 'entry.mjs'), `
+        import { appendFileSync, existsSync } from 'node:fs';
+        export async function activate() {
+          appendFileSync(${JSON.stringify(activateMarker)}, String(process.pid) + '\\n');
+          const deadline = Date.now() + 8_000;
+          while (!existsSync(${JSON.stringify(gateFile)}) && Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 30));
+          }
+        }
+        export const slots = {
+          'E5:prompt-context': async () => ({
+            sections: [{ title: 'Resident Ready', content: 'pid:' + String(process.pid) }],
+          }),
+        };
+      `);
+      await writeFile(join(source, 'kimi.plugin.json'), JSON.stringify({
+        name: 'warming-resident-plugin',
+        version: '1.0.0',
+        'x-kiki': {
+          engines: { kiki: '^0.4.3' },
+          entry: './entry.mjs',
+          activation: 'app',
+          promptContext: true,
+        },
+      }));
+      const plan = await harness.plugins.previewPlugin({ source });
+      await harness.plugins.installPlugin({ source, fingerprint: plan.fingerprint, consent: true, defaultEnabled: false });
+      const activatePromise = harness.usage.set({ workspaceId: 'ws-warm', pluginId: 'warming-resident-plugin', override: 'on' });
+
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline) {
+        const marker = await readFile(activateMarker, 'utf8').catch(() => '');
+        if (marker.trim().length > 0) break;
+        await new Promise((r) => setTimeout(r, 30));
+      }
+      expect((await readFile(activateMarker, 'utf8')).trim().length).toBeGreaterThan(0);
+
+      const t0 = performance.now();
+      const warmingResult = await harness.registry.renderPromptSections({
+        sessionId: 'sess-warm',
+        agentId: 'main',
+        workspaceId: 'ws-warm',
+      });
+      const elapsed = performance.now() - t0;
+      expect(warmingResult.text).toBe('');
+      expect(elapsed).toBeLessThan(1_000);
+
+      await writeFile(gateFile, 'go', 'utf8');
+      await activatePromise;
+
+      let readyText = '';
+      await vi.waitFor(async () => {
+        const res = await harness.registry.renderPromptSections({
+          sessionId: 'sess-warm',
+          agentId: 'main',
+          workspaceId: 'ws-warm',
+        });
+        expect(res.text).toContain('Resident Ready');
+        readyText = res.text;
+      }, { timeout: 5_000, interval: 50 });
+      expect(readyText).toContain('Resident Ready');
+      const pids = (await readFile(activateMarker, 'utf8')).trim().split('\n').filter(Boolean);
+      expect(pids).toHaveLength(1);
+    } finally {
+      await harness.dispose();
+    }
+  }, 15_000);
 });
 

@@ -44,7 +44,7 @@ import {
 import { z } from 'zod';
 import { formatRecipients, parseRecipients } from './ageCodec';
 import { endpointForPath, endpointKey, inspectTree, resealOptions, SpaceEndpoints, type LoadedSpaceTree } from './endpoints';
-import { reconcileOfficialPlugins, writeLive, type OfficialPluginReconcileError } from './liveSpace';
+import { holdBackgroundPluginChanges, reconcileOfficialPlugins, writeLive, type OfficialPluginReconcileError } from './liveSpace';
 import { applyUnset, assignPath, isUnitId, modelDependencies, planChanges, reconcile, sameUnit, unitHashes, type Change, type VerifiedBase } from './mergeEngine';
 import { missing, pathFormat, readBounded, writeFileAtomic } from './spaceFiles';
 import { SubscriptionCenterCoordinator } from './subscriptionCenter';
@@ -153,7 +153,7 @@ export class PortableSpaceService {
         const timer = setTimeout(() => {
           this.pendingAutoReconcileTimers.delete(timer);
           if (this.stopped) return;
-          void this.syncSubscriptionCenter(sourceId, { force: true, createBackup: true }).catch(() => undefined);
+          void this.syncSubscriptionCenter(sourceId, { force: true, createBackup: true }, undefined, { backgroundAutoSync: true }).catch(() => undefined);
         }, 0);
         timer.unref?.();
         this.pendingAutoReconcileTimers.add(timer);
@@ -243,7 +243,7 @@ export class PortableSpaceService {
         }
       }
       try {
-        results.push(await this.syncSubscription(item.id, { force: false, createBackup: true }, signal));
+        results.push(await this.syncSubscription(item.id, { force: false, createBackup: true }, signal, { backgroundAutoSync: true }));
       } catch {
       }
     }
@@ -295,8 +295,9 @@ export class PortableSpaceService {
     id: string,
     input: PortableSpaceCenterTokenSyncInput | PortableSpaceCenterDirectSyncInput,
     signal?: AbortSignal,
+    options?: { readonly backgroundAutoSync?: boolean },
   ): Promise<PortableSpaceCenterCommit> {
-    return this.exclusive(() => this.center.syncSubscriptionCenter(id, input, signal));
+    return this.exclusive(() => this.center.syncSubscriptionCenter(id, input, signal, options));
   }
 
   /** Patches source metadata or updates selective scope/bindings under the single-home serialization lock. */
@@ -417,7 +418,7 @@ export class PortableSpaceService {
       const recordId = existing?.id ?? randomUUID();
       const spaceId = input.linkToSpaceId ?? existing?.linkedSpaceId ?? 'main';
       const isFirstSubscribe = existing?.lastSyncedAt === undefined && existing?.managedIds === undefined;
-      const applied = await this.applySubscriptionTree(recordId, spaceId, loaded.tree, existing?.managedIds ?? [], isFirstSubscribe, input.createBackup !== false);
+      const applied = await this.applySubscriptionTree(recordId, spaceId, loaded.tree, existing?.managedIds ?? [], isFirstSubscribe, input.createBackup !== false, undefined, false);
       const pendingPlugins = applied.pluginErrors.map((entry) => entry.id);
       const pluginErrorMsg = applied.pluginErrors.length > 0
         ? `Official plugin reconciliation pending (${applied.pluginErrors.map((entry) => `${entry.id}: ${entry.message}`).join('; ')})`.slice(0, 1024)
@@ -451,6 +452,8 @@ export class PortableSpaceService {
         nextManagedIds: applied.nextManagedIds,
         hashKey: applied.hashKey,
         records: nextRecords,
+        installedPluginIds: applied.installedPluginIds,
+        pendingPluginReviewIds: applied.heldPluginIds,
       });
       return {
         source: record,
@@ -467,6 +470,7 @@ export class PortableSpaceService {
     id: string,
     input: Partial<PortableSpaceSubscriptionSyncInput> = {},
     signal?: AbortSignal,
+    options?: { readonly backgroundAutoSync?: boolean },
   ): Promise<PortableSpaceSubscriptionSyncResult> {
     return this.exclusive(async () => {
       const items = await this.sources();
@@ -487,7 +491,7 @@ export class PortableSpaceService {
         const commit = await this.center.syncSubscriptionCenter(id, {
           force: input.force ?? false,
           createBackup: input.createBackup !== false,
-        }, signal);
+        }, signal, options);
         const refreshed = (await this.sources()).find((entry) => entry.id === id) ?? existing;
         return {
           source: refreshed,
@@ -499,6 +503,7 @@ export class PortableSpaceService {
           ...(commit.kind === 'subscription' && commit.error !== undefined ? { error: commit.error } : {}),
         };
       }
+      const backgroundAutoSync = options?.backgroundAutoSync === true;
       const now = new Date().toISOString();
       try {
         const canRevalidate = input.force !== true && existing.lastSyncedAt !== undefined && existing.etag !== undefined;
@@ -519,10 +524,15 @@ export class PortableSpaceService {
               const unit = priorBase?.units.get(unitId);
               desiredRetry.set(pluginId, unit === undefined ? true : object(unit.value)['enabled'] !== false);
             }
-            const retryResult = await reconcileOfficialPlugins(this.endpoints.live, desiredRetry);
+            const retryResult = await reconcileOfficialPlugins(this.endpoints.live, desiredRetry, {
+              allowInstall: !backgroundAutoSync,
+            });
             if (retryResult.errors.length > 0) {
               nextPendingPlugins = retryResult.errors.map((entry) => entry.id);
               nextPluginError = `Official plugin reconciliation pending (${retryResult.errors.map((entry) => `${entry.id}: ${entry.message}`).join('; ')})`.slice(0, 1024);
+            } else if (retryResult.heldIds.length > 0) {
+              nextPendingPlugins = retryResult.heldIds;
+              nextPluginError = `Plugin changes require interactive confirmation (${retryResult.heldIds.join(', ')})`.slice(0, 1024);
             }
           }
           const updated: PortableSpaceSourceRecord = {
@@ -544,11 +554,23 @@ export class PortableSpaceService {
         }
         if (signal?.aborted) throw new Error('Subscription sync cancelled');
         const isFirstSubscribe = existing.lastSyncedAt === undefined && existing.managedIds === undefined;
-        const applied = await this.applySubscriptionTree(existing.id, spaceId, loaded.tree, existing.managedIds ?? [], isFirstSubscribe, input.createBackup !== false, signal);
+        const applied = await this.applySubscriptionTree(
+          existing.id,
+          spaceId,
+          loaded.tree,
+          existing.managedIds ?? [],
+          isFirstSubscribe,
+          input.createBackup !== false,
+          signal,
+          backgroundAutoSync,
+          ledgerEntry.installedPluginIds,
+        );
         const pendingPlugins = applied.pluginErrors.map((entry) => entry.id);
         const pluginErrorMsg = applied.pluginErrors.length > 0
           ? `Official plugin reconciliation pending (${applied.pluginErrors.map((entry) => `${entry.id}: ${entry.message}`).join('; ')})`.slice(0, 1024)
-          : undefined;
+          : applied.heldPluginIds.length > 0
+            ? `Plugin changes require interactive confirmation (${applied.heldPluginIds.join(', ')})`.slice(0, 1024)
+            : undefined;
         const updated: PortableSpaceSourceRecord = {
           ...existing,
           format: loaded.tree.format,
@@ -558,8 +580,8 @@ export class PortableSpaceService {
           updatedAt: now,
           lastCheckedAt: now,
           lastSyncedAt: now,
-          etag: sanitizeEtag(loaded.etag),
-          etagOrigin: loaded.finalOrigin,
+          etag: applied.heldPluginIds.length > 0 ? sanitizeEtag(existing.etag) : sanitizeEtag(loaded.etag),
+          etagOrigin: applied.heldPluginIds.length > 0 ? existing.etagOrigin : loaded.finalOrigin,
           lastSyncError: pluginErrorMsg,
           managedIds: applied.nextManagedIds,
           pendingOfficialPlugins: pendingPlugins.length > 0 ? pendingPlugins : undefined,
@@ -574,6 +596,8 @@ export class PortableSpaceService {
           nextManagedIds: applied.nextManagedIds,
           hashKey: applied.hashKey,
           records: nextRecords,
+          installedPluginIds: applied.installedPluginIds,
+          pendingPluginReviewIds: applied.heldPluginIds,
         });
         return {
           source: updated,
@@ -612,12 +636,16 @@ export class PortableSpaceService {
     isFirstSubscribe: boolean,
     createBackup: boolean,
     signal?: AbortSignal,
+    backgroundAutoSync = false,
+    ownedPlugins?: readonly string[],
   ): Promise<{
     nextManagedIds: string[];
     appliedIds: string[];
     deletedIds: string[];
     skippedIds: string[];
     pluginErrors: OfficialPluginReconcileError[];
+    installedPluginIds: string[];
+    heldPluginIds: string[];
     backupPath?: string;
     rawBaseUnits: Units;
     nextUnits: Units;
@@ -637,39 +665,69 @@ export class PortableSpaceService {
     const errors = modelDependencies(merged.nextUnits);
     if (errors.length) throw new Error(errors.join('; '));
     if (signal?.aborted) throw new Error('Subscription sync cancelled');
+    let effectiveNextUnits = merged.nextUnits;
+    let effectiveNextBaseUnits = merged.nextBaseUnits;
+    const heldPluginIdsOut = new Set<string>();
+    if (backgroundAutoSync) {
+      const held = await holdBackgroundPluginChanges({
+        live: this.endpoints.live,
+        homeDir: this.endpoints.home,
+        nextUnits: merged.nextUnits,
+        targetUnits,
+        nextBaseUnits: merged.nextBaseUnits,
+        priorBaseUnits: priorBase?.units,
+      });
+      effectiveNextUnits = held.nextUnits;
+      effectiveNextBaseUnits = held.nextBaseUnits;
+      for (const heldId of held.heldPluginIds) heldPluginIdsOut.add(heldId);
+    }
     let backupPath: string | undefined;
     const pluginErrors: OfficialPluginReconcileError[] = [];
-    const wroteLive = !equalUnits(merged.nextUnits, targetUnits);
+    const installedPluginIdsOut = new Set<string>(ownedPlugins ?? []);
+    const ownedPluginIds = new Set<string>(ownedPlugins ?? []);
+    const wroteLive = !equalUnits(effectiveNextUnits, targetUnits);
     if (wroteLive) {
       if (createBackup) {
         backupPath = join(this.endpoints.home, 'backups', 'portable-spaces', `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}.kiki.tgz`);
         const { recipient } = await this.endpoints.sync.ensureDeviceKeypair();
         await this.endpoints.write(backupPath, liveTree, { format: 'tgz', secretMode: 'sealed', encryption: { mode: 'x25519', recipients: [recipient] } });
       }
-      await writeLive(this.endpoints.live, merged.nextUnits, targetUnits, 'override', pluginErrors);
+      await writeLive(this.endpoints.live, effectiveNextUnits, targetUnits, 'override', pluginErrors, {
+        allowPluginInstall: !backgroundAutoSync,
+        ownedPluginIds,
+        installedPluginIdsOut,
+        heldPluginIdsOut,
+      });
     }
     const pendingUpstreamPlugins = new Map<string, boolean>();
     const appliedSet = new Set(merged.appliedIds);
-    for (const [unitId, unit] of upstreamUnits) {
+    for (const [unitId, unit] of effectiveNextBaseUnits) {
       if (unit.domain !== 'plugins' || unit.key[0] !== 'plugins' || unit.key[1] === undefined) continue;
       if (wroteLive && appliedSet.has(unitId)) continue;
       pendingUpstreamPlugins.set(unit.key[1], object(unit.value)['enabled'] !== false);
     }
     if (pendingUpstreamPlugins.size > 0) {
-      const result = await reconcileOfficialPlugins(this.endpoints.live, pendingUpstreamPlugins);
+      const result = await reconcileOfficialPlugins(this.endpoints.live, pendingUpstreamPlugins, {
+        allowInstall: !backgroundAutoSync,
+        ownedPluginIds,
+      });
+      for (const installedId of result.installedIds) installedPluginIdsOut.add(installedId);
+      for (const heldId of result.heldIds) heldPluginIdsOut.add(heldId);
       if (result.errors.length > 0) pluginErrors.push(...result.errors);
     }
     const key = await this.hashKey();
-    await this.saveBase(recordId, merged.nextBaseUnits, key);
+    await this.saveBase(recordId, effectiveNextBaseUnits, key);
     return {
       nextManagedIds: merged.nextManagedIds,
       appliedIds: merged.appliedIds,
       deletedIds: merged.deletedIds,
       skippedIds: merged.skippedIds,
       pluginErrors,
+      installedPluginIds: [...installedPluginIdsOut].sort(),
+      heldPluginIds: [...heldPluginIdsOut].sort(),
       backupPath,
-      rawBaseUnits: merged.nextBaseUnits,
-      nextUnits: merged.nextUnits,
+      rawBaseUnits: effectiveNextBaseUnits,
+      nextUnits: effectiveNextUnits,
       hashKey: key,
     };
   }

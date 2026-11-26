@@ -68,21 +68,30 @@ function inferWindowDurationSeconds(key: string | undefined, label: string | und
   return parseDurationToken(key) ?? parseDurationToken(label);
 }
 const GATEWAY_UNSUPPORTED_TTL_MS = 10 * 60_000;
-const unsupportedGatewayOrigins = new Map<string, number>();
+export type GatewayQuotaUnsupportedReason = 'unsupported' | 'exposure_disabled';
+const unsupportedGatewayOrigins = new Map<string, { readonly expiresAt: number; readonly reason: GatewayQuotaUnsupportedReason }>();
 
-export function markGatewayQuotaUnsupported(origin: string, now = Date.now()): void {
-  unsupportedGatewayOrigins.set(origin.toLowerCase(), now + GATEWAY_UNSUPPORTED_TTL_MS);
+export function markGatewayQuotaUnsupported(
+  origin: string,
+  now = Date.now(),
+  reason: GatewayQuotaUnsupportedReason = 'unsupported',
+): void {
+  unsupportedGatewayOrigins.set(origin.toLowerCase(), { expiresAt: now + GATEWAY_UNSUPPORTED_TTL_MS, reason });
+}
+
+export function getGatewayQuotaUnsupportedReason(origin: string, now = Date.now()): GatewayQuotaUnsupportedReason | undefined {
+  const key = origin.toLowerCase();
+  const entry = unsupportedGatewayOrigins.get(key);
+  if (entry === undefined) return undefined;
+  if (now >= entry.expiresAt) {
+    unsupportedGatewayOrigins.delete(key);
+    return undefined;
+  }
+  return entry.reason;
 }
 
 export function isGatewayQuotaUnsupported(origin: string, now = Date.now()): boolean {
-  const key = origin.toLowerCase();
-  const expiresAt = unsupportedGatewayOrigins.get(key);
-  if (expiresAt === undefined) return false;
-  if (now >= expiresAt) {
-    unsupportedGatewayOrigins.delete(key);
-    return false;
-  }
-  return true;
+  return getGatewayQuotaUnsupportedReason(origin, now) !== undefined;
 }
 
 export function clearGatewayQuotaUnsupportedCache(): void {
@@ -155,6 +164,15 @@ function resolveGatewayUsageUrl(url: URL): string {
 
 export function gatewayQuotaCacheKey(adapter: Pick<QuotaAdapter, 'url' | 'secondaryUrl'>): string {
   return (adapter.secondaryUrl ?? adapter.url).toLowerCase();
+}
+
+export function gatewayQuotaCacheKeyForBaseUrl(baseUrl: string | undefined): string | undefined {
+  if (!baseUrl) return undefined;
+  let url: URL;
+  try { url = new URL(baseUrl); } catch { return undefined; }
+  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) return undefined;
+  if (isLocalOrPrivateHost(url.hostname.toLowerCase())) return undefined;
+  return resolveGatewayUsageUrl(url).toLowerCase();
 }
 
 export function selectQuotaAdapter(baseUrl: string | undefined, oauth: boolean, now = Date.now()): QuotaAdapter | undefined {

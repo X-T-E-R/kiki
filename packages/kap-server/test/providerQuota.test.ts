@@ -858,4 +858,96 @@ describe('provider quotas', () => {
     expect(afterWithdraw.sources.some((s) => s.id.startsWith('plugin-quota:'))).toBe(false);
     expect(afterWithdraw.sources.map((s) => s.id)).toEqual(['provider:acme-bridge']);
   });
+
+  it('renders one deduplicated pool row for /raw/<id> multi-key search instances including prefixed paths', async () => {
+    const keyUsage = vi.fn(async (instanceId: string): Promise<NbSearchKeyUsageView> => ({
+      provider_instance_id: instanceId,
+      provider_id: 'tavily',
+      balance_supported: true,
+      keys: [
+        {
+          key_index: 1,
+          state: 'ready',
+          usage: {
+            scope: 'team',
+            unit: 'credits',
+            used: 10,
+            limit: 100,
+            remaining: 90,
+            checked_at: '2026-11-26T00:00:00Z',
+            meters: [{ id: 'channel-69-total', label: 'Search Pool · 渠道池额度', unit: 'credits', used: 10, limit: 100, remaining: 90 }],
+          },
+        },
+        {
+          key_index: 2,
+          state: 'ready',
+          usage: {
+            scope: 'team',
+            unit: 'credits',
+            used: 10,
+            limit: 100,
+            remaining: 90,
+            checked_at: '2026-11-26T00:00:00Z',
+            meters: [{ id: 'channel-69-total', label: 'Search Pool · 渠道池额度', unit: 'credits', used: 10, limit: 100, remaining: 90 }],
+          },
+        },
+      ],
+    }));
+    const services = new Map<unknown, unknown>([
+      [IProviderService, { ready: Promise.resolve(), list: () => ({}) }],
+      [IOAuthService, {}],
+      [IAtomicDocumentStore, { get: async () => undefined }],
+      [INbSearchService, {
+        quotaSources: async () => [
+          { id: 'tavily.prefixed-raw', provider_id: 'tavily', revision: 'raw-rev-1', enabled: true, base_url: 'https://api.example.test/prefix/raw/69' },
+        ],
+        keyUsage,
+      }],
+      [IAgentExecutorRegistry, { list: () => [] }],
+    ]);
+    const core = { accessor: { get: (token: unknown) => services.get(token) } } as unknown as Scope;
+    const service = createProviderQuotaService(core);
+    const snap = providerQuotaSnapshotSchema.parse(await service.refresh('service:tavily.prefixed-raw'));
+    const source = snap.sources.find((s) => s.id === 'service:tavily.prefixed-raw')!;
+    expect(source.supported).toBe(true);
+    expect(source.account_label).toBe('网关渠道池共享额度');
+    expect(source.meters).toHaveLength(1);
+    expect(source.meters[0]).toMatchObject({
+      id: 'pool-channel-69-total',
+      label: 'Search Pool · 渠道池额度',
+      scope: 'team',
+      remaining: 90,
+    });
+  });
+
+  it('recognizes LLM gateway 403 key_quota_exposure_disabled as managed state instead of auth_required', async () => {
+    const { clearGatewayQuotaUnsupportedCache } = await import('../src/usage/quota/adapters');
+    clearGatewayQuotaUnsupportedCache();
+    try {
+      const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+        error: { code: 'key_quota_exposure_disabled', message: 'quota exposure disabled by admin' },
+      }), { status: 403, headers: { 'content-type': 'application/json' } }));
+      const services = new Map<unknown, unknown>([
+        [IProviderService, {
+          ready: Promise.resolve(),
+          list: () => ({
+            managedgw: { type: 'openai', baseUrl: 'https://managed-gw.example.test/v1', apiKey: 'sk-managed' },
+          }),
+        }],
+        [IOAuthService, {}],
+        [IAtomicDocumentStore, { get: async () => undefined }],
+        [INbSearchService, { quotaSources: async () => [] }],
+        [IAgentExecutorRegistry, { list: () => [] }],
+      ]);
+      const core = { accessor: { get: (token: unknown) => services.get(token) } } as unknown as Scope;
+      const service = createProviderQuotaService(core, fetchMock as typeof fetch);
+      const snap = providerQuotaSnapshotSchema.parse(await service.refresh('provider:managedgw'));
+      const source = snap.sources.find((s) => s.id === 'provider:managedgw')!;
+      expect(source.status).toBe('unsupported');
+      expect(source.reason).toBe('key_quota_exposure_disabled');
+      expect(source.status).not.toBe('auth_required');
+    } finally {
+      clearGatewayQuotaUnsupportedCache();
+    }
+  });
 });

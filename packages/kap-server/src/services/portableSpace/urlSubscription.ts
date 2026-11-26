@@ -4,6 +4,7 @@ import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
 import { mergeConfigCredentials } from '@kiki/agent-core-v2/app/config/credentials';
 import { readBundledPluginCatalog } from '@kiki/agent-core-v2/app/plugin/defaultCatalog';
+import { isBlockedIp, isExplicitLoopbackHost, isFakeIpAddress, stripHostBrackets } from '@kiki/agent-core-v2/app/plugin/networkSafety';
 import type { PortableSpaceDomain, PortableSpaceExcludedItem } from '@kiki/protocol';
 import { sameUnit, type VerifiedBase } from './mergeEngine';
 import { encodeToml, domainForFile, hasBundledPluginManifest, isPortablePluginId, object, parseToml, PLAIN, type Data, type Units } from './treeProjection';
@@ -116,72 +117,7 @@ interface SafeSubscriptionTarget {
 }
 
 function stripBrackets(hostname: string): string {
-  return hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
-}
-
-function isExplicitLoopbackHost(hostname: string): boolean {
-  const bare = stripBrackets(hostname).toLowerCase();
-  return bare === 'localhost' || bare === '127.0.0.1' || bare === '::1';
-}
-
-function isBlockedIpv4(ip: string): boolean {
-  const parts = ip.split('.').map((part) => Number(part));
-  if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return true;
-  const [a, b, c] = parts as [number, number, number, number];
-  if (a === 0) return true;
-  if (a === 10) return true;
-  if (a === 127) return true;
-  if (a === 100 && b >= 64 && b <= 127) return true;
-  if (a === 169 && b === 254) return true;
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  if (a === 192 && b === 168) return true;
-  if (a === 192 && b === 0 && (c === 0 || c === 2)) return true;
-  if (a === 198 && (b === 18 || b === 19)) return true;
-  if (a >= 224) return true;
-  return false;
-}
-
-function parseMappedIpv4(bare: string): string | undefined {
-  const dotted = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(bare);
-  if (dotted !== null) return dotted[1];
-  const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(bare);
-  if (hex !== null) {
-    const hi = Number.parseInt(hex[1]!, 16);
-    const lo = Number.parseInt(hex[2]!, 16);
-    return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
-  }
-  return undefined;
-}
-
-function isBlockedIp(rawIp: string): boolean {
-  const bare = stripBrackets(rawIp).split('%')[0]!.toLowerCase();
-  const kind = isIP(bare);
-  if (kind === 4) return isBlockedIpv4(bare);
-  if (kind !== 6) return true;
-  if (bare === '::' || bare === '::1' || /^0{0,4}(?::0{0,4})*:0{0,3}[01]$/.test(bare)) return true;
-  const mapped = parseMappedIpv4(bare);
-  if (mapped !== undefined) return isBlockedIpv4(mapped);
-  const first = bare.split(':')[0] ?? '';
-  if (/^f[cd][0-9a-f]{0,2}$/.test(first)) return true;
-  if (/^fe[89ab][0-9a-f]?$/.test(first)) return true;
-  if (/^ff[0-9a-f]{0,2}$/.test(first)) return true;
-  return false;
-}
-
-function isFakeIpv4(ip: string): boolean {
-  const parts = ip.split('.').map((part) => Number(part));
-  if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false;
-  const [a, b] = parts as [number, number, number, number];
-  return a === 198 && (b === 18 || b === 19);
-}
-
-function isFakeIpAddress(rawIp: string): boolean {
-  const bare = stripBrackets(rawIp).split('%')[0]!.toLowerCase();
-  const kind = isIP(bare);
-  if (kind === 4) return isFakeIpv4(bare);
-  if (kind !== 6) return false;
-  const mapped = parseMappedIpv4(bare);
-  return mapped !== undefined && isFakeIpv4(mapped);
+  return stripHostBrackets(hostname);
 }
 
 interface DohJsonResponse {

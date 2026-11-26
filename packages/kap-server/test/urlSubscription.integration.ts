@@ -20,7 +20,7 @@ import {
   portableSpaceSubscriptionSyncResultSchema,
 } from '@kiki/protocol';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { reconcileOfficialPlugins } from '../src/services/portableSpace/liveSpace';
+import { reconcileOfficialPlugins, reconcilePortablePlugins } from '../src/services/portableSpace/liveSpace';
 import { PortableSpaceService } from '../src/services/portableSpace/portableSpaceService';
 import { packTarGz, unpackTarGz } from '../src/services/portableSpace/tarArchive';
 import {
@@ -322,6 +322,13 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
     await expect(assertSafeSubscriptionUrl('https://169.254.169.254/latest/meta-data')).rejects.toThrow(/blocked/i);
     await expect(assertSafeSubscriptionUrl('https://198.18.0.1/pack.tgz')).rejects.toThrow(/blocked/i);
     await expect(assertSafeSubscriptionUrl('https://[::ffff:198.18.0.1]/pack.tgz')).rejects.toThrow(/blocked/i);
+    await expect(assertSafeSubscriptionUrl('https://[64:ff9b::10.0.0.1]/pack.tgz')).rejects.toThrow(/blocked/i);
+    await expect(assertSafeSubscriptionUrl('https://[64:ff9b:1::1]/pack.tgz')).rejects.toThrow(/blocked/i);
+    await expect(assertSafeSubscriptionUrl('https://[2002:a00:1::]/pack.tgz')).rejects.toThrow(/blocked/i);
+    await expect(assertSafeSubscriptionUrl('https://[2001:0:4136:e378:8000:63bf:f5ff:fffe]/pack.tgz')).rejects.toThrow(/blocked/i);
+    await expect(
+      assertSafeSubscriptionUrl('https://nat64-rebind.example.test/pack.tgz', async () => [{ address: '64:ff9b::a00:1', family: 6 }]),
+    ).rejects.toThrow(/blocked/i);
     await expect(assertSafeSubscriptionUrl('https://user:pass@example.com/pack.tgz')).rejects.toThrow(/credentials/i);
     await expect(
       assertSafeSubscriptionUrl('https://rebind.example.test/pack.tgz', async () => [{ address: '10.1.2.3' }]),
@@ -586,6 +593,81 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
     expect(offlineRes.errors).toEqual([{ id: 'kiki-office', message: 'offline ECONNREFUSED' }]);
     expect(failingInstall).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('enforces reconcilePortablePlugins guards: blocks github overwrite, skips disabled bundled installs, and holds new/tampered plugins when allowInstall is false', async () => {
+    const warn = vi.fn();
+    const installPlugin = vi.fn(async () => ({ id: 'demo-plug', enabled: true }) as never);
+    const setPluginEnabled = vi.fn(async () => undefined);
+    const bundledFiles = new Map<string, Buffer>([
+      ['kimi.plugin.json', Buffer.from(JSON.stringify({ name: 'demo-plug', version: '1.0.0' }))],
+      ['index.mjs', Buffer.from('export function activate() {}\n')],
+    ]);
+
+    const githubZipGuard = await reconcilePortablePlugins(
+      {
+        plugins: {
+          listPlugins: vi.fn(async () => [{ id: 'community-plug', enabled: true, source: 'github', originalSource: 'https://github.com/acme/community-plug' }] as never),
+          installPlugin,
+          setPluginEnabled,
+        } as never,
+        log: { warn },
+      },
+      [{
+        id: 'community-plug',
+        enabled: true,
+        source: 'https://cdn.example.test/community-plug.zip',
+        sha256: 'a'.repeat(64),
+      }],
+    );
+    expect(githubZipGuard.skippedIds).toEqual(['community-plug']);
+    expect(installPlugin).not.toHaveBeenCalled();
+
+    const githubBundledGuard = await reconcilePortablePlugins(
+      {
+        plugins: {
+          listPlugins: vi.fn(async () => [{ id: 'demo-plug', enabled: true, source: 'github', originalSource: 'https://github.com/acme/demo-plug' }] as never),
+          installPlugin,
+          setPluginEnabled,
+        } as never,
+        log: { warn },
+      },
+      [{ id: 'demo-plug', enabled: true, bundledFiles }],
+    );
+    expect(githubBundledGuard.skippedIds).toEqual(['demo-plug']);
+    expect(installPlugin).not.toHaveBeenCalled();
+
+    const disabledBundledRes = await reconcilePortablePlugins(
+      {
+        plugins: {
+          listPlugins: vi.fn(async () => []),
+          installPlugin,
+          setPluginEnabled,
+        } as never,
+        log: { warn },
+      },
+      [{ id: 'demo-plug', enabled: false, bundledFiles }],
+    );
+    expect(disabledBundledRes.installedIds).toEqual([]);
+    expect(disabledBundledRes.reconciledIds).toEqual([]);
+    expect(installPlugin).not.toHaveBeenCalled();
+    expect(setPluginEnabled).not.toHaveBeenCalled();
+
+    const heldNewRes = await reconcilePortablePlugins(
+      {
+        plugins: {
+          listPlugins: vi.fn(async () => []),
+          installPlugin,
+          setPluginEnabled,
+        } as never,
+        log: { warn },
+      },
+      [{ id: 'demo-plug', enabled: true, bundledFiles }],
+      undefined,
+      { allowInstall: false },
+    );
+    expect(heldNewRes.heldIds).toEqual(['demo-plug']);
+    expect(installPlugin).not.toHaveBeenCalled();
   });
 
   it('enforces remote security invariants for skills/sessions/memories, model base_url retargeting, telemetry opt-out, narrow permission merge, and origin-bound ETag/labels', async () => {

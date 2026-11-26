@@ -40,7 +40,14 @@ import {
   type PortableSubscriptionScope,
 } from '@kiki/protocol';
 import { endpointKey, type LoadedSpaceTree, type SpaceEndpoints } from './endpoints';
-import { reconcileOfficialPlugins, writeLive, type OfficialPluginReconcileError } from './liveSpace';
+import {
+  holdBackgroundPluginChanges,
+  pluginIdsFromUnitIds,
+  reconcileOfficialPlugins,
+  uninstallPortableOwnedPlugins,
+  writeLive,
+  type OfficialPluginReconcileError,
+} from './liveSpace';
 import { sameUnit, unitHash, unitHashes, type VerifiedBase } from './mergeEngine';
 import { missing, readBounded, writeFileAtomic } from './spaceFiles';
 import {
@@ -87,6 +94,8 @@ export interface CenterSourceLedgerEntry {
   baseGeneration: number;
   pendingTransfers: PendingTransferRecord[];
   preservedLocalIds: string[];
+  installedPluginIds?: string[];
+  pendingPluginReviewIds?: string[];
 }
 
 interface CenterLedgerDocument {
@@ -988,6 +997,8 @@ export class SubscriptionCenterCoordinator {
       });
 
       const pluginErrors: OfficialPluginReconcileError[] = [];
+      const installedPluginIdsOut = new Set<string>(priorEntry?.installedPluginIds ?? []);
+      const ownedPluginIds = new Set<string>(priorEntry?.installedPluginIds ?? []);
       let backupPath: string | undefined;
       const wroteLive = !equalUnitMaps(plan.nextUnits, targetUnits);
       const nextGeneration = selfState.baseGeneration + 1;
@@ -1004,12 +1015,20 @@ export class SubscriptionCenterCoordinator {
           backupPath,
           targetRevision: currentTargetRev,
         });
-        await writeLive(this.host.endpoints.live, plan.nextUnits, targetUnits, 'override', pluginErrors);
+        await writeLive(this.host.endpoints.live, plan.nextUnits, targetUnits, 'override', pluginErrors, {
+          allowPluginInstall: true,
+          ownedPluginIds,
+          installedPluginIdsOut,
+        });
       }
 
       const winningPlugins = collectWinningOfficialPlugins(plan.nextRawBaseUnits, plan.nextManagedIds, wroteLive ? new Set(plan.appliedIds) : undefined);
       if (winningPlugins.size > 0) {
-        const res = await reconcileOfficialPlugins(this.host.endpoints.live, winningPlugins);
+        const res = await reconcileOfficialPlugins(this.host.endpoints.live, winningPlugins, {
+          allowInstall: true,
+          ownedPluginIds,
+        });
+        for (const installedId of res.installedIds) installedPluginIdsOut.add(installedId);
         if (res.errors.length > 0) pluginErrors.push(...res.errors);
       }
 
@@ -1068,6 +1087,8 @@ export class SubscriptionCenterCoordinator {
         baseGeneration: nextGeneration,
         pendingTransfers: [],
         preservedLocalIds: [...new Set([...selfState.preservedLocalIds, ...plan.newlyPreservedLocalIds])].sort(),
+        installedPluginIds: [...installedPluginIdsOut].sort(),
+        pendingPluginReviewIds: [],
       };
       this.applyPeerLedgerUpdates(ledger, plan.peerExpectedHashUpdates, plan.pendingTransfersToRecord);
       ledger.orderRevisionBySpace[targetSpaceId] = this.computeOrderRevision(nextRecords, targetSpaceId);
@@ -1097,6 +1118,7 @@ export class SubscriptionCenterCoordinator {
     id: string,
     input: PortableSpaceCenterTokenSyncInput | PortableSpaceCenterDirectSyncInput,
     signal?: AbortSignal,
+    options?: { readonly backgroundAutoSync?: boolean },
   ): Promise<PortableSpaceCenterCommit> {
     if ('previewToken' in input) {
       return this.host.previewStore.withConsumption(input.previewToken, 'source_update', this.host.endpoints.home, async (snapshot) => {
@@ -1150,6 +1172,8 @@ export class SubscriptionCenterCoordinator {
         });
 
         const pluginErrors: OfficialPluginReconcileError[] = [];
+        const installedPluginIdsOut = new Set<string>(entry.installedPluginIds ?? []);
+        const ownedPluginIds = new Set<string>(entry.installedPluginIds ?? []);
         let backupPath: string | undefined;
         const wroteLive = !equalUnitMaps(plan.nextUnits, targetUnits);
         const nextGeneration = entry.baseGeneration + 1;
@@ -1165,13 +1189,29 @@ export class SubscriptionCenterCoordinator {
             backupPath,
             targetRevision: snapshot.targetRevision,
           });
-          await writeLive(this.host.endpoints.live, plan.nextUnits, targetUnits, 'override', pluginErrors);
+          await writeLive(this.host.endpoints.live, plan.nextUnits, targetUnits, 'override', pluginErrors, {
+            allowPluginInstall: true,
+            ownedPluginIds,
+            installedPluginIdsOut,
+          });
         }
 
         const winningPlugins = collectWinningOfficialPlugins(plan.nextRawBaseUnits, plan.nextManagedIds, wroteLive ? new Set(plan.appliedIds) : undefined);
         if (winningPlugins.size > 0) {
-          const res = await reconcileOfficialPlugins(this.host.endpoints.live, winningPlugins);
+          const res = await reconcileOfficialPlugins(this.host.endpoints.live, winningPlugins, {
+            allowInstall: true,
+            ownedPluginIds,
+          });
+          for (const installedId of res.installedIds) installedPluginIdsOut.add(installedId);
           if (res.errors.length > 0) pluginErrors.push(...res.errors);
+        }
+
+        const nextManagedPlugins = pluginIdsFromUnitIds(plan.nextManagedIds);
+        const droppedOwnedPlugins = [...installedPluginIdsOut].filter((pluginId) => !nextManagedPlugins.has(pluginId));
+        if (droppedOwnedPlugins.length > 0) {
+          const peerProtected = collectPeerOwnedPluginIds(records, ledger, targetSpaceId, id, plan.peerManagedUpdates);
+          const uninstalled = await uninstallPortableOwnedPlugins(this.host.endpoints.live, droppedOwnedPlugins, peerProtected);
+          for (const removedId of uninstalled.removedIds) installedPluginIdsOut.delete(removedId);
         }
 
         await this.host.saveBase(id, plan.nextRawBaseUnits, hashKey);
@@ -1217,6 +1257,8 @@ export class SubscriptionCenterCoordinator {
           baseGeneration: nextGeneration,
           pendingTransfers: [],
           preservedLocalIds: [...new Set([...entry.preservedLocalIds, ...plan.newlyPreservedLocalIds])].sort(),
+          installedPluginIds: [...installedPluginIdsOut].sort(),
+          pendingPluginReviewIds: [],
         };
         this.applyPeerLedgerUpdates(ledger, plan.peerExpectedHashUpdates, plan.pendingTransfersToRecord);
         await this.host.saveSources(nextRecords);
@@ -1296,10 +1338,16 @@ export class SubscriptionCenterCoordinator {
             desiredRetry.set(pluginId, unit === undefined ? true : object(unit.value)['enabled'] !== false);
           }
           if (desiredRetry.size > 0) {
-            const retryResult = await reconcileOfficialPlugins(this.host.endpoints.live, desiredRetry);
+            const retryResult = await reconcileOfficialPlugins(this.host.endpoints.live, desiredRetry, {
+              allowInstall: options?.backgroundAutoSync !== true,
+            });
             if (retryResult.errors.length > 0) {
               nextPendingPlugins = retryResult.errors.map((e) => e.id);
               nextPluginError = `Official plugin reconciliation pending (${retryResult.errors.map((e) => `${e.id}: ${e.message}`).join('; ')})`.slice(0, 1024);
+            } else if (retryResult.heldIds.length > 0) {
+              nextPendingPlugins = retryResult.heldIds;
+              nextPluginError = `Plugin changes require interactive confirmation (${retryResult.heldIds.join(', ')})`.slice(0, 1024);
+              needsReconcile = true;
             }
           }
         }
@@ -1350,9 +1398,29 @@ export class SubscriptionCenterCoordinator {
         strictBindings: true,
       });
 
+      const backgroundAutoSync = options?.backgroundAutoSync === true;
       const pluginErrors: OfficialPluginReconcileError[] = [];
+      const installedPluginIdsOut = new Set<string>(entry.installedPluginIds ?? []);
+      const ownedPluginIds = new Set<string>(entry.installedPluginIds ?? []);
+      const heldPluginIdsOut = new Set<string>();
+      let effectiveNextUnits = plan.nextUnits;
+      let effectiveNextRawBaseUnits = plan.nextRawBaseUnits;
+      if (backgroundAutoSync) {
+        const held = await holdBackgroundPluginChanges({
+          live: this.host.endpoints.live,
+          homeDir: this.host.endpoints.home,
+          nextUnits: plan.nextUnits,
+          targetUnits,
+          nextBaseUnits: plan.nextRawBaseUnits,
+          priorBaseUnits: selfState.rawBaseUnits,
+        });
+        effectiveNextUnits = held.nextUnits;
+        effectiveNextRawBaseUnits = held.nextBaseUnits;
+        for (const heldId of held.heldPluginIds) heldPluginIdsOut.add(heldId);
+      }
+
       let backupPath: string | undefined;
-      const wroteLive = !equalUnitMaps(plan.nextUnits, targetUnits);
+      const wroteLive = !equalUnitMaps(effectiveNextUnits, targetUnits);
       const nextGeneration = entry.baseGeneration + 1;
       if (wroteLive) {
         if (input.createBackup !== false) backupPath = await this.createSealedBackup(liveTree);
@@ -1366,20 +1434,43 @@ export class SubscriptionCenterCoordinator {
           backupPath,
           targetRevision: this.computeTargetRevision(targetUnits, hashKey),
         });
-        await writeLive(this.host.endpoints.live, plan.nextUnits, targetUnits, 'override', pluginErrors);
+        await writeLive(this.host.endpoints.live, effectiveNextUnits, targetUnits, 'override', pluginErrors, {
+          allowPluginInstall: !backgroundAutoSync,
+          ownedPluginIds,
+          installedPluginIdsOut,
+          heldPluginIdsOut,
+        });
       }
 
-      const winningPlugins = collectWinningOfficialPlugins(plan.nextRawBaseUnits, plan.nextManagedIds, wroteLive ? new Set(plan.appliedIds) : undefined);
+      const winningPlugins = collectWinningOfficialPlugins(effectiveNextRawBaseUnits, plan.nextManagedIds, wroteLive ? new Set(plan.appliedIds) : undefined);
       if (winningPlugins.size > 0) {
-        const res = await reconcileOfficialPlugins(this.host.endpoints.live, winningPlugins);
+        const res = await reconcileOfficialPlugins(this.host.endpoints.live, winningPlugins, {
+          allowInstall: !backgroundAutoSync,
+          ownedPluginIds,
+        });
+        for (const installedId of res.installedIds) installedPluginIdsOut.add(installedId);
+        for (const heldId of res.heldIds) heldPluginIdsOut.add(heldId);
         if (res.errors.length > 0) pluginErrors.push(...res.errors);
       }
 
-      await this.host.saveBase(id, plan.nextRawBaseUnits, hashKey);
+      const heldPluginIds = [...heldPluginIdsOut].sort();
+      if (!backgroundAutoSync) {
+        const nextManagedPlugins = pluginIdsFromUnitIds(plan.nextManagedIds);
+        const droppedOwnedPlugins = [...installedPluginIdsOut].filter((pluginId) => !nextManagedPlugins.has(pluginId));
+        if (droppedOwnedPlugins.length > 0) {
+          const peerProtected = collectPeerOwnedPluginIds(records, ledger, targetSpaceId, id, plan.peerManagedUpdates);
+          const uninstalled = await uninstallPortableOwnedPlugins(this.host.endpoints.live, droppedOwnedPlugins, peerProtected);
+          for (const removedId of uninstalled.removedIds) installedPluginIdsOut.delete(removedId);
+        }
+      }
+
+      await this.host.saveBase(id, effectiveNextRawBaseUnits, hashKey);
       const pendingPlugins = pluginErrors.map((e) => e.id);
       const pluginErrorMsg = pluginErrors.length > 0
         ? `Official plugin reconciliation pending (${pluginErrors.map((e) => `${e.id}: ${e.message}`).join('; ')})`.slice(0, 1024)
-        : undefined;
+        : heldPluginIds.length > 0
+          ? `Plugin changes require interactive confirmation (${heldPluginIds.join(', ')})`.slice(0, 1024)
+          : undefined;
       const updatedRecord: PortableSpaceSourceRecord = {
         ...existing,
         format: loaded.tree.format,
@@ -1389,8 +1480,8 @@ export class SubscriptionCenterCoordinator {
         updatedAt: now,
         lastCheckedAt: now,
         lastSyncedAt: now,
-        etag: sanitizeEtag(loaded.etag),
-        etagOrigin: loaded.finalOrigin,
+        etag: heldPluginIds.length > 0 ? sanitizeEtag(existing.etag) : sanitizeEtag(loaded.etag),
+        etagOrigin: heldPluginIds.length > 0 ? existing.etagOrigin : loaded.finalOrigin,
         lastSyncError: pluginErrorMsg,
         managedIds: plan.nextManagedIds,
         pendingOfficialPlugins: pendingPlugins.length > 0 ? pendingPlugins : undefined,
@@ -1411,12 +1502,14 @@ export class SubscriptionCenterCoordinator {
         ...entry,
         seenScopes: PORTABLE_SUBSCRIPTION_SCOPES.filter((scope) => nextSeenScopes.includes(scope)),
         revision: randomUUID(),
-        needsReconcile: false,
+        needsReconcile: heldPluginIds.length > 0,
         appliedExpectedHashes: nextAppliedExpectedHashes,
         declaredUnitIds: plan.nextDeclaredUnitIds,
         baseGeneration: nextGeneration,
         pendingTransfers: [],
         preservedLocalIds: [...new Set([...entry.preservedLocalIds, ...plan.newlyPreservedLocalIds])].sort(),
+        installedPluginIds: [...installedPluginIdsOut].sort(),
+        pendingPluginReviewIds: heldPluginIds,
       };
       this.applyPeerLedgerUpdates(ledger, plan.peerExpectedHashUpdates, plan.pendingTransfersToRecord);
       await this.host.saveSources(nextRecords);
@@ -1574,6 +1667,8 @@ export class SubscriptionCenterCoordinator {
       }
 
       const pluginErrors: OfficialPluginReconcileError[] = [];
+      const installedPluginIdsOut = new Set<string>(entry.installedPluginIds ?? []);
+      const ownedPluginIds = new Set<string>(entry.installedPluginIds ?? []);
       let backupPath: string | undefined;
       const wroteLive = !equalUnitMaps(plan.nextUnits, targetUnits);
       const nextGeneration = entry.baseGeneration + 1;
@@ -1589,13 +1684,31 @@ export class SubscriptionCenterCoordinator {
           backupPath,
           targetRevision: snapshot.targetRevision,
         });
-        await writeLive(this.host.endpoints.live, plan.nextUnits, targetUnits, 'override', pluginErrors);
+        await writeLive(this.host.endpoints.live, plan.nextUnits, targetUnits, 'override', pluginErrors, {
+          allowPluginInstall: true,
+          ownedPluginIds,
+          installedPluginIdsOut,
+        });
       }
 
       const winningPlugins = collectWinningOfficialPlugins(plan.nextRawBaseUnits, plan.nextManagedIds, wroteLive ? new Set(plan.appliedIds) : undefined);
       if (winningPlugins.size > 0) {
-        const res = await reconcileOfficialPlugins(this.host.endpoints.live, winningPlugins);
+        const res = await reconcileOfficialPlugins(this.host.endpoints.live, winningPlugins, {
+          allowInstall: true,
+          ownedPluginIds,
+        });
+        for (const installedId of res.installedIds) installedPluginIdsOut.add(installedId);
         if (res.errors.length > 0) pluginErrors.push(...res.errors);
+      }
+
+      if (input.cleanupDeselected) {
+        const nextManagedPlugins = pluginIdsFromUnitIds(plan.nextManagedIds);
+        const droppedOwnedPlugins = [...installedPluginIdsOut].filter((pluginId) => !nextManagedPlugins.has(pluginId));
+        if (droppedOwnedPlugins.length > 0) {
+          const peerProtected = collectPeerOwnedPluginIds(records, ledger, targetSpaceId, id, plan.peerManagedUpdates);
+          const uninstalled = await uninstallPortableOwnedPlugins(this.host.endpoints.live, droppedOwnedPlugins, peerProtected);
+          for (const removedId of uninstalled.removedIds) installedPluginIdsOut.delete(removedId);
+        }
       }
 
       await this.host.saveBase(id, plan.nextRawBaseUnits, hashKey);
@@ -1632,6 +1745,8 @@ export class SubscriptionCenterCoordinator {
         baseGeneration: nextGeneration,
         pendingTransfers: [],
         preservedLocalIds: [...new Set([...entry.preservedLocalIds, ...plan.newlyPreservedLocalIds])].sort(),
+        installedPluginIds: [...installedPluginIdsOut].sort(),
+        pendingPluginReviewIds: [],
       };
       this.applyPeerLedgerUpdates(ledger, plan.peerExpectedHashUpdates, plan.pendingTransfersToRecord);
       await this.host.saveSources(nextRecords);
@@ -1843,6 +1958,26 @@ export class SubscriptionCenterCoordinator {
           });
           await writeLive(this.host.endpoints.live, relinq.nextUnits, targetUnits, 'override');
         }
+        if (input.purgeManaged) {
+          const candidateOwnedPlugins = [
+            ...new Set([
+              ...(entry.installedPluginIds ?? []),
+              ...pluginIdsFromUnitIds(record.managedIds ?? []),
+            ]),
+          ];
+          const peerProtected = collectPeerOwnedPluginIds(records, ledger, targetSpaceId, id, peerManagedUpdates);
+          for (const [peerId, managedSet] of peerManagedUpdates) {
+            const peerLedger = ledger.sources[peerId];
+            if (peerLedger === undefined) continue;
+            const handedOff = [...pluginIdsFromUnitIds([...managedSet])].filter((pluginId) =>
+              candidateOwnedPlugins.includes(pluginId),
+            );
+            if (handedOff.length > 0) {
+              peerLedger.installedPluginIds = [...new Set([...(peerLedger.installedPluginIds ?? []), ...handedOff])].sort();
+            }
+          }
+          await uninstallPortableOwnedPlugins(this.host.endpoints.live, candidateOwnedPlugins, peerProtected);
+        }
       }
 
       const nextRecords = records
@@ -1890,6 +2025,8 @@ export class SubscriptionCenterCoordinator {
     readonly nextManagedIds: readonly string[];
     readonly hashKey: string;
     readonly records: readonly PortableSpaceSourceRecord[];
+    readonly installedPluginIds?: readonly string[];
+    readonly pendingPluginReviewIds?: readonly string[];
   }): Promise<void> {
     const ledger = await this.readLedger();
     const existing = ledger.sources[input.record.id] ?? this.defaultLedgerEntry(input.record);
@@ -1900,14 +2037,24 @@ export class SubscriptionCenterCoordinator {
     }
     const presentScopes = presentScopesInUnits(input.rawBaseUnits);
     const seenScopes = [...new Set([...(existing.seenScopes ?? []), ...presentScopes])];
+    const nextInstalledPlugins = [
+      ...new Set([
+        ...(existing.installedPluginIds ?? []),
+        ...(input.installedPluginIds ?? []),
+      ]),
+    ].sort();
+    const pendingReview = input.pendingPluginReviewIds ?? [];
     ledger.sources[input.record.id] = {
       ...existing,
       syncPolicy: input.record.autoSync === false ? 'manual' : 'auto',
       seenScopes: PORTABLE_SUBSCRIPTION_SCOPES.filter((scope) => seenScopes.includes(scope)),
       revision: randomUUID(),
+      needsReconcile: existing.needsReconcile || pendingReview.length > 0,
       appliedExpectedHashes,
       declaredUnitIds: [...input.rawBaseUnits.keys()].sort(),
       baseGeneration: existing.baseGeneration + 1,
+      installedPluginIds: nextInstalledPlugins,
+      pendingPluginReviewIds: [...pendingReview],
     };
     ledger.orderRevisionBySpace[input.spaceId] = this.computeOrderRevision(input.records, input.spaceId);
     await this.saveLedger(ledger);
@@ -1975,6 +2122,27 @@ function applyPeerManagedUpdate(
   const nextManaged = peerManagedUpdates.get(record.id);
   if (nextManaged === undefined) return record;
   return { ...record, managedIds: [...nextManaged].sort() };
+}
+
+function collectPeerOwnedPluginIds(
+  records: readonly PortableSpaceSourceRecord[],
+  ledger: CenterLedgerDocument,
+  spaceId: string,
+  excludeSourceId: string,
+  peerManagedUpdates?: ReadonlyMap<string, Set<string>>,
+): Set<string> {
+  const protectedIds = new Set<string>();
+  for (const peer of records) {
+    if (peer.id === excludeSourceId || peer.endpoint.kind !== 'url' || (peer.linkedSpaceId ?? 'main') !== spaceId) {
+      continue;
+    }
+    const peerLedger = ledger.sources[peer.id];
+    for (const pluginId of peerLedger?.installedPluginIds ?? []) protectedIds.add(pluginId);
+    const managed = peerManagedUpdates?.get(peer.id);
+    const managedIds = managed !== undefined ? [...managed] : (peer.managedIds ?? []);
+    for (const pluginId of pluginIdsFromUnitIds(managedIds)) protectedIds.add(pluginId);
+  }
+  return protectedIds;
 }
 
 function collectWinningOfficialPlugins(

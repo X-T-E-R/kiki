@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { IAtomicDocumentStore, IBootstrapService, IPluginLlmDirectoryService, IProviderService, IOAuthService, explainProviderEndpoint, type Scope } from '@kiki/agent-core-v2';
 import { INbSearchService } from '@kiki/agent-core-v2/app/nbSearch/nbSearch';
+import { parseRawGatewayRoute } from '@kiki/agent-core-v2/app/nbSearch/rawGatewayQuota';
 import { executorSourceId, IAgentExecutorRegistry } from '@kiki/agent-core-v2/app/agentExecutor/agentExecutor';
 import { antigravitySettingsHome } from '@kiki/agent-core-v2/app/agentExecutor/antigravityProcess';
 import { AntigravityQuotaCollector, type AntigravityQuotaWindow } from '@kiki/agent-core-v2/app/agentExecutor/antigravityQuota';
@@ -8,7 +9,7 @@ import { executorProcessEnv } from '@kiki/agent-core-v2/app/agentExecutor/execut
 import { readAntigravityLocalCredentials, readAntigravityProfileCache } from '@kiki/agent-core-v2/os/backends/node-local/antigravityHostOps';
 import { OAuthUnauthorizedError, decodeJwtPayload } from '@kiki/oauth';
 import type { PluginProviderQuotaMeter, ProviderQuotaMeter, ProviderQuotaSource } from '@kiki/protocol';
-import { selectQuotaAdapter } from './adapters';
+import { gatewayQuotaCacheKeyForBaseUrl, getGatewayQuotaUnsupportedReason, selectQuotaAdapter } from './adapters';
 import { fetchOfficialQuota } from './fetch';
 import { ProviderQuotaService, QuotaFailure, type QuotaTarget } from './service';
 
@@ -70,7 +71,7 @@ function projectAntigravityQuotaMeter(window: AntigravityQuotaWindow, checkedAt:
 }
 
 function isRawGatewaySearchBaseUrl(baseUrl: string | undefined): boolean {
-  return /^https?:\/\/[^/]+\/raw\/\d+(?:\/|$)/.test(baseUrl?.trim() ?? '');
+  return parseRawGatewayRoute(baseUrl) !== undefined;
 }
 
 export function createProviderQuotaService(core: Scope, fetchImpl: typeof fetch = fetch): ProviderQuotaService {
@@ -128,6 +129,8 @@ export function createProviderQuotaService(core: Scope, fetchImpl: typeof fetch 
     const result: QuotaTarget[] = groups.map((group): QuotaTarget => {
       const primary = group[0]!;
       const { id, config, endpoint, adapter, identity } = primary;
+      const cacheKey = adapter === undefined ? gatewayQuotaCacheKeyForBaseUrl(config.baseUrl ?? endpoint.baseUrl) : undefined;
+      const exposureDisabled = cacheKey !== undefined && getGatewayQuotaUnsupportedReason(cacheKey) === 'exposure_disabled';
       const sharedIds = group.map((member) => member.id);
       const accountLabel = config.oauth
         ? '已连接 OAuth 账户'
@@ -146,8 +149,12 @@ export function createProviderQuotaService(core: Scope, fetchImpl: typeof fetch 
         revision,
         active: true,
         supported: adapter !== undefined,
+        ...(exposureDisabled ? { unsupportedReason: 'key_quota_exposure_disabled' } : {}),
         auth: { action: config.oauth ? 'oauth_login' : 'provider_settings', provider: id },
-        source: { label: adapter?.label ?? '暂无官方额度接口', url: adapter?.url },
+        source: {
+          label: adapter?.label ?? (exposureDisabled ? '网关托管（未开启额度展示）' : '暂无官方额度接口'),
+          url: adapter?.url,
+        },
         fetch: async (signal) => {
           signal.throwIfAborted();
           if (!adapter) return [];
@@ -187,7 +194,7 @@ export function createProviderQuotaService(core: Scope, fetchImpl: typeof fetch 
         label: instance.id,
         kind: 'external_service',
         providerId: instance.provider_id,
-        accountLabel: '按 Key / Team 独立显示',
+        accountLabel: isRawGateway ? '网关渠道池共享额度' : '按 Key / Team 独立显示',
         revision: instance.revision,
         active: instance.enabled,
         supported,
@@ -205,12 +212,15 @@ export function createProviderQuotaService(core: Scope, fetchImpl: typeof fetch 
           const usage = await nbSearch.keyUsage(instance.id, true);
           if (!usage.balance_supported) return [];
           if (usage.keys.length === 0 || usage.keys.every((entry) => entry.state === 'invalid')) throw new QuotaFailure('auth_required');
-          return usage.keys.flatMap((entry): ProviderQuotaMeter[] => {
+          const entriesToRender = isRawGateway
+            ? [usage.keys.find((entry) => entry.usage !== undefined) ?? usage.keys[0]!]
+            : usage.keys;
+          return entriesToRender.flatMap((entry): ProviderQuotaMeter[] => {
             const data = entry.usage;
-            const keyId = `key-${entry.key_index}`;
+            const keyId = isRawGateway ? 'pool' : `key-${entry.key_index}`;
             const keyLabel = `Key ${entry.key_index}`;
             const common = {
-              scope: data?.scope ?? 'key',
+              scope: data?.scope ?? (isRawGateway ? 'team' : 'key'),
               data_as_of: data?.checked_at,
               status: entry.state === 'invalid' ? 'auth_required' : entry.usage_error ? data ? 'stale' : 'error' : data ? 'ready' : 'unknown',
               message: entry.state === 'invalid' ? '此 Key 需要重新配置凭据。' : entry.usage_error ? '此 Key 的额度查询失败。' : data ? undefined : '尚无此 Key 的官方额度数据。',
@@ -222,7 +232,7 @@ export function createProviderQuotaService(core: Scope, fetchImpl: typeof fetch 
                 return {
                   ...common,
                   id: `${keyId}-${meter.id}`,
-                  label: usage.keys.length > 1 ? `${keyLabel} · ${label}` : label,
+                  label: !isRawGateway && entriesToRender.length > 1 ? `${keyLabel} · ${label}` : label,
                   unit: isExhaustedPercent ? 'percent' : meter.unit === 'requests' ? 'count' : 'credits',
                   unit_label: isExhaustedPercent ? '%' : meter.unit === 'requests' ? '次' : 'credits',
                   used: meter.used,
@@ -237,7 +247,7 @@ export function createProviderQuotaService(core: Scope, fetchImpl: typeof fetch 
             return [{
               ...common,
               id: keyId,
-              label: `${keyLabel}${data?.scope === 'team' ? ' · Team 共享额度' : ''}`,
+              label: isRawGateway ? '渠道池共享额度' : `${keyLabel}${data?.scope === 'team' ? ' · Team 共享额度' : ''}`,
               unit: 'credits',
               unit_label: 'credits',
               used: data?.used ?? null,

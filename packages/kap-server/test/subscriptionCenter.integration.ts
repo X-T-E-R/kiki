@@ -8,6 +8,7 @@ import {
   IAtomicDocumentStore,
   IBootstrapService,
   IConfigService,
+  IPluginService,
   parseAgentFileText,
   readUnboundModelHolds,
 } from '@kiki/agent-core-v2';
@@ -775,4 +776,146 @@ describe('Subscription Center v1 backend, protocol, klient & multi-source invari
     expect(existsSync(join(cleanHome.homeDir, 'agents', 'reviewer.md'))).toBe(true);
     expect(existsSync(join(cleanHome.homeDir, 'extensions.toml'))).toBe(true);
   });
+
+  it('installs bundled plugins on interactive subscribe, holds background auto-sync plugin additions/modifications, and uninstalls exclusively owned plugins on purge without touching user plugins', async () => {
+    const { homeDir, server, klient } = await bootIsolatedServer(true);
+    const pluginService = server.core.accessor.get(IPluginService);
+
+    const userLocalDir = await mkdtemp(join(tmpdir(), 'kiki-user-local-plugin-'));
+    tempDirs.push(userLocalDir);
+    await writeFile(join(userLocalDir, 'kimi.plugin.json'), JSON.stringify({
+      name: 'user-owned-plugin',
+      version: '1.0.0',
+      'x-kiki': { engines: { kiki: '^0.4.3' } },
+    }));
+    const userPreview = await pluginService.previewPlugin({ source: userLocalDir });
+    await pluginService.installPlugin({
+      source: userLocalDir,
+      fingerprint: userPreview.fingerprint,
+      consent: true,
+      defaultEnabled: true,
+    });
+
+    const makePluginPack = (entryBody: string, extraPlugin = false): Buffer => {
+      const files = buildMultiProfilePack({ implementerBody: 'Plugin lifecycle pack' });
+      const pluginsTomlLines = [
+        '[[plugins]]',
+        'id = "sub-bundled-demo"',
+        'enabled = true',
+        '',
+        '[[plugins]]',
+        'id = "sub-disabled-demo"',
+        'enabled = false',
+      ];
+      if (extraPlugin) {
+        pluginsTomlLines.push('', '[[plugins]]', 'id = "sub-new-remote"', 'enabled = true');
+      }
+      files.set('extensions.toml', Buffer.from(`${pluginsTomlLines.join('\n')}\n`, 'utf8'));
+      files.set('plugins/sub-bundled-demo/kimi.plugin.json', Buffer.from(JSON.stringify({
+        name: 'sub-bundled-demo',
+        version: '1.0.0',
+        'x-kiki': { engines: { kiki: '^0.4.3' } },
+      }), 'utf8'));
+      files.set('plugins/sub-bundled-demo/index.mjs', Buffer.from(entryBody, 'utf8'));
+      files.set('plugins/sub-disabled-demo/kimi.plugin.json', Buffer.from(JSON.stringify({
+        name: 'sub-disabled-demo',
+        version: '1.0.0',
+        'x-kiki': { engines: { kiki: '^0.4.3' } },
+      }), 'utf8'));
+      if (extraPlugin) {
+        files.set('plugins/sub-new-remote/kimi.plugin.json', Buffer.from(JSON.stringify({
+          name: 'sub-new-remote',
+          version: '1.0.0',
+          'x-kiki': { engines: { kiki: '^0.4.3' } },
+        }), 'utf8'));
+        files.set('plugins/sub-new-remote/index.mjs', Buffer.from('export const newlyInjected = true;\n', 'utf8'));
+      }
+      return packTarGz(files);
+    };
+
+    const subUrl = `${httpBaseUrl}/plugin-lifecycle.tgz`;
+    routes.set('/plugin-lifecycle.tgz', { body: makePluginPack('export const version = 1;\n'), etag: '"plug-v1"' });
+
+    const preview = await klient.rest!.portableSpaces.previewSubscribe({
+      source: { kind: 'url', url: subUrl },
+    });
+    const commit = await klient.rest!.portableSpaces.subscribe({
+      previewToken: preview.previewToken,
+      label: 'Plugin Lifecycle Sub',
+      syncPolicy: 'auto',
+      selection: preview.defaultSelection,
+      createBackup: false,
+    });
+    expect(commit.kind).toBe('subscription');
+    if (commit.kind !== 'subscription') throw new Error('Expected subscription commit');
+    const sourceId = commit.source.id;
+
+    const afterSubscribe = await pluginService.listPlugins();
+    expect(afterSubscribe.find((p) => p.id === 'sub-bundled-demo')?.enabled).toBe(true);
+    expect(afterSubscribe.find((p) => p.id === 'sub-disabled-demo')).toBeUndefined();
+    expect(await readFile(join(homeDir, 'plugins', 'managed', 'sub-bundled-demo', 'index.mjs'), 'utf8')).toContain('version = 1');
+
+    const { SpaceEndpoints } = await import('../src/services/portableSpace/endpoints');
+    const { PortableSpaceService } = await import('../src/services/portableSpace/portableSpaceService');
+    const {
+      IAppendLogStore,
+      IConfigRegistry,
+      IFileSystemStorageService,
+      ILogService,
+      IMemoryScopes,
+      IMemoryStore,
+      ISessionIndex,
+      ISessionManager,
+    } = await import('@kiki/agent-core-v2');
+    const { IMcpConfigStore } = await import('@kiki/agent-core-v2/app/mcpConfig/configStore');
+    const { IMemoryPersistence } = await import('@kiki/agent-core-v2/persistence/interface/memoryPersistence');
+
+    const deviceIdentity = (await readFile(join(homeDir, 'credentials', 'device-x25519.key'), 'utf8')).trim();
+    const deviceRecipient = (await klient.rest!.portableSpaces.listSources()).deviceRecipient;
+    const directPortable = new PortableSpaceService(new SpaceEndpoints({
+      bootstrap: server.core.accessor.get(IBootstrapService),
+      config: server.core.accessor.get(IConfigService),
+      registry: server.core.accessor.get(IConfigRegistry),
+      mcp: server.core.accessor.get(IMcpConfigStore),
+      memory: server.core.accessor.get(IMemoryStore),
+      memoryPersistence: server.core.accessor.get(IMemoryPersistence),
+      scopes: server.core.accessor.get(IMemoryScopes),
+      plugins: pluginService,
+      sessions: server.core.accessor.get(ISessionManager),
+      index: server.core.accessor.get(ISessionIndex),
+      logs: server.core.accessor.get(IAppendLogStore),
+      storage: server.core.accessor.get(IFileSystemStorageService),
+      log: server.core.accessor.get(ILogService),
+    }, { ensureDeviceKeypair: async () => ({ identity: deviceIdentity, recipient: deviceRecipient }) } as never, { allowLoopback: true }), {
+      documents: server.core.accessor.get(IAtomicDocumentStore),
+    });
+
+    routes.set('/plugin-lifecycle.tgz', {
+      body: makePluginPack('export const version = 2;\n', true),
+      etag: '"plug-v2"',
+    });
+    const bgResults = await directPortable.syncAllAutoSubscriptions();
+    expect(bgResults).toHaveLength(1);
+    expect(bgResults[0]?.status).toBe('updated');
+
+    const afterBgAutoSync = await pluginService.listPlugins();
+    expect(afterBgAutoSync.find((p) => p.id === 'sub-new-remote')).toBeUndefined();
+    expect(await readFile(join(homeDir, 'plugins', 'managed', 'sub-bundled-demo', 'index.mjs'), 'utf8')).toContain('version = 1');
+    const sourcesAfterBg = await klient.rest!.portableSpaces.listSources({ view: 'center-v1' });
+    const bgSource = sourcesAfterBg.items.find((item) => item.id === sourceId)!;
+    expect(bgSource.etag).toBe('"plug-v1"');
+    expect(bgSource.needsReconcile).toBe(true);
+
+    const removePreview = await klient.rest!.portableSpaces.previewRemoveSource(sourceId);
+    await klient.rest!.portableSpaces.removeReviewedSource(sourceId, {
+      previewToken: removePreview.previewToken,
+      purgeManaged: true,
+      impactDigest: removePreview.impactDigest,
+      createBackup: false,
+    });
+
+    const afterPurge = await pluginService.listPlugins();
+    expect(afterPurge.find((p) => p.id === 'sub-bundled-demo')).toBeUndefined();
+    expect(afterPurge.find((p) => p.id === 'user-owned-plugin')).toBeDefined();
+  }, 60_000);
 });

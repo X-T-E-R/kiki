@@ -1,6 +1,42 @@
 import type { ProviderQuotaMeter } from '@kiki/protocol';
-import { gatewayQuotaCacheKey, markGatewayQuotaUnsupported, parseQuota, quotaHeaders, type QuotaAdapter } from './adapters';
+import { gatewayQuotaCacheKey, markGatewayQuotaUnsupported, parseQuota, quotaHeaders, record, type QuotaAdapter } from './adapters';
 import { QuotaFailure } from './service';
+
+async function isExposureDisabled403(response: Response): Promise<boolean> {
+  const reader = response.body?.getReader();
+  if (!reader) return false;
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.length;
+      if (size > 64 * 1024) {
+        await reader.cancel().catch(() => undefined);
+        return false;
+      }
+      chunks.push(value);
+    }
+  } catch {
+    return false;
+  } finally {
+    reader.releaseLock();
+  }
+  try {
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.length;
+    }
+    const parsed = record(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)));
+    const errObj = record(parsed['error']);
+    return errObj['code'] === 'key_quota_exposure_disabled' || parsed['code'] === 'key_quota_exposure_disabled';
+  } catch {
+    return false;
+  }
+}
 
 async function fetchEndpoint(
   url: string,
@@ -19,7 +55,17 @@ async function fetchEndpoint(
     await response.body?.cancel().catch(() => undefined);
     throw new QuotaFailure('invalid_response', { status: response.status });
   }
-  if (response.status === 401 || response.status === 403) throw new QuotaFailure('auth_required', { status: response.status });
+  if (response.status === 401) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new QuotaFailure('auth_required', { status: 401 });
+  }
+  if (response.status === 403) {
+    if (adapter.id === 'kiki-quota' && await isExposureDisabled403(response)) {
+      throw new QuotaFailure('auth_required', { status: 403, exposureDisabled: true });
+    }
+    await response.body?.cancel().catch(() => undefined);
+    throw new QuotaFailure('auth_required', { status: 403 });
+  }
   if (response.status === 429) throw new QuotaFailure('rate_limited', { status: response.status });
   if (!response.ok) throw new QuotaFailure('request_failed', { status: response.status });
   const reader = response.body?.getReader();
@@ -91,6 +137,10 @@ export async function fetchOfficialQuota(adapter: QuotaAdapter, token: string, f
         }
         failures.push(failure);
       }
+    }
+    if (failures.some((f) => f.exposureDisabled === true)) {
+      markGatewayQuotaUnsupported(gatewayQuotaCacheKey(adapter), Date.now(), 'exposure_disabled');
+      return [];
     }
     const allUnsupported =
       failures.length > 0

@@ -1093,6 +1093,22 @@ export class PluginHostService extends Service implements IPluginHostService {
       }
     }
 
+    const info = await this.plugins.getPluginInfo({ id: pluginId }).catch(() => undefined);
+    const kikiExt = info?.manifest?.kiki;
+    if (kikiExt !== undefined && kikiExt.tier !== 'worker-isolate' && kikiExt.tier !== 'in-process') {
+      const existingHost = this.hosts.get(info!.id) ?? this.hosts.get(cooldownKey);
+      if (kikiExt.activation === 'app') {
+        if (existingHost === undefined || !existingHost.isReady || existingHost.isWarming || !this.activated.has(existingHost)) {
+          if (existingHost === undefined && !this.closing) {
+            void this.reconcileResidents([info!.id]).catch(() => undefined);
+          }
+          return undefined;
+        }
+      } else if (existingHost !== undefined && existingHost.isWarming) {
+        return undefined;
+      }
+    }
+
     let result: IsolatedPluginResult<unknown>;
     try {
       result = await this.invokeSlot({
@@ -1689,17 +1705,6 @@ export class PluginHostService extends Service implements IPluginHostService {
   invokeSlot<TPayload, TResult>(invocation: Omit<IsolatedPluginInvocation<TPayload>, 'generation'>): Promise<IsolatedPluginResult<TResult>> {
     const timeoutMs = invocation.timeoutMs;
     const validTimeout = timeoutMs !== undefined && Number.isSafeInteger(timeoutMs) && timeoutMs >= 1 && timeoutMs <= 2147483647;
-    const deadline = validTimeout ? Date.now() + timeoutMs : undefined;
-    const timeoutController = validTimeout ? new AbortController() : undefined;
-    const timer = validTimeout
-      ? setTimeout(() => timeoutController!.abort(new Error('Plugin slot invocation timed out; its side effects were not replayed')), timeoutMs)
-      : undefined;
-    timer?.unref();
-    const requestSignal = timeoutController === undefined
-      ? invocation.signal
-      : invocation.signal === undefined
-        ? timeoutController.signal
-        : AbortSignal.any([invocation.signal, timeoutController.signal]);
     return this.runRequest(invocation.pluginId, async (info, settings) => {
       const plugin = info.manifest?.kiki;
       if (!info.enabled || info.state !== 'ok' || !plugin?.entry || !plugin.slots?.includes(invocation.slot as ExtensionSlotId)) {
@@ -1732,16 +1737,13 @@ export class PluginHostService extends Service implements IPluginHostService {
         if (gate?.revoked || this.closing || this.slotRegistrations.get(info.id) !== record) throw new Error('Plugin invocation was withdrawn');
       };
       assertAdmitted();
-      const remainingTimeoutMs = deadline === undefined ? invocation.timeoutMs : Math.max(1, deadline - Date.now());
-      const request = { ...invocation, pluginId: info.id, generation, timeoutMs: remainingTimeoutMs };
+      const request = { ...invocation, pluginId: info.id, generation, timeoutMs: validTimeout ? timeoutMs : invocation.timeoutMs };
       const result = pool
         ? await pool.invoke<TPayload, TResult>(request)
         : await this.getHost(info).invokeSlot<TPayload, TResult>(request, settings);
       assertAdmitted();
       return result;
-    }, requestSignal).finally(() => {
-      if (timer !== undefined) clearTimeout(timer);
-    });
+    }, invocation.signal);
   }
 
   private async withdrawSlot(pluginId: string): Promise<void> {

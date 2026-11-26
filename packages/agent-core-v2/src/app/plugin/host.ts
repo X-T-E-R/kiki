@@ -142,6 +142,8 @@ export class PluginHost {
   private readonly imAssemblies = new Map<string, { callId: number; characters: number; received: number; chunks: string[]; listener: (event: PluginImEvent) => Promise<void>; timer: ReturnType<typeof setTimeout> }>();
   private nextId = 0;
   private ready?: Promise<void>;
+  private started = false;
+  private activating = false;
   private exited: Promise<void> = Promise.resolve();
   private idle?: ReturnType<typeof setTimeout>;
   private stopped = false;
@@ -689,10 +691,15 @@ export class PluginHost {
 
   async activate(settings: Record<string, unknown>, userHome: string, dataDir: string): Promise<void> {
     if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
-    await this.start();
-    await this.lifecycleRequest('activate', { settings, userHome, dataDir });
-    this.activitySubscription?.dispose();
-    this.activitySubscription = this.lifecycle?.observeActivity?.((activity) => this.send({ method: 'app-activity', params: { activity } }));
+    this.activating = true;
+    try {
+      await this.start();
+      await this.lifecycleRequest('activate', { settings, userHome, dataDir });
+      this.activitySubscription?.dispose();
+      this.activitySubscription = this.lifecycle?.observeActivity?.((activity) => this.send({ method: 'app-activity', params: { activity } }));
+    } finally {
+      this.activating = false;
+    }
   }
 
   private lifecycleRequest(method: string, params: Record<string, unknown>, timeoutMs = 15_000): Promise<unknown> {
@@ -806,6 +813,8 @@ export class PluginHost {
   }
 
   get running(): boolean { return this.child !== undefined; }
+  get isReady(): boolean { return this.child !== undefined && this.started && !this.stopped; }
+  get isWarming(): boolean { return !this.stopped && (this.activating || (this.ready !== undefined && !this.started)); }
   get hasActiveLeases(): boolean { return this.harnessAccountLeases.size > 0 || this.imListeners.size > 0; }
 
   async execute(name: string, args: unknown, signal: AbortSignal, onProgress?: (update: ToolUpdate) => void, settings: Record<string, unknown> = {}, scope: { readonly workspaceRoot?: string; readonly approvedPaths?: readonly string[]; readonly imageIn?: boolean; readonly workspaceId?: string; readonly media?: PluginMediaApi; readonly messages?: PluginMessagesApi; readonly models?: import('@kiki/protocol').PluginModelsApi; readonly attachmentStore?: ISessionMediaStore } = {}): Promise<ExecutableToolResult> {
@@ -971,10 +980,16 @@ export class PluginHost {
     const params = { ...request, settings };
     if (Buffer.byteLength(JSON.stringify(params)) > MAX_RPC_LINE_CHARS - 1024) throw new RangeError('Plugin slot invocation exceeds RPC limit');
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2147483647) throw new RangeError('Invalid plugin invocation timeout');
+    await (signal === undefined ? this.start() : abortable(this.start(), signal));
+    signal?.throwIfAborted();
+    if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
     let rejectInterrupted!: (reason: Error) => void;
     const interrupted = new Promise<never>((_, reject) => { rejectInterrupted = reject; });
+    let terminatedByInterrupt = false;
     const interrupt = (reason: Error) => {
       rejectInterrupted(reason);
+      if (this.activating || !this.started) return;
+      terminatedByInterrupt = true;
       this.child?.kill('SIGKILL');
       this.terminate(reason);
     };
@@ -983,9 +998,6 @@ export class PluginHost {
     timer.unref();
     signal?.addEventListener('abort', abort, { once: true });
     try {
-      await Promise.race([this.start(), interrupted]);
-      signal?.throwIfAborted();
-      if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
       const response = await Promise.race([this.lifecycleRequest('cordis-slot', params, timeoutMs), interrupted]);
       signal?.throwIfAborted();
       if (!matchesInvocation(response, request)) throw new Error('Plugin returned an obsolete invocation identity');
@@ -995,7 +1007,7 @@ export class PluginHost {
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener('abort', abort);
-      if (!this.child) await this.waitForExit(INTERRUPT_EXIT_GRACE_MS);
+      if (terminatedByInterrupt && !this.child) await this.waitForExit(INTERRUPT_EXIT_GRACE_MS);
     }
   }
 
@@ -1261,6 +1273,7 @@ export class PluginHost {
             this.handshakeFailures = 0;
             this.handshakeCooldownUntil = 0;
             this.lastHandshakeError = undefined;
+            this.started = true;
             resolve();
             this.scheduleIdle();
           } else if (message.method === 'register-error') {
@@ -1498,6 +1511,8 @@ export class PluginHost {
       if (!child.killed) child.kill('SIGKILL');
       child.unref();
     }
+    this.started = false;
+    this.activating = false;
     this.ready = undefined;
   }
 }

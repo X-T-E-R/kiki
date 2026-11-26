@@ -64,6 +64,11 @@ export function parseRawGatewayRoute(baseUrl: string | undefined): RawGatewayRou
   return { origin: url.origin, channelId: match[1] };
 }
 
+function isOfficialTavilyBaseUrl(baseUrl: string | undefined): boolean {
+  const trimmed = baseUrl?.trim();
+  return !trimmed || /^https:\/\/(?:www\.)?api\.tavily\.com(?:\/|$)/i.test(trimmed);
+}
+
 export function isNbSearchBalanceSupported(
   providerId: string,
   baseUrl: string | undefined,
@@ -77,7 +82,8 @@ export function isNbSearchBalanceSupported(
     }
     return true;
   }
-  return providerId === 'tavily' || providerId === 'firecrawl' || providerId === 'zhihu';
+  if (providerId === 'tavily') return isOfficialTavilyBaseUrl(baseUrl);
+  return providerId === 'firecrawl' || providerId === 'zhihu';
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -190,7 +196,7 @@ function mapChannelQuotaEntry(
     };
   }
   const channelNum = Number(channelId);
-  const channel = data.find((item) => asNumber(item['channel_id']) === channelNum) ?? data[0];
+  const channel = data.find((item) => asNumber(item['channel_id']) === channelNum);
   if (channel === undefined) return undefined;
   const channelName = asText(channel['channel_name']);
   const summary = asRecord(channel['quota_summary']);
@@ -295,11 +301,14 @@ export async function fetchRawGatewayKeyUsage(input: {
       const quotasUrl = `${route.origin}/v1/quotas?channel_id=${encodeURIComponent(route.channelId)}`;
       const quotasRes = await readBoundedJson(quotasUrl, apiKey, fetchImpl, callSignal);
       if (quotasRes.status === 200 && quotasRes.isJson && quotasRes.body !== undefined) {
-        const mapped = mapChannelQuotaEntry(keyIndex, route.channelId, quotasRes.body, nowIso);
+        const mapped = mapChannelQuotaEntry(1, route.channelId, quotasRes.body, nowIso);
         if (mapped !== undefined) {
-          supportedCount += 1;
-          entries.push(mapped);
-          continue;
+          return nbSearchKeyUsageViewSchema.parse({
+            provider_instance_id: instanceId,
+            provider_id: providerId,
+            balance_supported: true,
+            keys: [mapped],
+          });
         }
       }
       const errCode = asText(asRecord(quotasRes.body?.['error'])['code']) ?? asText(quotasRes.body?.['code']);
@@ -331,14 +340,24 @@ export async function fetchRawGatewayKeyUsage(input: {
       provider_instance_id: instanceId,
       provider_id: providerId,
       balance_supported: false,
-      keys: entries,
+      keys: entries.slice(0, 1),
     });
   }
 
+  if (entries.every((entry) => entry.state === 'invalid')) {
+    return nbSearchKeyUsageViewSchema.parse({
+      provider_instance_id: instanceId,
+      provider_id: providerId,
+      balance_supported: true,
+      keys: [{ key_index: 1, state: 'invalid' }],
+    });
+  }
+
+  const representative = entries.find((entry) => entry.usage_error !== undefined) ?? entries[0]!;
   return nbSearchKeyUsageViewSchema.parse({
     provider_instance_id: instanceId,
     provider_id: providerId,
     balance_supported: true,
-    keys: entries,
+    keys: [{ ...representative, key_index: 1 }],
   });
 }
