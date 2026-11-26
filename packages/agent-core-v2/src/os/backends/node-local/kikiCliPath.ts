@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module';
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 
@@ -6,9 +7,12 @@ import { resolveKikiHome } from '@kiki/oauth';
 
 const CLI_ENTRY_BASENAME = 'main.mjs';
 const SHIM_DIRECTORY = 'shim';
+const NODE_SHIM_DIRECTORY = 'node-shim';
 const SHIM_FILE_MODE = 0o755;
 const POSIX_SHIM_NAME = 'kiki';
 const WINDOWS_CMD_SHIM_NAME = 'kiki.cmd';
+const POSIX_NODE_SHIM_NAME = 'node';
+const WINDOWS_CMD_NODE_SHIM_NAME = 'node.cmd';
 
 export type KikiCliLaunch = KikiCliExecutable | KikiCliNodeEntry;
 
@@ -109,6 +113,97 @@ function renderCmdShim(launch: KikiCliLaunch): string {
 
 function quoteDouble(value: string): string {
   return `"${value}"`;
+}
+
+/**
+ * Render fallback `node` / `node.cmd` wrappers targeting Kiki SEA `__plugin_run_node`.
+ */
+export function kikiNodeShimFiles(
+  seaExecutable: string,
+  platform: string,
+): readonly KikiShimFile[] {
+  const shellExec = platform === 'win32' ? toShellExecutablePath(seaExecutable) : seaExecutable;
+  const posixContent = [
+    '#!/usr/bin/env sh',
+    'export KIKI_NODE_SHIM=1',
+    'if [ -n "${KIKI_SEA_EXEC:-}" ]; then',
+    '  exec "$KIKI_SEA_EXEC" __plugin_run_node "$@"',
+    'fi',
+    `exec ${quoteShell(shellExec)} __plugin_run_node "$@"`,
+    '',
+  ].join('\n');
+  const files: KikiShimFile[] = [
+    { name: POSIX_NODE_SHIM_NAME, content: posixContent, mode: SHIM_FILE_MODE },
+  ];
+  if (platform === 'win32') {
+    const cmdContent = [
+      '@echo off',
+      'setlocal',
+      'set "KIKI_NODE_SHIM=1"',
+      'if defined KIKI_SEA_EXEC goto :kiki_run_env',
+      `${quoteDouble(seaExecutable)} __plugin_run_node %*`,
+      'exit /b %ERRORLEVEL%',
+      ':kiki_run_env',
+      '"%KIKI_SEA_EXEC%" __plugin_run_node %*',
+      'exit /b %ERRORLEVEL%',
+      '',
+    ].join('\r\n');
+    files.push({ name: WINDOWS_CMD_NODE_SHIM_NAME, content: cmdContent, mode: SHIM_FILE_MODE });
+  }
+  return files;
+}
+
+/**
+ * Append `entry` to the end of `PATH` only when not already present so user-installed binaries win.
+ */
+export function appendPathEntry(
+  currentPath: string | undefined,
+  entry: string,
+  separator: string,
+  caseInsensitive = false,
+): string {
+  if (currentPath === undefined || currentPath === '') return entry;
+  const parts = currentPath.split(separator);
+  if (parts.some((part) => isSamePathEntry(part, entry, caseInsensitive))) {
+    return currentPath;
+  }
+  return currentPath.endsWith(separator) ? `${currentPath}${entry}` : `${currentPath}${separator}${entry}`;
+}
+
+/**
+ * Synchronously materialise `<kikiHome>/bin/node-shim` for hook and child fallback `PATH`.
+ */
+export function ensureKikiNodeShimSync(
+  kikiHome: string,
+  seaExecutable: string,
+  platform: string = process.platform,
+): string | undefined {
+  if (kikiHome.trim().length === 0 || seaExecutable.trim().length === 0) return undefined;
+  const shimDir = join(kikiHome, 'bin', NODE_SHIM_DIRECTORY);
+  try {
+    mkdirSync(shimDir, { recursive: true });
+    for (const file of kikiNodeShimFiles(seaExecutable, platform)) {
+      const target = join(shimDir, file.name);
+      let current: string | undefined;
+      try {
+        current = readFileSync(target, 'utf8');
+      } catch {
+        current = undefined;
+      }
+      if (current === file.content) continue;
+      const temp = join(shimDir, `.${file.name}.${String(process.pid)}.${String(Date.now())}.tmp`);
+      writeFileSync(temp, file.content, { mode: file.mode });
+      try {
+        renameSync(temp, target);
+      } catch (error) {
+        rmSync(temp, { force: true });
+        throw error;
+      }
+    }
+    return shimDir;
+  } catch {
+    return undefined;
+  }
 }
 
 export interface KikiShimWriter {
@@ -328,13 +423,27 @@ export function applyKikiCliShimFromNode(): Promise<void> {
 
 async function applyKikiCliShimFromNodeOnce(): Promise<void> {
   try {
-    const shim = await ensureKikiCliShim({ kikiHome: resolveKikiHome() });
+    const kikiHome = resolveKikiHome();
+    const shim = await ensureKikiCliShim({ kikiHome });
     if (shim === undefined) return;
-    applyKikiCliEnv(process.env as Record<string, string | undefined>, {
+    const env = process.env as Record<string, string | undefined>;
+    applyKikiCliEnv(env, {
       platform: process.platform,
       shimDir: shim.shimDir,
       cliPath: shim.cliPath,
     });
+    if (isSeaFromNode()) {
+      env['KIKI_SEA_EXEC'] ??= process.execPath;
+      if (process.platform === 'win32') {
+        const nodeShimDir = join(kikiHome, 'bin', NODE_SHIM_DIRECTORY);
+        await writeKikiShims(
+          nodeShimDir,
+          kikiNodeShimFiles(process.execPath, process.platform),
+          nodeShimWriter(process.platform),
+        );
+        env['PATH'] = appendPathEntry(env['PATH'], nodeShimDir, ';', true);
+      }
+    }
   } catch {
   }
 }

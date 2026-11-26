@@ -250,14 +250,14 @@ async function tryDecryptPassphrase(native: NativeAge, ciphertext: Buffer, passp
 
 function loadNativeAge(): NativeAge {
   if (nativeAge !== undefined) return nativeAge;
-  const require = createRequire(import.meta.url);
+  const req = createRequire(import.meta.url);
   let loaded: unknown;
   try {
-    const oauthEntry = require.resolve('@kiki/oauth');
+    const oauthEntry = req.resolve('@kiki/oauth');
     loaded = createRequire(oauthEntry)('@kiki/auth-native');
   } catch {
     try {
-      loaded = require('@kiki/auth-native');
+      loaded = req('@kiki/auth-native');
     } catch {
       throw new TypeError('Portable age codec is unavailable');
     }

@@ -5,6 +5,7 @@ import { homedir, tmpdir } from 'node:os';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
+import { bundledWindowsToolchainCandidates } from '@kiki/kaos/exec-env';
 import { kimiRegionProfile, resolveKimiRegion } from '@kiki/oauth';
 import { extract as extractTar } from 'tar';
 import { type Entry, fromBuffer as yauzlFromBuffer } from 'yauzl';
@@ -119,9 +120,11 @@ export async function findExistingRg(
     }
     const cacheDirs = [shareDir, ...fallbackShareDirs.filter((dir) => dir !== '' && dir !== shareDir)];
     for (const dir of cacheDirs) {
-      const cachePath = join(dir, 'bin', rgBinaryName());
-      if (await isExecutableFile(cachePath)) {
-        return { path: cachePath, source: 'share-bin-cached' };
+      for (const subdir of ['bin', 'tools']) {
+        const cachePath = join(dir, subdir, rgBinaryName());
+        if (await isExecutableFile(cachePath)) {
+          return { path: cachePath, source: 'share-bin-cached' };
+        }
       }
     }
   }
@@ -145,7 +148,20 @@ async function downloadRgWithLock(probe: RgProbe, shareDir: string): Promise<RgR
   return downloadPromise;
 }
 
-function getVendorRgPath(_binName: string): string | undefined {
+export function getVendorRgPath(binName: string = rgBinaryName()): string | undefined {
+  if (process.env['KIKI_DISABLE_BUNDLED_TOOLCHAIN'] === '1') return undefined;
+  if (process.platform === 'win32') {
+    for (const root of bundledWindowsToolchainCandidates(process.env, process.execPath)) {
+      const candidate = join(root, 'bin', binName);
+      if (existsSync(candidate)) return candidate;
+    }
+    return undefined;
+  }
+  const explicitToolchain = process.env['KIKI_TOOLCHAIN_DIR']?.trim();
+  if (explicitToolchain !== undefined && explicitToolchain.length > 0) {
+    const candidate = join(explicitToolchain, 'bin', binName);
+    if (existsSync(candidate)) return candidate;
+  }
   return undefined;
 }
 

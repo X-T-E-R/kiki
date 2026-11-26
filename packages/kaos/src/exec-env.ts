@@ -1,7 +1,11 @@
 export {
+  applyBundledWindowsToolchainPath,
+  applyBundledWindowsToolchainPathFromNode,
+  bundledWindowsToolchainCandidates,
   detectEnvironment,
   detectEnvironmentFromNode,
   execFileText,
+  locateBundledWindowsToolchainRoot,
   probeHostEnvironment,
   probeHostEnvironmentFromNode,
   type Environment,

@@ -632,6 +632,7 @@ function Invoke-Promotion([string]$Root, [object]$Verified) {
     }
 
     Publish-CliExecutable $rootPath $sidecarDestination $sidecarSource
+    Publish-BundledToolchain $rootPath $Verified.Path
 
     $current = Read-CurrentManifest $rootPath -AllowMissing
     if ($null -ne $current -and $current.releaseId -eq $releaseId) {
@@ -705,6 +706,47 @@ function Publish-CliExecutable([string]$Root, [string]$SourcePath, [object]$Side
     Assert-ArtifactMatches $Sidecar $cliPath 'Published Kiki CLI'
     Write-Output "Published Kiki CLI: $cliPath"
     Write-Output "Add '$cliDirectory' to PATH to run 'kiki' from any terminal (the Kiki installer does this automatically)."
+}
+
+function Publish-BundledToolchain([string]$Root, [string]$CandidatePath) {
+    $sourceToolchain = Join-Path $CandidatePath 'toolchain'
+    if (-not (Test-Path -LiteralPath (Join-Path $sourceToolchain 'bin\rg.exe') -PathType Leaf)) {
+        $tauriConf = Join-Path $CandidatePath '..\..\tauri.conf.json'
+        $siblingToolchain = Join-Path $CandidatePath '..\..\toolchain'
+        if ((Test-Path -LiteralPath $tauriConf -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $siblingToolchain 'bin\rg.exe') -PathType Leaf)) {
+            $sourceToolchain = Get-FullPath $siblingToolchain
+        }
+        else {
+            return
+        }
+    }
+
+    $destToolchain = Join-Path $Root 'toolchain'
+    $srcManifest = Join-Path $sourceToolchain 'toolchain-manifest.json'
+    $dstManifest = Join-Path $destToolchain 'toolchain-manifest.json'
+    if ((Test-Path -LiteralPath $srcManifest -PathType Leaf) -and (Test-Path -LiteralPath $dstManifest -PathType Leaf)) {
+        $srcRaw = [IO.File]::ReadAllText($srcManifest)
+        $dstRaw = [IO.File]::ReadAllText($dstManifest)
+        if ($srcRaw -eq $dstRaw -and (Test-Path -LiteralPath (Join-Path $destToolchain 'bin\rg.exe') -PathType Leaf)) {
+            Write-Output "Kiki bundled toolchain already current: $destToolchain"
+            return
+        }
+    }
+
+    $stagingToolchain = Join-Path $Root ('.toolchain-{0}.tmp' -f [guid]::NewGuid().ToString('N'))
+    try {
+        Copy-Item -LiteralPath $sourceToolchain -Destination $stagingToolchain -Recurse -Force
+        if (Test-Path -LiteralPath $destToolchain) {
+            Remove-Item -LiteralPath $destToolchain -Recurse -Force
+        }
+        [IO.Directory]::Move($stagingToolchain, $destToolchain)
+        Write-Output "Published Kiki bundled toolchain: $destToolchain"
+    }
+    finally {
+        if (Test-Path -LiteralPath $stagingToolchain) {
+            Remove-Item -LiteralPath $stagingToolchain -Recurse -Force
+        }
+    }
 }
 
 function Resolve-LaunchTarget([string]$Root) {
