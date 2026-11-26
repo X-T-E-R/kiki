@@ -1729,6 +1729,18 @@ function Release-OurPauses([object]$Target, [bool]$AllowCancel, [object[]]$Sessi
             Write-Host "Continued $($item.id)"
         } catch {
             $msg = $_.Exception.Message
+            $recoveredConcurrently = $false
+            try {
+                $recheck = Execution $Target.instance $item.id 'read'
+                if ($recheck.phase -eq 'running' -or ($AllowCancel -and $recheck.phase -eq 'idle')) {
+                    $recoveredConcurrently = $true
+                }
+            } catch {}
+            if ($recoveredConcurrently) {
+                $resumed += [string]$item.id
+                Write-Host "Continued $($item.id) (already active after concurrent recovery)"
+                continue
+            }
             Write-Warning "Failed to release pause on $($item.id): $msg"
             $failures += "$($item.id): $msg"
             $spaceHomeVal = Get-ObjectProperty $Target 'kikiHome'
@@ -2393,6 +2405,7 @@ try {
         if ($NoInterruptAfterSettle -or (-not $InterruptAfterSettle)) { $invokeArgs += '-NoInterruptAfterSettle' }
         $runnerBody = @(
             "`$ErrorActionPreference = 'Stop'",
+            "foreach (`$staleKey in @('KIKI_BUILD_ID','KIKI_BUILD_CHANNEL','KIKI_DESKTOP_BUNDLED','KIKI_DESKTOP_OAUTH_HOME','KIKI_RUNTIME_MANAGED','KIKI_NO_RELEASE_REDIRECT','KIKI_SQLITE_INDEXER_SEA','KIKI_SQLITE_QUERY_WORKER_PATH','KIKI_HISTORY_NAVIGATION_WORKER_ENTRY','KIKI_HISTORY_IMPORT_ENTRY','KIKI_PLUGIN_HOST_RUNNER','KIKI_SOURCE_OWNED_ADAPTER_ROOT','KIKI_WINDOWS_PROCESS_HELPER','KIKI_CLI','ELECTRON_RUN_AS_NODE')) { [Environment]::SetEnvironmentVariable(`$staleKey, `$null, 'Process') }",
             "`$env:KIKI_HOME = $(& $esc $homePath)",
             "`$logPath = $(& $esc $logPath)",
             "[IO.File]::WriteAllText(`$logPath, '', (New-Object Text.UTF8Encoding(`$false)))",

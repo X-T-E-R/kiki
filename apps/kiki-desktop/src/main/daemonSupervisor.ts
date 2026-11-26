@@ -199,6 +199,21 @@ export function buildDaemonNodeOptions(
   };
 }
 
+const STALE_PARENT_DAEMON_ENV_KEYS = [
+  'KIKI_BUILD_ID',
+  'KIKI_BUILD_CHANNEL',
+  'KIKI_DESKTOP_OAUTH_HOME',
+  'KIKI_RUNTIME_MANAGED',
+  'KIKI_SQLITE_INDEXER_SEA',
+  'KIKI_SQLITE_QUERY_WORKER_PATH',
+  'KIKI_HISTORY_NAVIGATION_WORKER_ENTRY',
+  'KIKI_HISTORY_IMPORT_ENTRY',
+  'KIKI_PLUGIN_HOST_RUNNER',
+  'KIKI_SOURCE_OWNED_ADAPTER_ROOT',
+  'KIKI_WINDOWS_PROCESS_HELPER',
+  'KIKI_CLI',
+] as const;
+
 export function buildDaemonSpawnEnv(
   descriptor: DaemonRuntimeDescriptor,
   baseEnv: NodeJS.ProcessEnv = process.env,
@@ -206,6 +221,15 @@ export function buildDaemonSpawnEnv(
   options?: { readonly heapPassedViaArgv?: boolean },
 ): NodeJS.ProcessEnv {
   const cleanEnv = filterGuiChildEnv(baseEnv);
+  for (const existingKey of Object.keys(cleanEnv)) {
+    if (
+      STALE_PARENT_DAEMON_ENV_KEYS.some(
+        (staleKey) => staleKey.toLowerCase() === existingKey.toLowerCase(),
+      )
+    ) {
+      delete cleanEnv[existingKey];
+    }
+  }
   removeInjectedHeapOption(cleanEnv);
   const rawNodeOptions = cleanEnv['NODE_OPTIONS'] ?? '';
   let injectedHeapOption = '';

@@ -745,4 +745,32 @@ describe('DaemonSupervisor', () => {
     await updSupervisor.shutdownAllManagedDaemons({ action: 'update', interruptWork: true });
     expect(updatePostedActions).toEqual(['update']);
   });
+
+  it('scrubs inherited parent SEA/daemon runtime env keys in buildDaemonSpawnEnv', () => {
+    const env = buildDaemonSpawnEnv(
+      {
+        electronBinary: '/opt/kiki/kiki-desktop',
+        serverEntry: '/opt/kiki/server-entry.mjs',
+        homeDir: '/tmp/kiki-home',
+        buildId: '070-new-sha',
+      },
+      {
+        PATH: '/usr/bin',
+        KIKI_BUILD_ID: '061-old-sha',
+        KIKI_BUILD_CHANNEL: 'dev',
+        KIKI_SQLITE_INDEXER_SEA: '1',
+        KIKI_PLUGIN_HOST_RUNNER: 'C:\\old\\hostRunner.mjs',
+        KIKI_WINDOWS_PROCESS_HELPER: 'C:\\old\\helper.exe',
+        KIKI_CLI: 'C:\\old\\kiki-server.exe',
+      },
+      32 * 1024 * 1024 * 1024,
+      { heapPassedViaArgv: true },
+    );
+    expect(env['KIKI_BUILD_ID']).toBe('070-new-sha');
+    expect(env['KIKI_BUILD_CHANNEL']).toBeUndefined();
+    expect(env['KIKI_SQLITE_INDEXER_SEA']).toBeUndefined();
+    expect(env['KIKI_PLUGIN_HOST_RUNNER']).toBeUndefined();
+    expect(env['KIKI_WINDOWS_PROCESS_HELPER']).toBeUndefined();
+    expect(env['KIKI_CLI']).toBeUndefined();
+  });
 });

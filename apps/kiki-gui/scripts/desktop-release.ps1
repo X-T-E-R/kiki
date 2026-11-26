@@ -1508,6 +1508,43 @@ function Sync-DesktopAutostart(
     return [pscustomobject]@{ changed = $true; enabled = $true; command = $desiredCommand }
 }
 
+$script:InheritedKikiDaemonEnvKeys = @(
+    'KIKI_BUILD_ID',
+    'KIKI_BUILD_CHANNEL',
+    'KIKI_DESKTOP_BUNDLED',
+    'KIKI_DESKTOP_OAUTH_HOME',
+    'KIKI_RUNTIME_MANAGED',
+    'KIKI_NO_RELEASE_REDIRECT',
+    'KIKI_SQLITE_INDEXER_SEA',
+    'KIKI_SQLITE_QUERY_WORKER_PATH',
+    'KIKI_HISTORY_NAVIGATION_WORKER_ENTRY',
+    'KIKI_HISTORY_IMPORT_ENTRY',
+    'KIKI_PLUGIN_HOST_RUNNER',
+    'KIKI_SOURCE_OWNED_ADAPTER_ROOT',
+    'KIKI_WINDOWS_PROCESS_HELPER',
+    'KIKI_CLI',
+    'ELECTRON_RUN_AS_NODE'
+)
+
+function Save-And-ClearInheritedKikiEnv {
+    $saved = @{}
+    foreach ($key in $script:InheritedKikiDaemonEnvKeys) {
+        $val = [Environment]::GetEnvironmentVariable($key, 'Process')
+        $saved[$key] = $val
+        if ($null -ne $val) {
+            [Environment]::SetEnvironmentVariable($key, $null, 'Process')
+        }
+    }
+    return $saved
+}
+
+function Restore-InheritedKikiEnv([hashtable]$Saved) {
+    if ($null -eq $Saved) { return }
+    foreach ($key in $Saved.Keys) {
+        [Environment]::SetEnvironmentVariable($key, $Saved[$key], 'Process')
+    }
+}
+
 function Invoke-Launch([string]$Root, [string]$LaunchHome, [switch]$PassThru, [switch]$Background, [switch]$TrayOnly, [switch]$Autostart, [switch]$PassHomeArg) {
     $rootPath = Get-FullPath $Root
     $manifest = Read-CurrentManifest $rootPath
@@ -1515,8 +1552,7 @@ function Invoke-Launch([string]$Root, [string]$LaunchHome, [switch]$PassThru, [s
     $releaseId = [string]$manifest.releaseId
     $launchLock = Open-ActiveLock $rootPath 15
     $previousHome = $env:KIKI_HOME
-    $previousNoRedirect = $env:KIKI_NO_RELEASE_REDIRECT
-    $previousRunAsNode = $env:ELECTRON_RUN_AS_NODE
+    $savedDaemonEnv = Save-And-ClearInheritedKikiEnv
     try {
         if ($null -ne $launchLock -and (-not (Test-ActiveReleaseAligned $rootPath $releaseId $schemaVersion))) {
             $releasePath = Get-ReleasePath $rootPath $releaseId
@@ -1552,12 +1588,6 @@ function Invoke-Launch([string]$Root, [string]$LaunchHome, [switch]$PassThru, [s
         $target = Resolve-LaunchTarget $rootPath
         if ($LaunchHome) { $env:KIKI_HOME = $LaunchHome }
         elseif ((Split-Path -Leaf $target.Root) -eq 'Kiki-Dev') { $env:KIKI_HOME = $target.Root }
-        if ($null -ne $previousNoRedirect) {
-            Remove-Item Env:KIKI_NO_RELEASE_REDIRECT -ErrorAction SilentlyContinue
-        }
-        if ($null -ne $previousRunAsNode) {
-            Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
-        }
         $startParams = @{
             FilePath = $target.MainPath
             WorkingDirectory = $target.LaunchDirectory
@@ -1584,18 +1614,7 @@ function Invoke-Launch([string]$Root, [string]$LaunchHome, [switch]$PassThru, [s
     }
     finally {
         $env:KIKI_HOME = $previousHome
-        if ($null -eq $previousNoRedirect) {
-            Remove-Item Env:KIKI_NO_RELEASE_REDIRECT -ErrorAction SilentlyContinue
-        }
-        else {
-            $env:KIKI_NO_RELEASE_REDIRECT = $previousNoRedirect
-        }
-        if ($null -eq $previousRunAsNode) {
-            Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
-        }
-        else {
-            $env:ELECTRON_RUN_AS_NODE = $previousRunAsNode
-        }
+        Restore-InheritedKikiEnv $savedDaemonEnv
         if ($null -ne $launchLock) { $launchLock.Dispose() }
     }
 }
@@ -1613,11 +1632,7 @@ function Invoke-HeadlessLaunch(
     $releaseId = [string]$manifest.releaseId
     $launchLock = Open-ActiveLock $rootPath 15
     $previousHome = $env:KIKI_HOME
-    $previousNoRedirect = $env:KIKI_NO_RELEASE_REDIRECT
-    $previousDesktopBundled = $env:KIKI_DESKTOP_BUNDLED
-    $previousRuntimeManaged = $env:KIKI_RUNTIME_MANAGED
-    $previousBuildId = $env:KIKI_BUILD_ID
-    $previousRunAsNode = $env:ELECTRON_RUN_AS_NODE
+    $savedDaemonEnv = Save-And-ClearInheritedKikiEnv
     try {
         if ($null -ne $launchLock -and (-not (Test-ActiveReleaseAligned $rootPath $releaseId $schemaVersion))) {
             $releasePath = Get-ReleasePath $rootPath $releaseId
@@ -1710,36 +1725,7 @@ function Invoke-HeadlessLaunch(
     }
     finally {
         $env:KIKI_HOME = $previousHome
-        if ($null -eq $previousNoRedirect) {
-            Remove-Item Env:KIKI_NO_RELEASE_REDIRECT -ErrorAction SilentlyContinue
-        }
-        else {
-            $env:KIKI_NO_RELEASE_REDIRECT = $previousNoRedirect
-        }
-        if ($null -eq $previousDesktopBundled) {
-            Remove-Item Env:KIKI_DESKTOP_BUNDLED -ErrorAction SilentlyContinue
-        }
-        else {
-            $env:KIKI_DESKTOP_BUNDLED = $previousDesktopBundled
-        }
-        if ($null -eq $previousRuntimeManaged) {
-            Remove-Item Env:KIKI_RUNTIME_MANAGED -ErrorAction SilentlyContinue
-        }
-        else {
-            $env:KIKI_RUNTIME_MANAGED = $previousRuntimeManaged
-        }
-        if ($null -eq $previousBuildId) {
-            Remove-Item Env:KIKI_BUILD_ID -ErrorAction SilentlyContinue
-        }
-        else {
-            $env:KIKI_BUILD_ID = $previousBuildId
-        }
-        if ($null -eq $previousRunAsNode) {
-            Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
-        }
-        else {
-            $env:ELECTRON_RUN_AS_NODE = $previousRunAsNode
-        }
+        Restore-InheritedKikiEnv $savedDaemonEnv
         if ($null -ne $launchLock) { $launchLock.Dispose() }
     }
 }

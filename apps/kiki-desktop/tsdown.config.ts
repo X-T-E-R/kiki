@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { builtinModules } from 'node:module';
 import { defineConfig } from 'tsdown';
 
@@ -11,9 +12,30 @@ const mainBanner = [
   'const require = __kikiDesktopCreateRequire(import.meta.url);',
 ].join('\n');
 
+function resolveDesktopBuildId(): string {
+  const explicit =
+    process.env['KIKI_DESKTOP_BUNDLED'] === '1'
+      ? undefined
+      : process.env['KIKI_BUILD_ID']?.trim();
+  if (explicit) {
+    return explicit;
+  }
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: import.meta.dirname,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return '';
+  }
+}
+
 const sharedDefines = {
-  __KIKI_DESKTOP_BUILD_ID__: JSON.stringify(process.env['KIKI_BUILD_ID'] ?? ''),
-  __KIKI_DESKTOP_CHANNEL__: JSON.stringify(process.env['KIKI_CHANNEL'] ?? ''),
+  __KIKI_DESKTOP_BUILD_ID__: JSON.stringify(resolveDesktopBuildId()),
+  __KIKI_DESKTOP_CHANNEL__: JSON.stringify(
+    process.env['KIKI_DESKTOP_BUNDLED'] === '1' ? '' : (process.env['KIKI_CHANNEL'] ?? ''),
+  ),
   __KIKI_DESKTOP_DISTRIBUTION__: JSON.stringify(process.env['KIKI_DESKTOP_DISTRIBUTION'] ?? ''),
   __KIKI_UPDATER_FEED_BASE_URL__: JSON.stringify(process.env['KIKI_UPDATER_FEED_BASE_URL'] ?? ''),
 };
