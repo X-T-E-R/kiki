@@ -12,17 +12,57 @@
     return value === 'light' || value === 'dark' || value === 'system' ? value : null;
   }
 
+  function spaceFromRecord(raw) {
+    if (typeof raw === 'string') {
+      try {
+        raw = JSON.parse(raw);
+      } catch {
+        return null;
+      }
+    }
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    var homeId = typeof raw.homeId === 'string' && raw.homeId !== '' ? raw.homeId : null;
+    if (!homeId) return null;
+    var isPrimary = raw.isPrimary === true || homeId === 'main';
+    return isPrimary
+      ? { homeId: 'main', prefix: '' }
+      : { homeId: homeId, prefix: 'kiki.space.' + homeId + '.' };
+  }
+
   function resolveSpacePrefix() {
     try {
-      var raw = window.__KIKI_ACTIVE_SPACE__;
-      if (typeof raw === 'string') raw = JSON.parse(raw);
-      if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-        var homeId = typeof raw.homeId === 'string' && raw.homeId !== '' ? raw.homeId : null;
-        var isPrimary = raw.isPrimary === true || homeId === 'main';
-        if (homeId && !isPrimary) {
-          return { homeId: homeId, prefix: 'kiki.space.' + homeId + '.' };
+      var injected = spaceFromRecord(window.__KIKI_ACTIVE_SPACE__);
+      if (injected) return injected;
+    } catch {
+      // Continue through session-scoped boot hints.
+    }
+    try {
+      var handoffRaw = sessionStorage.getItem('kiki.navScopeHandoff.v1');
+      if (handoffRaw) {
+        var handoff = JSON.parse(handoffRaw);
+        if (handoff && typeof handoff === 'object' && handoff.scope) {
+          var fromHandoff = spaceFromRecord(handoff.scope);
+          if (fromHandoff) return fromHandoff;
         }
       }
+    } catch {
+      // Ignore malformed handoff state.
+    }
+    try {
+      var bootSpace = spaceFromRecord(sessionStorage.getItem('kiki.activeSpace.boot'));
+      if (bootSpace) return bootSpace;
+    } catch {
+      // Ignore unavailable sessionStorage.
+    }
+    try {
+      var navScope =
+        window.history &&
+        window.history.state &&
+        window.history.state.usr &&
+        window.history.state.usr.kikiNav &&
+        window.history.state.usr.kikiNav.scope;
+      var fromHistory = spaceFromRecord(navScope);
+      if (fromHistory) return fromHistory;
     } catch {
       // Fall back to main space keys.
     }
@@ -43,16 +83,35 @@
   function resolveSpaceCachedTheme(homeId) {
     var cache = readJson('kiki.spacePreferences.cache');
     if (!cache) return null;
-    var lastKnown = cache.lastKnown;
-    if (!lastKnown || typeof lastKnown !== 'object' || lastKnown.homeId !== homeId) return null;
-    var serverId = typeof lastKnown.serverId === 'string' ? lastKnown.serverId : '';
-    if (!serverId) return null;
     var authorities = cache.authorities;
-    if (!authorities || typeof authorities !== 'object' || authorities[serverId + '|' + homeId] !== true) {
-      return null;
+    if (!authorities || typeof authorities !== 'object') return null;
+    var lastKnown = cache.lastKnown;
+    if (lastKnown && typeof lastKnown === 'object' && lastKnown.homeId === homeId) {
+      var serverId = typeof lastKnown.serverId === 'string' ? lastKnown.serverId : '';
+      if (serverId && authorities[serverId + '|' + homeId] === true) {
+        var values = lastKnown.values;
+        var fromLast = values && typeof values === 'object' ? validTheme(values.theme) : null;
+        if (fromLast) return fromLast;
+      }
     }
-    var values = lastKnown.values;
-    return values && typeof values === 'object' ? validTheme(values.theme) : null;
+    var entries = cache.entries;
+    if (entries && typeof entries === 'object' && !Array.isArray(entries)) {
+      var suffix = '|' + homeId;
+      var entryKeys = Object.keys(entries);
+      for (var i = 0; i < entryKeys.length; i += 1) {
+        var entryKey = entryKeys[i];
+        if (
+          entryKey.length > suffix.length &&
+          entryKey.slice(entryKey.length - suffix.length) === suffix &&
+          authorities[entryKey] === true
+        ) {
+          var entryVal = entries[entryKey];
+          var resolved = entryVal && typeof entryVal === 'object' ? validTheme(entryVal.theme) : null;
+          if (resolved) return resolved;
+        }
+      }
+    }
+    return null;
   }
 
   var space = resolveSpacePrefix();

@@ -14,8 +14,8 @@ import { Popover } from '@base-ui/react/popover';
 import {
   isCoarsePointer,
   selectionAnchorRect,
+  selectionQuotableTextWithin,
   selectionSourceAnchor,
-  selectionTextWithin,
   type SelectionSourceAnchor,
 } from '@kiki/session-core/composer';
 import { useI18n } from '../i18n';
@@ -82,7 +82,7 @@ export function SelectionQuoteButton({
       if (modeRef.current === 'annotate') return;
       const container = containerRef.current;
       const selection = window.getSelection();
-      const text = container === null || selection === null ? null : selectionTextWithin(container, selection);
+      const text = container === null || selection === null ? null : selectionQuotableTextWithin(container, selection);
       const rawRect = text === null || selection === null ? null : selectionAnchorRect(selection);
       if (text === null || rawRect === null || selection === null) {
         closeRef.current();

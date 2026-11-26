@@ -119,6 +119,7 @@ const PORTABLE_ITEMS: readonly SpacePreferenceItem[] = [
 ];
 
 let bootAuthorityBridgeSubscribed = false;
+let bootstrappedHomeId: string | null = null;
 
 /**
  * Hydrate the active space's last-known authoritative preferences before the
@@ -126,6 +127,7 @@ let bootAuthorityBridgeSubscribed = false;
  * pre-paint skin back to device defaults while waiting for React to mount.
  */
 export function bootstrapSpacePreferences(homeId: string): void {
+  bootstrappedHomeId = homeId;
   if (!bootAuthorityBridgeSubscribed) {
     bootAuthorityBridgeSubscribed = true;
     subscribeSpaceAuthority(() => { refreshSpacePortableSettings(); });
@@ -171,12 +173,17 @@ export function useSpacePreferencesFrame(target: SpaceSettingsTarget | null): vo
   useEffect(() => subscribeSpaceAuthority(() => { refreshSpacePortableSettings(); }), []);
   useEffect(() => {
     if (identity !== null) {
+      bootstrappedHomeId = null;
       loadCachedSpacePreferences(identity.homeId, identity.serverId);
-    } else {
+    } else if (bootstrappedHomeId === null) {
       clearSpaceAuthority();
     }
-    return () => { clearSpaceAuthority(); };
   }, [client, serverIdentity, spaceId]);
+
+  useEffect(() => () => {
+    bootstrappedHomeId = null;
+    clearSpaceAuthority();
+  }, []);
 
   useEffect(() => {
     configureSpacePortableSettings({

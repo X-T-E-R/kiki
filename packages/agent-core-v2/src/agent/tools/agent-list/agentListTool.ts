@@ -25,6 +25,12 @@ import type { DirectChildAgent } from '#/session/agentCollaboration/directChildr
 import { subagentParentAgentId } from '#/session/agentLifecycle/subagentMetadata';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { IAgentStateService } from '#/agent/state/agentState';
+import {
+  branchCoverageKey,
+  branchSealedKey,
+  isBranchWorkCovered,
+} from '#/features/btw/branchOps';
 import { hasReceiptWork } from '#/session/subagent/autonomousReceipt';
 import { isUnknownCapability } from '#/kosong/contract/capability';
 import {
@@ -104,9 +110,7 @@ export class AgentListTool implements IAgentListTool {
             let fromOutcome = false;
             let persistenceFailure: AgentListEntry['persistence_failure'];
             const branch = meta.labels?.['branch'] === 'true';
-            if (branch && meta.labels?.['branchSealed'] === 'true') {
-              status = 'completed';
-            } else if (loop?.persistenceFailure !== undefined) {
+            if (loop?.persistenceFailure !== undefined) {
               status = 'persistence_failed';
               persistenceFailure = {
                 turn_id: loop.activeTurnId,
@@ -115,9 +119,20 @@ export class AgentListTool implements IAgentListTool {
               };
             } else if (branch) {
               const outcome = loop?.lastTurnResult ?? meta.branchTurn?.outcome;
-              status = live !== undefined && hasReceiptWork(live) ? 'running'
-                : outcome === 'failed' || execution?.state === 'broken' ? 'errored'
-                : outcome === 'cancelled' ? 'interrupted' : 'idle';
+              if (live !== undefined && hasReceiptWork(live)) {
+                status = 'running';
+              } else if (outcome === 'failed' || execution?.state === 'broken') {
+                status = 'errored';
+              } else if (outcome === 'cancelled') {
+                status = 'interrupted';
+              } else {
+                const liveStates = live?.accessor.get(IAgentStateService);
+                const liveSealed = liveStates !== undefined
+                  ? liveStates.get(branchSealedKey) === true &&
+                    (!liveStates.has(branchCoverageKey) || isBranchWorkCovered(liveStates.get(branchCoverageKey)))
+                  : meta.labels?.['branchSealed'] === 'true';
+                status = liveSealed ? 'completed' : 'idle';
+              }
             } else {
               const outcome = task === undefined || (task.status === 'running' && task.taskId === meta.taskId)
                 ? meta.status

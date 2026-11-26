@@ -787,7 +787,7 @@ function enrichSnapshotSubagents(
         ? meta.labels['toolsLocked'] === 'true'
         : subagent.tools_locked,
       branch_sealed: meta?.labels?.['branch'] === 'true'
-        ? meta.labels['branchSealed'] === 'true'
+        ? !runtimeActive && meta.status !== 'failed' && meta.status !== 'cancelled' && meta.branchTurn?.outcome !== 'failed' && meta.branchTurn?.outcome !== 'cancelled' && meta.labels['branchSealed'] === 'true'
         : subagent.branch_sealed,
       branch_base_turn_id:
         meta?.labels?.['branchBaseTurnId'] !== undefined && /^\d+$/.test(meta.labels['branchBaseTurnId'])

@@ -664,4 +664,42 @@ describe('server spacing consumption', () => {
       expect(normalizeSkinPrefs({ tweaks: { spacing } }).tweaks.spacing).toBe(spacing);
     }
   });
+
+  it('preserves packCache and kiki.skin.boot across pre-hydration list-only passes before spaceAuthority settles', () => {
+    const sakuraPackSkin = {
+      kind: 'kiki-skin' as const,
+      version: 1 as const,
+      id: 'sakura-pack',
+      name: 'Sakura Pack',
+      variants: { dark: { colors: { paper: '#1D1522' } } },
+    };
+    setPackSkins([sakuraPackSkin]);
+    localStorage.setItem(SKIN_BOOT_STORAGE_KEY, JSON.stringify({
+      v: 1,
+      theme: 'dark',
+      skinId: 'sakura-pack',
+      light: {},
+      dark: { '--color-paper': '#1D1522' },
+    }));
+    document.documentElement.dataset['skin'] = 'sakura-pack';
+    document.documentElement.style.setProperty('--color-paper', '#1D1522');
+
+    // Simulate useAppearancePacks running while selectedId === null (before spaceAuthority hydrates):
+    // targetSummaries is [] while listedIds still contains 'sakura-pack'.
+    setPackSkins([], { allDetails: false, listedIds: ['sakura-pack'], queriedIds: [] });
+    expect(JSON.parse(localStorage.getItem('kiki.skin.packCache')!)).toHaveLength(1);
+
+    const stop = startSkinSync();
+    try {
+      configureSpaceAuthority(identity, {
+        ...detail(),
+        preferences: { ...DEFAULT_SPACE_PREFERENCES, theme: 'dark', skin: { source: 'pack', id: 'sakura-pack' } },
+      });
+      expect(document.documentElement.dataset['skin']).toBe('sakura-pack');
+      expect(document.documentElement.style.getPropertyValue('--color-paper')).toBe('#1D1522');
+      expect(localStorage.getItem(SKIN_BOOT_STORAGE_KEY)).not.toBeNull();
+    } finally {
+      stop();
+    }
+  });
 });

@@ -243,7 +243,6 @@ export function settlePromotedWireRecords(
     readonly sourceRootAgentId: string;
     readonly targetAgentId: string;
     readonly isDescendant?: boolean;
-    readonly isUnsealedBranch?: boolean;
     readonly fallbackTime?: number;
     readonly taskDocuments?: ReadonlyMap<string, PromotedTaskDocument>;
   },
@@ -261,11 +260,9 @@ export function settlePromotedWireRecords(
   }>();
   let activeAutonomous: { turnId: number; summary: string } | undefined;
   const pendingAutonomousTurnIds = new Set<number>();
-  let branchSealedSeen = false;
 
   const out: WireRecord[] = records.map((record) => {
     if (options.isDescendant === true) {
-      if (record.type === 'agent.branch_sealed') branchSealedSeen = record['sealed'] === true;
       if (record.type === 'turn.prompt') {
         const turnId = parseTurnId(record['turnId']);
         activeAutonomous = record['parentReceiptManaged'] !== false || turnId === undefined ? undefined : { turnId, summary: '' };
@@ -288,7 +285,7 @@ export function settlePromotedWireRecords(
           activeAutonomous.summary = extractAssistantText(message['content']);
         }
       } else if (record.type === 'turn.ended' && activeAutonomous !== undefined && parseTurnId(record['turnId']) === activeAutonomous.turnId) {
-        if (record['reason'] === 'completed' && activeAutonomous.summary.trim() !== '') {
+        if (record['reason'] !== 'blocked') {
           pendingAutonomousTurnIds.add(activeAutonomous.turnId);
         }
         activeAutonomous = undefined;
@@ -455,9 +452,6 @@ export function settlePromotedWireRecords(
     for (const turnId of pendingAutonomousTurnIds) {
       out.push({ type: 'subagent.autonomous_receipt_delivered', turnId, time: settleTime });
     }
-    if (options.isUnsealedBranch === true && !branchSealedSeen) {
-      out.push({ type: 'agent.branch_sealed', sealed: true, time: settleTime });
-    }
   }
 
   return { records: out, tasks, agentOutcomes, settleTime };
@@ -489,9 +483,13 @@ export function normalizePromotedDescendantMeta(
   const isBranch = labels['branch'] === 'true';
   if (labels['parentAgentId'] !== undefined || !isBranch) labels['parentAgentId'] = parentAgentId;
   if (labels['requestIdentityRootAgent'] === options.sourceRootAgentId) labels['requestIdentityRootAgent'] = 'main';
-  if (isBranch) labels['branchSealed'] = 'true';
 
   const branchAlreadySealed = isBranch && meta.labels?.['branchSealed'] === 'true' && descendant.wasOpen !== true;
+  if (branchAlreadySealed) {
+    labels['branchSealed'] = 'true';
+  } else if (isBranch) {
+    delete labels['branchSealed'];
+  }
   const terminalSubagent = !isBranch && descendant.wasOpen !== true &&
     (meta.status === 'completed' || meta.status === 'failed' || meta.status === 'cancelled');
   const preserveOutcome = branchAlreadySealed || terminalSubagent;

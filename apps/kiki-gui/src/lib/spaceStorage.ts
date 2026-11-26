@@ -48,6 +48,28 @@ export function readHomeStorageItem(homeId: string, key: string): string | null 
 /** Global the desktop entry may write before the app bundle runs. */
 export const ACTIVE_SPACE_BOOT_GLOBAL = '__KIKI_ACTIVE_SPACE__';
 
+/** Per-window sessionStorage mirror read synchronously by `public/theme-boot.js`. */
+export const ACTIVE_SPACE_BOOT_SESSION_KEY = 'kiki.activeSpace.boot';
+
+export function persistWindowBootSpace(space: Pick<ActiveSpace, 'homeId' | 'isPrimary'> | null): void {
+  if (typeof sessionStorage === 'undefined') return;
+  try {
+    if (space === null || space.isPrimary === true || space.homeId === 'main') {
+      sessionStorage.setItem(
+        ACTIVE_SPACE_BOOT_SESSION_KEY,
+        JSON.stringify({ homeId: 'main', isPrimary: true }),
+      );
+      return;
+    }
+    sessionStorage.setItem(
+      ACTIVE_SPACE_BOOT_SESSION_KEY,
+      JSON.stringify({ homeId: space.homeId, isPrimary: false }),
+    );
+  } catch {
+    // sessionStorage is optional; __KIKI_ACTIVE_SPACE__ and host IPC still run.
+  }
+}
+
 /** The desktop entry's homeId for the main space, which keeps the original
  *  key names. A subspace never carries this id. */
 export const MAIN_SPACE_HOME_ID = 'main';
@@ -116,6 +138,7 @@ export async function initializeSpaceStorage(
   const injected = injectedActiveSpace();
   if (injected !== null) {
     configureSpaceStorage(injected);
+    persistWindowBootSpace(injected);
     return activeSpace();
   }
   if (host !== null && host.kind === 'tauri' && host.activeSpace !== undefined) {
@@ -123,6 +146,7 @@ export async function initializeSpaceStorage(
       const fromHost = parseActiveSpacePayload(await host.activeSpace());
       if (fromHost !== null) {
         configureSpaceStorage(fromHost);
+        persistWindowBootSpace(fromHost);
         return activeSpace();
       }
     } catch {
@@ -130,6 +154,7 @@ export async function initializeSpaceStorage(
     }
   }
   configureSpaceStorage(null);
+  persistWindowBootSpace(null);
   return null;
 }
 
@@ -228,10 +253,11 @@ export const EXCLUDED_STORAGE_KEYS = [
   // Desktop connections never persist (`persist: false`), so this key only ever
   // holds a browser direct-connect choice; the desktop token stays in memory.
   'kiki.connection',
-  // This window's own id (`lib/workModes.ts`). It is neither a space's data nor
-  // shared across spaces — it is minted per window and lives in session
-  // storage, so it is outside both axes by design.
+  // This window's own id (`lib/workModes.ts`) and active-space pre-paint hint
+  // (`lib/spaceStorage.ts` + `public/theme-boot.js`). Both live in per-window
+  // session storage, so they are outside localStorage space scoping by design.
   'kiki.windowId',
+  'kiki.activeSpace.boot',
   // Output-layer results (`lib/outputLayerClient.ts`) cache what a server
   // derived, and `components/output-layer/useOutputLayerClient.ts` already
   // rewrites the physical key to `<key>:<scopeKey>` from the active space, so

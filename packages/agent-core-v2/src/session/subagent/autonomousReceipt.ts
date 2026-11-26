@@ -32,7 +32,12 @@ import { BranchTurnMerged } from '#/features/btw/branchOps';
 import { ISessionBranchService } from '#/features/btw/btw';
 import { SubagentCompleted, SubagentFailed, SubagentStarted } from './mirrorAgentRun';
 import { ISessionSubagentService } from './subagent';
-import { autonomousReceiptsKey, AutonomousReceiptDelivered, type AutonomousReceipt } from './autonomousReceiptOps';
+import {
+  autonomousReceiptsKey,
+  AutonomousReceiptDelivered,
+  isAutonomousReceiptCovered,
+  type AutonomousReceipt,
+} from './autonomousReceiptOps';
 
 export const AUTONOMOUS_RECEIPT_POLICY_LABEL = 'autonomousReceiptPolicy';
 
@@ -119,7 +124,7 @@ export function observeAutonomousReceipts(
     const busy = (branch || receipts.some((receipt) => receipt.userPrompt === true)) && (hasReceiptWork(child) || hasDescendantWork());
     for (const receipt of receipts) {
       if (pending.has(receipt.turnId)) continue;
-      const superseded = branch && (receipt.turnId !== last || state.active !== undefined || receipt.turnId <= (state.mergedThrough ?? -1));
+      const superseded = branch && (receipt.turnId !== last || state.active !== undefined || isAutonomousReceiptCovered(state, receipt));
       if (busy && (branch || receipt.userPrompt === true) && !superseded) continue;
       pending.add(receipt.turnId);
       const drain = { requested: false };
@@ -189,13 +194,12 @@ async function returnReceipt(child: IAgentScopeHandle, parentId: string, receipt
   await optionalFromHandle(child, IAgentBranchGuardService)?.revived();
   signal.throwIfAborted();
   const currentAgent = metadata.peekAgent !== undefined ? metadata.peekAgent(child.id) : metadata.snapshot().agents?.[child.id];
-  const merged = branch && receipt.turnId <= (child.accessor.get(IAgentStateService).get(autonomousReceiptsKey).mergedThrough ?? -1);
-  const sealed = currentAgent?.labels?.['branchSealed'] === 'true';
+  const merged = branch && isAutonomousReceiptCovered(child.accessor.get(IAgentStateService).get(autonomousReceiptsKey), receipt);
   if (currentAgent?.labels?.['branch'] === 'true') await retry(() => metadata.updateAgent(child.id, (current) => ({
     ...current,
     branchTurn: { startedAt: receipt.startedAt, endedAt: receipt.endedAt, outcome: receipt.outcome ?? 'completed' },
   })));
-  if (superseded || merged || sealed || (!branch && (currentAgent?.labels?.[AUTONOMOUS_RECEIPT_POLICY_LABEL] === 'local' ||
+  if (superseded || merged || (!branch && (currentAgent?.labels?.[AUTONOMOUS_RECEIPT_POLICY_LABEL] === 'local' ||
     (receipt.userPrompt !== true && (receipt.outcome !== undefined || receipt.summary.trim() === ''))))) {
     const delivered = new AutonomousReceiptDelivered({ turnId: receipt.turnId });
     await retry(() => child.accessor.get(IEventDispatcher).dispatchDurably(delivered));
@@ -218,7 +222,7 @@ async function returnReceipt(child: IAgentScopeHandle, parentId: string, receipt
   const lifecycle = child.accessor.get(IAgentLifecycleService);
   let parent = meta.archived ? undefined : lifecycle.get(parentId);
   const parentMeta = meta.agents?.[parentId];
-  if (parent === undefined && !meta.archived && receipt.userPrompt === true && parentMeta !== undefined && parentMeta.labels?.['branchSealed'] !== 'true') {
+  if (parent === undefined && !meta.archived && receipt.userPrompt === true && parentMeta !== undefined) {
     const delegator = parentMeta.delegator ?? (parentMeta.parentAgentId === null || parentMeta.parentAgentId === undefined ? undefined : { kind: 'agent' as const, agentId: parentMeta.parentAgentId });
     parent = await retry(() => lifecycle.create({ agentId: parentId, delegator }));
   }
@@ -268,7 +272,7 @@ async function returnReceipt(child: IAgentScopeHandle, parentId: string, receipt
     executorProtocol: profile.executorProtocol,
   };
   if (checkBranchQuiet !== undefined && !await retry(checkBranchQuiet)) return;
-  if (branch && receipt.turnId <= (child.accessor.get(IAgentStateService).get(autonomousReceiptsKey).mergedThrough ?? -1)) {
+  if (branch && isAutonomousReceiptCovered(child.accessor.get(IAgentStateService).get(autonomousReceiptsKey), receipt)) {
     await retry(() => child.accessor.get(IEventDispatcher).dispatchDurably(new AutonomousReceiptDelivered({ turnId: receipt.turnId })));
     return;
   }

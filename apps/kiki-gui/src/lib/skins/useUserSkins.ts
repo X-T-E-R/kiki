@@ -213,9 +213,14 @@ export function useUserSkins(options: UseUserSkinsOptions = {}): {
   // cold start or transient network error never wipes the selected skin's
   // localStorage paint cache.
   useEffect(() => {
-    if (listQuery.data === undefined || detailsLoading || detailsFailed) return;
-    setUserSkins(data.skins, data.directory);
-  }, [listQuery.data, detailsLoading, detailsFailed, data.skins, data.directory]);
+    const listing = listQuery.data;
+    if (listing === undefined || detailsLoading || detailsFailed) return;
+    setUserSkins(data.skins, data.directory, {
+      allDetails,
+      listedIds: listing === null ? [] : listing.items.map((item) => item.id),
+      queriedIds: targetIds,
+    });
+  }, [allDetails, listQuery.data, detailsLoading, detailsFailed, data.skins, data.directory, targetIds]);
 
   return {
     data,

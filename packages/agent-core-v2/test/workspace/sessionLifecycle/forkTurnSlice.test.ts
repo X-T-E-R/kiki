@@ -371,7 +371,6 @@ describe('promoted subagent records', () => {
       sourceRootAgentId: 'agent-root',
       targetAgentId: 'agent-branch',
       isDescendant: true,
-      isUnsealedBranch: true,
     });
     expect(descendantSettled.records).toContainEqual(expect.objectContaining({
       type: 'branch.base',
@@ -382,11 +381,7 @@ describe('promoted subagent records', () => {
       turnId: 0,
       time: 6,
     });
-    expect(descendantSettled.records).toContainEqual({
-      type: 'agent.branch_sealed',
-      sealed: true,
-      time: 6,
-    });
+    expect(descendantSettled.records.some((record) => record.type === 'agent.branch_sealed')).toBe(false);
 
     const normalizedTask = normalizePromotedTaskDocument({
       taskId: 'bash-open-12345678',

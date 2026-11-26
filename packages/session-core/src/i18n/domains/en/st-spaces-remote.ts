@@ -223,6 +223,7 @@ export const stSpacesRemoteEn = {
   'st.portable.center.editTitle': 'Edit scope · {name}',
   'st.portable.center.emptyHint': 'Paste a subscription URL or drop a .kiki.tgz / .kiki.age pack to begin, or export and link folders or Git repos.',
   'st.portable.center.excludedSummary': 'Blocked {count} untrusted item(s) (will not be imported)',
+  'st.portable.center.executablePluginTag': 'Executable code',
   'st.portable.center.fetchPreview': 'Fetch preview',
   'st.portable.center.fetchingPreview': 'Fetching preview…',
   'st.portable.center.hardBlockerGate': 'Resolve {count} missing hard dependency blocker(s) before confirming.',

@@ -235,9 +235,17 @@ export function useAppearancePacks(options: UseAppearancePacksOptions = {}): {
   }, [wsStatus, listQuery.isError, detailsQuery.isError, listQuery.refetch, detailsQuery.refetch]);
 
   useEffect(() => {
-    if (listQuery.data === undefined || detailsLoading || detailsFailed) return;
-    setPackSkins(data.packs.map((entry) => packSkinOf(entry.pack)).filter((skin): skin is SkinFile => skin !== null));
-  }, [listQuery.data, detailsLoading, detailsFailed, data.packs]);
+    const listing = listQuery.data;
+    if (listing === undefined || detailsLoading || detailsFailed) return;
+    setPackSkins(
+      data.packs.map((entry) => packSkinOf(entry.pack)).filter((skin): skin is SkinFile => skin !== null),
+      {
+        allDetails,
+        listedIds: listing === null ? [] : listing.items.map((item) => item.id),
+        queriedIds: targetSummaries.map((summary) => summary.id),
+      },
+    );
+  }, [allDetails, listQuery.data, detailsLoading, detailsFailed, data.packs, targetSummaries]);
 
   return {
     data,

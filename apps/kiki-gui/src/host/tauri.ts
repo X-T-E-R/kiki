@@ -579,7 +579,27 @@ export const tauriHost: TauriHostAdapter = {
   },
   prepareSpace: (homeId) => invoke('prepare_space', { homeId }),
   async switchSpace(homeId) {
-    await invoke('switch_space', { homeId });
+    let previousBoot: string | null = null;
+    try {
+      previousBoot = sessionStorage.getItem('kiki.activeSpace.boot');
+      sessionStorage.setItem(
+        'kiki.activeSpace.boot',
+        JSON.stringify({ homeId, isPrimary: homeId === 'main' }),
+      );
+    } catch {
+      // Ignore unavailable sessionStorage.
+    }
+    try {
+      await invoke('switch_space', { homeId });
+    } catch (error) {
+      try {
+        if (previousBoot === null) sessionStorage.removeItem('kiki.activeSpace.boot');
+        else sessionStorage.setItem('kiki.activeSpace.boot', previousBoot);
+      } catch {
+        // Ignore rollback errors.
+      }
+      throw error;
+    }
   },
   async openSpace(homeId) {
     await invoke('open_space', { homeId });

@@ -43,7 +43,7 @@ import { continuityClockKey } from '#/session/todo/continuityState';
 import { dynamicPromptKey } from '#/agent/profile/dynamicPrompt';
 import { pluginConversationStateKey, pluginWorldStateKey } from '#/agent/pluginState/pluginStateKeys';
 import { hookStateKey } from '#/features/externalHooks/agent/hookState';
-import { branchSealedKey, branchToolLockKey } from '#/features/btw/branchOps';
+import { branchCoverageKey, branchSealedKey, branchToolLockKey } from '#/features/btw/branchOps';
 
 export const BUILTIN_REPLAYABLE_STATE_KEYS: readonly ReplayableStateKey<any>[] = [
   contextMemoryKey,
@@ -66,6 +66,7 @@ export const BUILTIN_REPLAYABLE_STATE_KEYS: readonly ReplayableStateKey<any>[] =
   permissionModeConfiguredKey,
   permissionModeExternalOverrideKey,
   permissionModeCeilingKey,
+  branchCoverageKey,
   branchSealedKey,
   branchToolLockKey,
   permissionRulesKey,

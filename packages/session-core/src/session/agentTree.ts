@@ -1025,7 +1025,7 @@ function applyRoster(draft: DraftNode, entry: AgentRosterDescriptor, now: number
 function invalidateDisposedRun(draft: DraftNode, disposedAt: number, authority: number): void {
   if (draft.status === undefined || !isActiveStatus(draft.status)) return;
   if (draft.statusStartedAt !== undefined && draft.statusStartedAt > disposedAt) return;
-  draft.status = draft.branchSealed === true ? 'completed' : draft.isBranch === true ? 'idle' : 'unknown';
+  draft.status = draft.isBranch === true || draft.branchSealed === true ? 'idle' : 'unknown';
   draft.statusAuthority = authority;
   clearRunFields(draft);
   draft.busy = false;
@@ -1360,12 +1360,14 @@ function applyStatus(
     draft.disposedAt !== undefined &&
     nextStartedAt > draft.disposedAt &&
     (draft.statusStartedAt === undefined || draft.statusStartedAt <= draft.disposedAt);
+  const isContinuableBranch = draft.isBranch === true || draft.branchSealed === true;
   const runtimeRestartsTerminal =
-    authority === 4 &&
-    authority > draft.statusAuthority &&
+    authority >= STATUS_AUTHORITY.roster &&
+    (authority === 4 || isContinuableBranch) &&
+    (authority > draft.statusAuthority || (isContinuableBranch && authority === draft.statusAuthority)) &&
     currentRank === 2 &&
     nextRank === 1 &&
-    (nextStartedAt === undefined || draft.statusEndedAt === undefined || nextStartedAt >= draft.statusEndedAt);
+    (isContinuableBranch || nextStartedAt === undefined || draft.statusEndedAt === undefined || nextStartedAt >= draft.statusEndedAt);
   const nextRunIsNewer =
     startsAfterDisposal ||
     runtimeRestartsTerminal ||

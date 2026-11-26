@@ -24,11 +24,9 @@ export function rosterFromTranscriptAgents(
     const status: AgentRosterDescriptor['status'] =
       agent.agentId === MAIN_AGENT_ID
         ? undefined
-        : agent.branchSealed === true
-          ? 'completed'
-          : agent.isBranch === true
-            ? 'idle'
-            : 'unknown';
+        : agent.isBranch === true || agent.branchSealed === true
+          ? 'idle'
+          : 'unknown';
     return {
       agentId: agent.agentId,
       parentAgentId: agent.parentAgentId ?? parentFromDelegator,
@@ -103,11 +101,9 @@ export function rosterFromTranscriptResponse(
     response.agent_id === MAIN_AGENT_ID && projectedStatus === 'unknown'
       ? undefined
       : projectedStatus === 'unknown' && existing !== undefined
-        ? existing.branchSealed === true
-          ? 'completed'
-          : existing.isBranch === true
-            ? 'idle'
-            : projectedStatus
+        ? existing.isBranch === true || existing.branchSealed === true
+          ? 'idle'
+          : projectedStatus
         : projectedStatus;
   const statusFields = {
     model: meta.model,
@@ -857,13 +853,11 @@ export function sessionAgentForestFromAgentSnapshots(
   for (const agentId of coldEvidence) {
     const node = byId[agentId];
     if (node === undefined || liveIds.has(agentId)) continue;
-    const coldFallback = node.branchSealed === true
-      ? 'completed'
-      : node.isBranch === true
+    const coldFallback = node.turnOutcome?.state === 'cancelled' || node.turnOutcome?.state === 'failed'
+      ? node.turnOutcome.state
+      : node.isBranch === true || node.branchSealed === true
         ? 'idle'
-        : node.turnOutcome?.state === 'cancelled' || node.turnOutcome?.state === 'failed'
-          ? node.turnOutcome.state
-          : 'unknown';
+        : 'unknown';
     byId[agentId] = {
       ...node,
       busy: false,
@@ -872,7 +866,7 @@ export function sessionAgentForestFromAgentSnapshots(
   }
   for (const [agentId, node] of Object.entries(byId)) {
     if (node.status === 'unknown' && (node.branchSealed === true || node.isBranch === true)) {
-      byId[agentId] = { ...node, status: node.branchSealed === true ? 'completed' : 'idle' };
+      byId[agentId] = { ...node, status: 'idle' };
     }
   }
   return { byId, roots: forest.roots.map((node) => byId[node.agentId]!) };

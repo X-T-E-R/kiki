@@ -26,6 +26,7 @@ import type { LifeState } from '../../lib/motion';
 import { DisclosureChevron, Icon } from '../icons';
 import { LifeMark } from '../LifeMark';
 import { MiniContextMenu, type MiniMenuEntry } from '../MiniContextMenu';
+import { useNow } from '../RelativeTime';
 import { buildRoster, ROSTER_BUCKETS, type RosterAgentRow, type RosterBucket, type RosterRow } from './agentRoster';
 import { plainFailure } from './failureText';
 
@@ -504,7 +505,7 @@ export const AgentRoster = memo(function AgentRoster({
   useEffect(() => {
     if (activeFilter !== filter) setFilter('all');
   }, [activeFilter, filter]);
-  const now = useRunningClock(model.counts.running);
+  const now = useNow(model.counts.running > 0);
   const toggle = useCallback((agentId: string) => {
     setExpanded((previous) => {
       const next = new Set(previous);
@@ -661,32 +662,3 @@ export const AgentRoster = memo(function AgentRoster({
     </div>
   );
 });
-
-/** Wall clock at second granularity: only ticks while running agents exist and the document is visible. */
-function useRunningClock(runningCount: number): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (runningCount <= 0) return;
-    setNow(Date.now());
-    const tick = () => {
-      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-      setNow(Date.now());
-    };
-    const timer = window.setInterval(tick, 1_000);
-    const onVisibility = () => {
-      if (typeof document === 'undefined' || document.visibilityState !== 'hidden') {
-        setNow(Date.now());
-      }
-    };
-    if (typeof document !== 'undefined') {
-      document.addEventListener('visibilitychange', onVisibility);
-    }
-    return () => {
-      window.clearInterval(timer);
-      if (typeof document !== 'undefined') {
-        document.removeEventListener('visibilitychange', onVisibility);
-      }
-    };
-  }, [runningCount]);
-  return now;
-}

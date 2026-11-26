@@ -178,7 +178,7 @@ export function registerSessionRecoverRoute(app: RecoverRouteHost, core: Scope):
         if (targetAgentId === MAIN_AGENT_ID) {
           for (const [id, agentMeta] of Object.entries(meta.agents ?? {})) {
             if (id === MAIN_AGENT_ID) continue;
-            if (agentMeta.labels?.['branch'] !== 'true' || agentMeta.labels?.['branchSealed'] === 'true') continue;
+            if (agentMeta.labels?.['branch'] !== 'true') continue;
             if (lifecycle.get(id) !== undefined) continue;
             if (staleBoot || staleRunAgents.has(id) || persistedTargetIds.has(id) || agentMeta.branchTurn?.outcome === 'cancelled') {
               await ensureSessionAgent(core, session, id).catch(() => undefined);
@@ -283,7 +283,7 @@ export function registerSessionRecoverRoute(app: RecoverRouteHost, core: Scope):
         if (targetAgentId === MAIN_AGENT_ID) {
           for (const [id, agentMeta] of Object.entries(meta.agents ?? {})) {
             if (id === MAIN_AGENT_ID) continue;
-            if (agentMeta.labels?.['branch'] !== 'true' || agentMeta.labels?.['branchSealed'] === 'true') continue;
+            if (agentMeta.labels?.['branch'] !== 'true') continue;
             const branchLost = lostByOwner.get(id) ?? 0;
             const branchCancelled =
               agentMeta.branchTurn?.outcome === 'cancelled' && agentMeta.branchTurn.endedAt >= recoveryWatermark;
@@ -310,7 +310,7 @@ export function registerSessionRecoverRoute(app: RecoverRouteHost, core: Scope):
             if (targetAgentId !== MAIN_AGENT_ID && persisted.agentId !== targetAgentId) continue;
             if (persisted.kind === 'branch' && !interruptedBranchIds.includes(persisted.agentId)) {
               const branchMeta = meta.agents?.[persisted.agentId];
-              if (branchMeta?.labels?.['branch'] === 'true' && branchMeta.labels?.['branchSealed'] !== 'true') {
+              if (branchMeta?.labels?.['branch'] === 'true') {
                 interruptedBranchIds.push(persisted.agentId);
               }
             }

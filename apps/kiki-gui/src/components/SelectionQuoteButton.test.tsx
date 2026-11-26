@@ -49,8 +49,10 @@ function Harness({
   return (
     <>
       <div ref={transcriptRef}>
-        <p data-source>the selectable transcript text</p>
-        <p data-source-secondary>another selectable transcript text</p>
+        <p data-source data-source-block-id="msg-primary" data-source-version="v1">the selectable transcript text</p>
+        <p data-source-secondary data-source-block-id="msg-secondary" data-source-version="v1">another selectable transcript text</p>
+        <div data-system-reminder>Host runtime snapshot internal boilerplate</div>
+        <div data-history-fold>Folded process steps</div>
       </div>
       <SelectionQuoteButton
         containerRef={transcriptRef}
@@ -142,7 +144,16 @@ describe('SelectionQuoteButton', () => {
     const { container, onAnnotate, onUpdateAnnotation } = await mount();
     await selectSource(container);
     const input = await createAnnotation();
-    expect(onAnnotate).toHaveBeenCalledExactlyOnceWith('the selectable transcript text', '', null);
+    expect(onAnnotate).toHaveBeenCalledExactlyOnceWith(
+      'the selectable transcript text',
+      '',
+      expect.objectContaining({
+        blockId: 'msg-primary',
+        version: 'v1',
+        start: 0,
+        end: 27,
+      }),
+    );
     expect(input).not.toBeNull();
     expect(input.placeholder).toBe('Add a comment (optional)');
     expect(pill()?.querySelector('[data-annotation-panel-remove]')).not.toBeNull();
@@ -316,5 +327,25 @@ describe('SelectionQuoteButton', () => {
     } finally {
       siblingPanel.remove();
     }
+  });
+
+  it('never opens annotation pill when selecting internal system reminders, history folds, or across two message blocks', async () => {
+    const { container } = await mount();
+    await selectSource(container, '[data-system-reminder]');
+    expect(pill()).toBeNull();
+
+    await selectSource(container, '[data-history-fold]');
+    expect(pill()).toBeNull();
+
+    await act(async () => {
+      const selection = window.getSelection()!;
+      const range = document.createRange();
+      range.setStart(container.querySelector('[data-source]')!.firstChild!, 0);
+      range.setEnd(container.querySelector('[data-source-secondary]')!.firstChild!, 5);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    });
+    expect(pill()).toBeNull();
   });
 });
