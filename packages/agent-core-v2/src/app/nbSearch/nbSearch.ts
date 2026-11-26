@@ -46,7 +46,7 @@ export interface INbSearchService {
   toolDescription(tool: 'WebSearch' | 'FetchURL'): string;
   capabilities(context?: OperationContext): Promise<NbSearchCapabilities>;
   test(context?: OperationContext): Promise<NbSearchTestStatus>;
-  quotaSources(): Promise<readonly { id: string; provider_id: string; enabled: boolean; revision: string }[]>;
+  quotaSources(): Promise<readonly { id: string; provider_id: string; enabled: boolean; revision: string; base_url?: string; balance_supported?: boolean }[]>;
   keyUsage(instanceId: string, refresh: boolean): Promise<NbSearchKeyUsageView>;
   validateConfiguration(config: NbSearchConfig, reuseLocalConfig: boolean): Promise<void>;
   readManagedCredential(instanceId: string, reveal: boolean): Promise<ManagedCredentialView>;

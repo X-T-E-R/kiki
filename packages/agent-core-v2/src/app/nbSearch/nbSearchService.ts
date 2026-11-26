@@ -24,6 +24,18 @@ import { INbSearchService, type NbSearchCapabilities, type NbSearchReadiness, ty
 import { INbSearchSourceStore, type NbSearchSource } from './sourceStore';
 import { describeCapabilities, formatManagedCredentialMismatchHint } from './toolDescriptions';
 
+function isNbSearchBalanceSupported(providerId: string, baseUrl: string | undefined): boolean {
+  if (providerId === 'firecrawl' || providerId === 'zhihu') return true;
+  if (providerId !== 'tavily') return false;
+  const trimmed = baseUrl?.trim();
+  if (!trimmed) return true;
+  try {
+    return new URL(trimmed).hostname.toLowerCase() === 'api.tavily.com';
+  } catch {
+    return false;
+  }
+}
+
 export class NbSearchService implements INbSearchService {
   declare readonly _serviceBrand: undefined;
   readonly #configListener;
@@ -144,7 +156,7 @@ export class NbSearchService implements INbSearchService {
     if (runtime === undefined) throw configurationError(status);
   }
 
-  async quotaSources(): Promise<readonly { id: string; provider_id: string; enabled: boolean; revision: string }[]> {
+  async quotaSources(): Promise<readonly { id: string; provider_id: string; enabled: boolean; revision: string; base_url?: string; balance_supported?: boolean }[]> {
     await this.config.ready;
     const config = this.config.get<NbSearchConfig | undefined>(NB_SEARCH_SECTION);
     const reuse = this.config.get<NbSearchSourceConfig | undefined>(NB_SEARCH_SOURCE_SECTION)?.reuse_local_config ?? true;
@@ -153,8 +165,14 @@ export class NbSearchService implements INbSearchService {
       const effective = capturedSource(source, config).config;
       return Object.entries(effective.provider_instances).map(([id, instance]) => {
         const slot = instance.credential_slot_id === undefined ? undefined : effective.credential_slots[instance.credential_slot_id];
-        return { id, provider_id: instance.provider_id, enabled: instance.enabled,
-          revision: stableFingerprint([instance, slot === undefined ? null : source.env[slot.env] ?? null]) };
+        return {
+          id,
+          provider_id: instance.provider_id,
+          enabled: instance.enabled,
+          revision: stableFingerprint([instance, slot === undefined ? null : source.env[slot.env] ?? null]),
+          ...(instance.base_url !== undefined ? { base_url: instance.base_url } : {}),
+          balance_supported: isNbSearchBalanceSupported(instance.provider_id, instance.base_url),
+        };
       });
     });
   }
@@ -168,14 +186,22 @@ export class NbSearchService implements INbSearchService {
       const effective = capturedSource(source, config).config;
       const instance = effective.provider_instances[instanceId];
       if (instance === undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Unknown nb-search provider instance.');
-      const balanceSupported = instance.provider_id === 'tavily' || instance.provider_id === 'firecrawl' || instance.provider_id === 'zhihu';
+      const balanceSupported = isNbSearchBalanceSupported(instance.provider_id, instance.base_url);
       if (!instance.enabled) return { provider_instance_id: instanceId, provider_id: instance.provider_id, balance_supported: balanceSupported, keys: [] };
+      const slot = instance.credential_slot_id === undefined ? undefined : effective.credential_slots[instance.credential_slot_id];
+      const count = slot === undefined ? 0 : (source.env[slot.env] ?? '').split(',').filter((key) => key.trim() !== '').length;
+      if (!balanceSupported && instance.provider_id === 'tavily') {
+        return nbSearchKeyUsageViewSchema.parse({
+          provider_instance_id: instanceId,
+          provider_id: instance.provider_id,
+          balance_supported: false,
+          keys: Array.from({ length: count }, (_, index) => ({ key_index: index + 1, state: 'unknown' })),
+        });
+      }
       const runtime = await this.#sharedRuntime(source, config, this.#generation);
       if (runtime === undefined) throw configurationError(source.status);
       const local = runtime as import('@nb-corp/nb-search').LocalNbSearchRuntime;
       const entries = await local.keyUsage({ provider_instance_id: instanceId, refresh });
-      const slot = instance.credential_slot_id === undefined ? undefined : effective.credential_slots[instance.credential_slot_id];
-      const count = slot === undefined ? 0 : (source.env[slot.env] ?? '').split(',').filter((key) => key.trim() !== '').length;
       const keys = entries.map((entry) => ({
         key_index: entry.key_index, state: entry.state, cooldown_until: entry.cooldown_until,
         usage: entry.usage, usage_error: entry.usage_error,

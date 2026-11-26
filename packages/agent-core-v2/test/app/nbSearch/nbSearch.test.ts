@@ -876,10 +876,37 @@ describe('NbSearchService', () => {
     ix.get(IConfigService).get = ((domain: string) => domain === NB_SEARCH_SECTION ? { provider_instances: { 'tavily.default': { provider_id: 'tavily', enabled: false } } } : domain === NB_SEARCH_SOURCE_SECTION ? { reuse_local_config: false } : undefined) as IConfigService['get'];
     const service = ix.get(INbSearchService);
     const sources = await service.quotaSources();
-    expect(sources.find((source) => source.id === 'tavily.default')).toMatchObject({ provider_id: 'tavily', enabled: false, revision: expect.any(String) });
+    expect(sources.find((source) => source.id === 'tavily.default')).toMatchObject({ provider_id: 'tavily', enabled: false, balance_supported: true, revision: expect.any(String) });
     expect(await service.keyUsage('tavily.default', true)).toEqual({ provider_instance_id: 'tavily.default', provider_id: 'tavily', balance_supported: true, keys: [] });
     expect(createRuntimeMock).not.toHaveBeenCalled();
     expect(JSON.stringify(sources)).not.toMatch(/api_key|access_token/);
+  });
+
+  it('marks custom-proxy Tavily instances as balance_supported=false without calling upstream /usage', async () => {
+    ix.get(IConfigService).get = ((domain: string) => domain === NB_SEARCH_SECTION ? {
+      provider_instances: {
+        'tavily.axon': { provider_id: 'tavily', enabled: true, base_url: 'https://api.example.test/raw/69', credential_slot_id: 'tavily.axon', options: {} },
+      },
+      credential_slots: {
+        'tavily.axon': { provider_id: 'tavily', env: 'NB_SEARCH_TAVILY_AXON_API_KEY' },
+      },
+    } : domain === NB_SEARCH_SOURCE_SECTION ? { reuse_local_config: false } : undefined) as IConfigService['get'];
+    const service = ix.get(INbSearchService);
+    const sources = await service.quotaSources();
+    expect(sources.find((source) => source.id === 'tavily.axon')).toMatchObject({
+      provider_id: 'tavily',
+      enabled: true,
+      base_url: 'https://api.example.test/raw/69',
+      balance_supported: false,
+    });
+    const usage = await service.keyUsage('tavily.axon', true);
+    expect(usage).toEqual({
+      provider_instance_id: 'tavily.axon',
+      provider_id: 'tavily',
+      balance_supported: false,
+      keys: [],
+    });
+    expect(createRuntimeMock).not.toHaveBeenCalled();
   });
 
   it.each([true, false])('preserves generic usage meters and recognizes Zhihu balance support with enabled=%s', async (enabled) => {

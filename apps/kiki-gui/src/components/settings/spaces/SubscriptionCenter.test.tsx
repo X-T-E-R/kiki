@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from 'react';
+import { act, StrictMode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
@@ -498,6 +498,31 @@ describe('FIFO Deep-Link Queue (cold, warm gap, reload before ACK, consecutive i
     expect(maskSubscriptionUrl('https://sub.example.test/secret-token-1234567890.tgz?sig=abc')).toBe(
       'https://sub.example.test/secr…7890.tgz',
     );
+  });
+
+  it('deduplicates ?subscribe= extraction under React.StrictMode double-effect invocation', async () => {
+    const host = { kind: 'browser' as const } as unknown as HostAdapter;
+    (globalThis as { __testHost?: HostAdapter }).__testHost = host;
+    const latestQueue: { current?: ReturnType<typeof useSubscribeIntentQueue> } = {};
+
+    await renderNode(
+      <StrictMode>
+        <QueueHarness onReady={(api) => { latestQueue.current = api; }} />
+      </StrictMode>,
+      {
+        host,
+        entries: ['/settings/spaces?subscribe=https%3A%2F%2Fsub.example.test%2Fstrict-pack.tgz&name=StrictPack&mode=auto'],
+      },
+    );
+
+    expect(document.querySelector('[data-active-url]')?.textContent).toBe('https://sub.example.test/strict-pack.tgz');
+    expect(document.querySelector('[data-location]')?.textContent).toBe('/settings/spaces');
+    expect(latestQueue.current?.queuedCount).toBe(0);
+
+    // Settling the single extracted intent clears the queue completely (no duplicate second copy).
+    await click('[data-settle]');
+    expect(document.querySelector('[data-active-id]')?.textContent).toBe('none');
+    expect(latestQueue.current?.queuedCount).toBe(0);
   });
 });
 

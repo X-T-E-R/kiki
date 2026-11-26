@@ -1455,4 +1455,90 @@ describe('ProviderQuotaPanel', () => {
     );
     expect(authLink).not.toBeNull();
   });
+
+  it('renders exhausted 0% remaining cleanly without bogus depleting ETA, keeps 0% used warning-free, and places dial subtitle below SVG', async () => {
+    localStorage.setItem('kiki.locale', 'zh');
+    const reset5h = new Date(Date.now() + 2 * 3_600_000).toISOString();
+    const reset7d = new Date(Date.now() + 28 * 3_600_000).toISOString();
+    show([
+      source({
+        id: 'provider:axon',
+        provider_id: 'axon',
+        label: 'axon',
+        account_label: '此提供商的 API Key',
+        meters: [
+          meter({
+            id: 'pool-kimi-5h',
+            label: 'Kimi K3.1 Pro · 5h',
+            unit: 'percent',
+            unit_label: '%',
+            currency: undefined,
+            used: 52,
+            limit: 100,
+            remaining: 48,
+            window: { label: 'Kimi K3.1 Pro · 5h', duration_seconds: 18_000, reset_at: reset5h },
+          }),
+          meter({
+            id: 'pool-kimi-7d',
+            label: 'Kimi K3.1 Pro · 7d',
+            unit: 'percent',
+            unit_label: '%',
+            currency: undefined,
+            used: 100,
+            limit: 100,
+            remaining: 0,
+            window: { label: 'Kimi K3.1 Pro · 7d', duration_seconds: 604_800, reset_at: reset7d },
+          }),
+        ],
+      }),
+    ]);
+
+    const container = await mount();
+    const dial = container.querySelector('[data-quota-dial="provider:axon"]')!;
+    expect(dial).not.toBeNull();
+    expect(dial.textContent).not.toContain('将在重置前用完');
+    expect(dial.textContent).not.toContain('即将耗尽');
+    expect(dial.querySelector('[data-quota-pace="exhausted"]')?.textContent).toBe('已耗尽');
+    const subtitle = dial.querySelector('[data-quota-dial-subtitle]');
+    expect(subtitle?.textContent).toBe('Kimi K3.1 Pro · 7d');
+    expect(dial.querySelector('svg')?.contains(subtitle)).toBe(false);
+
+    // Unused 7d (0% used / 100% remaining): 5h (48%) is selected as hero with zero depletion warning.
+    show([
+      source({
+        id: 'provider:axon-fresh',
+        provider_id: 'axon-fresh',
+        label: 'axon-fresh',
+        account_label: '此提供商的 API Key',
+        meters: [
+          meter({
+            id: 'pool-kimi-5h',
+            label: 'Kimi K3.1 Pro · 5h',
+            unit: 'percent',
+            unit_label: '%',
+            currency: undefined,
+            used: 52,
+            limit: 100,
+            remaining: 48,
+            window: { label: 'Kimi K3.1 Pro · 5h', duration_seconds: 18_000, reset_at: reset5h },
+          }),
+          meter({
+            id: 'pool-kimi-7d',
+            label: 'Kimi K3.1 Pro · 7d',
+            unit: 'percent',
+            unit_label: '%',
+            currency: undefined,
+            used: 0,
+            limit: 100,
+            remaining: 100,
+            window: { label: 'Kimi K3.1 Pro · 7d', duration_seconds: 604_800, reset_at: reset7d },
+          }),
+        ],
+      }),
+    ]);
+    const container2 = await mount();
+    const dial2 = container2.querySelector('[data-quota-dial="provider:axon-fresh"]')!;
+    expect(dial2.querySelector('[data-quota-dial-subtitle]')?.textContent).toBe('Kimi K3.1 Pro · 5h');
+    expect(dial2.querySelector('[data-quota-pace]')).toBeNull();
+  });
 });

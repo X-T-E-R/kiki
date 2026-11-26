@@ -655,7 +655,8 @@ function FleetPoolSummaryRow({
         const isCritical =
           pool.allExhausted ||
           (pct !== undefined && (pct <= 15 || tier === 'critical')) ||
-          pace?.state === 'depleting';
+          pace?.state === 'depleting' ||
+          pace?.state === 'exhausted';
         const isWarn = !isCritical && (tier === 'low' || pace?.state === 'fast');
         const tone = pct === undefined
           ? 'text-[var(--kiki-chart-muted)]'

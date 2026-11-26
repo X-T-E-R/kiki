@@ -69,6 +69,16 @@ function projectAntigravityQuotaMeter(window: AntigravityQuotaWindow, checkedAt:
   };
 }
 
+function isOfficialTavilyBaseUrl(baseUrl: string | undefined): boolean {
+  const trimmed = baseUrl?.trim();
+  if (!trimmed) return true;
+  try {
+    return new URL(trimmed).hostname.toLowerCase() === 'api.tavily.com';
+  } catch {
+    return false;
+  }
+}
+
 export function createProviderQuotaService(core: Scope, fetchImpl: typeof fetch = fetch): ProviderQuotaService {
   const providers = core.accessor.get(IProviderService);
   const oauth = core.accessor.get(IOAuthService);
@@ -169,7 +179,11 @@ export function createProviderQuotaService(core: Scope, fetchImpl: typeof fetch 
     });
     const instances = await nbSearch.quotaSources();
     for (const instance of instances) {
-      const supported = instance.provider_id === 'tavily' || instance.provider_id === 'firecrawl' || instance.provider_id === 'zhihu';
+      const supported = instance.balance_supported ?? (
+        (instance.provider_id === 'tavily' && isOfficialTavilyBaseUrl(instance.base_url))
+        || instance.provider_id === 'firecrawl'
+        || instance.provider_id === 'zhihu'
+      );
       result.push({
         id: `service:${instance.id}`,
         label: instance.id,
@@ -180,7 +194,13 @@ export function createProviderQuotaService(core: Scope, fetchImpl: typeof fetch 
         active: instance.enabled,
         supported,
         auth: { action: 'external_service_settings', provider: instance.id },
-        source: { label: instance.provider_id === 'zhihu' ? 'zhihu 官方每日额度（nb-search）' : `${instance.provider_id} 官方 credits（nb-search）` },
+        source: {
+          label: !supported
+            ? '暂无官方额度接口'
+            : instance.provider_id === 'zhihu'
+              ? 'zhihu 官方每日额度（nb-search）'
+              : `${instance.provider_id} 官方 credits（nb-search）`,
+        },
         fetch: async () => {
           const usage = await nbSearch.keyUsage(instance.id, true);
           if (usage.keys.length === 0 || usage.keys.every((entry) => entry.state === 'invalid')) throw new QuotaFailure('auth_required');

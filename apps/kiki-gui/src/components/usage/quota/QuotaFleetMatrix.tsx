@@ -395,7 +395,7 @@ export function PluginQuotaBucketCell({
       ? 'text-[var(--kiki-chart-muted)]'
       : mutedSkipped
         ? 'text-[var(--kiki-chart-muted)]'
-        : val.exhausted || (remainingPct !== undefined && remainingPct <= 5) || pace?.state === 'depleting'
+        : val.exhausted || (remainingPct !== undefined && remainingPct <= 5) || pace?.state === 'depleting' || pace?.state === 'exhausted'
           ? 'font-normal text-ink'
           : 'font-normal text-ink';
 

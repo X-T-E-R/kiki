@@ -102,6 +102,39 @@ describe('provider quotas', () => {
       used: 3, limit: 10, remaining: 7, data_as_of: usage.checked_at, status: 'ready',
     })));
   });
+
+  it('marks custom-proxy Tavily instances as unsupported while keeping official api.tavily.com errors intact', async () => {
+    const keyUsage = vi.fn(async (instanceId: string): Promise<NbSearchKeyUsageView> => ({
+      provider_instance_id: instanceId,
+      provider_id: 'tavily',
+      balance_supported: true,
+      keys: [{ key_index: 1, state: 'invalid' }],
+    }));
+    const services = new Map<unknown, unknown>([
+      [IProviderService, { ready: Promise.resolve(), list: () => ({}) }],
+      [IOAuthService, {}],
+      [IAtomicDocumentStore, { get: async () => undefined }],
+      [INbSearchService, {
+        quotaSources: async () => [
+          { id: 'tavily.axon', provider_id: 'tavily', revision: 'proxy-rev', enabled: true, base_url: 'https://api.example.test/raw/69', balance_supported: false },
+          { id: 'tavily.proxy-implicit', provider_id: 'tavily', revision: 'proxy-rev-2', enabled: true, base_url: 'https://proxy.example.test/tavily' },
+          { id: 'tavily.default', provider_id: 'tavily', revision: 'official-rev', enabled: true, base_url: 'https://api.tavily.com', balance_supported: true },
+        ],
+        keyUsage,
+      }],
+      [IAgentExecutorRegistry, { list: () => [] }],
+    ]);
+    const core = { accessor: { get: (token: unknown) => services.get(token) } } as unknown as Scope;
+    const service = createProviderQuotaService(core);
+    const snap = providerQuotaSnapshotSchema.parse(await service.snapshot());
+    expect(snap.sources.find((s) => s.id === 'service:tavily.axon')).toMatchObject({ supported: false, status: 'unsupported', reason: 'no_official_quota_api' });
+    expect(snap.sources.find((s) => s.id === 'service:tavily.proxy-implicit')).toMatchObject({ supported: false, status: 'unsupported' });
+    expect(snap.sources.find((s) => s.id === 'service:tavily.default')).toMatchObject({ supported: true, status: 'unknown' });
+    await service.refresh('service:tavily.axon');
+    expect(keyUsage).not.toHaveBeenCalled();
+    const officialRefreshed = providerQuotaSnapshotSchema.parse(await service.refresh('service:tavily.default'));
+    expect(officialRefreshed.sources.find((s) => s.id === 'service:tavily.default')).toMatchObject({ status: 'auth_required' });
+  });
   it('does not fetch on reads, enable, off refresh, unsupported or disconnected targets', async () => {
     const f = fixture();
     expect((await f.service.snapshot()).sources[0]!.status).toBe('unknown');

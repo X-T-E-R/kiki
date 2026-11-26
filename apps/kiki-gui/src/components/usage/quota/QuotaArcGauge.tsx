@@ -17,7 +17,7 @@ export function resolveQuotaArcStroke(
 ): string {
   if (muted) return 'var(--kiki-chart-other)';
   const tier = quotaFuelTier(remainingPercent);
-  if (remainingPercent <= 5 || pace?.state === 'depleting') {
+  if (remainingPercent <= 5 || pace?.state === 'depleting' || pace?.state === 'exhausted') {
     return 'var(--kiki-chart-danger)';
   }
   if (tier === 'critical' || tier === 'low' || pace?.state === 'fast') {
@@ -79,6 +79,7 @@ export function QuotaCalibrationDial({
   muted = false,
   ariaLabel,
   centerContent,
+  subtitle,
   progressDataAttr = false,
 }: {
   readonly outerPercent: number;
@@ -88,14 +89,15 @@ export function QuotaCalibrationDial({
   readonly muted?: boolean;
   readonly ariaLabel: string;
   readonly centerContent: ReactNode;
+  readonly subtitle?: ReactNode;
   readonly progressDataAttr?: boolean;
 }) {
   const w = 156;
-  const h = 128;
+  const h = 110;
   const cx = 78;
-  const cy = 74;
-  const rOuter = 57;
-  const rInner = 43.5;
+  const cy = 72;
+  const rOuter = 56;
+  const rInner = 43;
 
   const pctOuter = Math.max(0, Math.min(100, outerPercent));
   const pctInner = innerPercent !== undefined ? Math.max(0, Math.min(100, innerPercent)) : undefined;
@@ -114,101 +116,113 @@ export function QuotaCalibrationDial({
 
   return (
     <div
-      className="relative flex h-[128px] w-[156px] shrink-0 items-center justify-center"
+      className="flex shrink-0 flex-col items-center"
       {...progressProps}
     >
-      <svg
-        role="img"
-        aria-label={ariaLabel}
-        viewBox={`0 0 ${w} ${h}`}
-        className="h-full w-full overflow-visible"
-      >
-        {/* Sparse precision calibration ticks: major at 0, 25, 50, 75, 100%; minor midpoints */}
-        {[0, 12.5, 25, 37.5, 50, 62.5, 75, 87.5, 100].map((tickPct) => {
-          const major = tickPct % 25 === 0;
-          const deg = quotaPercentToAngleDeg(tickPct);
-          const p0 = polarPoint(cx, cy, rOuter + 6.5, deg);
-          const p1 = polarPoint(cx, cy, rOuter + (major ? 11.5 : 9), deg);
-          return (
-            <line
-              key={tickPct}
-              x1={p0.x}
-              y1={p0.y}
-              x2={p1.x}
-              y2={p1.y}
-              stroke={major ? 'var(--kiki-gauge-tick)' : 'var(--kiki-gauge-track)'}
-              strokeWidth={major ? '1.45' : '1.05'}
-            />
-          );
-        })}
+      <div className="relative h-[110px] w-[156px]">
+        <svg
+          role="img"
+          aria-label={ariaLabel}
+          viewBox={`0 0 ${w} ${h}`}
+          className="h-full w-full overflow-visible"
+        >
+          {/* Sparse precision calibration ticks: major at 0, 25, 50, 75, 100%; minor midpoints */}
+          {[0, 12.5, 25, 37.5, 50, 62.5, 75, 87.5, 100].map((tickPct) => {
+            const major = tickPct % 25 === 0;
+            const deg = quotaPercentToAngleDeg(tickPct);
+            const p0 = polarPoint(cx, cy, rOuter + 6.5, deg);
+            const p1 = polarPoint(cx, cy, rOuter + (major ? 11.5 : 9), deg);
+            return (
+              <line
+                key={tickPct}
+                x1={p0.x}
+                y1={p0.y}
+                x2={p1.x}
+                y2={p1.y}
+                stroke={major ? 'var(--kiki-gauge-tick)' : 'var(--kiki-gauge-track)'}
+                strokeWidth={major ? '1.45' : '1.05'}
+              />
+            );
+          })}
 
-        <path
-          d={outerArcD}
-          fill="none"
-          stroke="var(--kiki-gauge-track)"
-          strokeWidth="6"
-          strokeLinecap="butt"
-        />
-
-        {pctOuter > 0 ? (
           <path
             d={outerArcD}
             fill="none"
-            pathLength={100}
-            strokeDasharray={`${pctOuterArc} 100`}
-            stroke={outerStroke}
-            strokeWidth="9.5"
+            stroke="var(--kiki-gauge-track)"
+            strokeWidth="6"
             strokeLinecap="butt"
           />
-        ) : null}
 
-        {outerPace !== null && outerPace !== undefined && !muted ? (
-          <PaceRadialTick
-            cx={cx}
-            cy={cy}
-            radius={rOuter}
-            halfSpan={7.25}
-            expectedRemainingPct={outerPace.expectedRemainingPct}
-          />
-        ) : null}
-
-        {innerArcD !== undefined && pctInner !== undefined ? (
-          <>
+          {pctOuter > 0 ? (
             <path
-              d={innerArcD}
+              d={outerArcD}
               fill="none"
-              stroke="var(--kiki-gauge-track)"
-              strokeWidth="4.25"
+              pathLength={100}
+              strokeDasharray={`${pctOuterArc} 100`}
+              stroke={outerStroke}
+              strokeWidth="9.5"
               strokeLinecap="butt"
             />
-            {pctInner > 0 && pctInnerArc !== undefined && innerStroke !== undefined ? (
+          ) : null}
+
+          {outerPace !== null && outerPace !== undefined && !muted ? (
+            <PaceRadialTick
+              cx={cx}
+              cy={cy}
+              radius={rOuter}
+              halfSpan={7.25}
+              expectedRemainingPct={outerPace.expectedRemainingPct}
+            />
+          ) : null}
+
+          {innerArcD !== undefined && pctInner !== undefined ? (
+            <>
               <path
                 d={innerArcD}
                 fill="none"
-                pathLength={100}
-                strokeDasharray={`${pctInnerArc} 100`}
-                stroke={innerStroke}
-                strokeWidth="6.5"
+                stroke="var(--kiki-gauge-track)"
+                strokeWidth="4.25"
                 strokeLinecap="butt"
               />
-            ) : null}
-            {innerPace !== null && innerPace !== undefined && !muted ? (
-              <PaceRadialTick
-                cx={cx}
-                cy={cy}
-                radius={rInner}
-                halfSpan={5.25}
-                expectedRemainingPct={innerPace.expectedRemainingPct}
-              />
-            ) : null}
-          </>
-        ) : null}
-      </svg>
+              {pctInner > 0 && pctInnerArc !== undefined && innerStroke !== undefined ? (
+                <path
+                  d={innerArcD}
+                  fill="none"
+                  pathLength={100}
+                  strokeDasharray={`${pctInnerArc} 100`}
+                  stroke={innerStroke}
+                  strokeWidth="6.5"
+                  strokeLinecap="butt"
+                />
+              ) : null}
+              {innerPace !== null && innerPace !== undefined && !muted ? (
+                <PaceRadialTick
+                  cx={cx}
+                  cy={cy}
+                  radius={rInner}
+                  halfSpan={5.25}
+                  expectedRemainingPct={innerPace.expectedRemainingPct}
+                />
+              ) : null}
+            </>
+          ) : null}
+        </svg>
 
-      {/* Center Readout */}
-      <div className="pointer-events-none absolute inset-x-[28px] top-[34px] bottom-[12px] flex flex-col items-center justify-center text-center">
-        {centerContent}
+        {/* Center Readout: centered on circle datum (cx, cy) with generous inner-ring clearance */}
+        <div className="pointer-events-none absolute inset-x-[38px] top-[72px] flex -translate-y-1/2 flex-col items-center justify-center text-center">
+          {centerContent}
+        </div>
       </div>
+
+      {/* Subtitle cleanly below the 240deg arc baseline so long labels never collide with inner arc ends */}
+      {subtitle !== undefined && subtitle !== null ? (
+        <div
+          data-quota-dial-subtitle
+          className="mt-1 flex max-w-[180px] items-center justify-center text-center font-sans tracking-normal text-[12px] leading-4 text-[var(--kiki-chart-label)]"
+        >
+          {subtitle}
+        </div>
+      ) : null}
     </div>
   );
 }

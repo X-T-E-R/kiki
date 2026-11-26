@@ -320,6 +320,8 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
     await expect(assertSafeSubscriptionUrl('https://10.0.0.1/pack.tgz')).rejects.toThrow(/blocked/i);
     await expect(assertSafeSubscriptionUrl('https://172.16.0.10/pack.tgz')).rejects.toThrow(/blocked/i);
     await expect(assertSafeSubscriptionUrl('https://169.254.169.254/latest/meta-data')).rejects.toThrow(/blocked/i);
+    await expect(assertSafeSubscriptionUrl('https://198.18.0.1/pack.tgz')).rejects.toThrow(/blocked/i);
+    await expect(assertSafeSubscriptionUrl('https://[::ffff:198.18.0.1]/pack.tgz')).rejects.toThrow(/blocked/i);
     await expect(assertSafeSubscriptionUrl('https://user:pass@example.com/pack.tgz')).rejects.toThrow(/credentials/i);
     await expect(
       assertSafeSubscriptionUrl('https://rebind.example.test/pack.tgz', async () => [{ address: '10.1.2.3' }]),
@@ -327,6 +329,45 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
     await expect(
       assertSafeSubscriptionUrl('https://loopback-rebind.example.test/pack.tgz', async () => [{ address: '127.0.0.1' }]),
     ).rejects.toThrow(/private/i);
+    await expect(
+      assertSafeSubscriptionUrl('https://fakeip-no-doh.example.test/pack.tgz', async () => [{ address: '198.18.104.218', family: 4 }]),
+    ).rejects.toThrow(/private/i);
+    await expect(
+      assertSafeSubscriptionUrl('https://fakeip-rebind-loopback.example.test/pack.tgz', {
+        lookupFn: async () => [{ address: '198.18.104.218', family: 4 }],
+        dohResolveFn: async () => [{ address: '127.0.0.1', family: 4 }],
+      }),
+    ).rejects.toThrow(/private/i);
+    await expect(
+      assertSafeSubscriptionUrl('https://fakeip-rebind-fakeip.example.test/pack.tgz', {
+        lookupFn: async () => [{ address: '198.18.104.218', family: 4 }],
+        dohResolveFn: async () => [{ address: '198.18.0.1', family: 4 }],
+      }),
+    ).rejects.toThrow(/private/i);
+    await expect(
+      assertSafeSubscriptionUrl('https://fakeip-empty-doh.example.test/pack.tgz', {
+        lookupFn: async () => [{ address: '198.18.104.218', family: 4 }],
+        dohResolveFn: async () => [],
+      }),
+    ).rejects.toThrow(/private/i);
+    await expect(
+      assertSafeSubscriptionUrl('https://fakeip-mixed-private.example.test/pack.tgz', {
+        lookupFn: async () => [{ address: '198.18.104.218', family: 4 }, { address: '127.0.0.1', family: 4 }],
+        dohResolveFn: async () => [{ address: '123.206.117.151', family: 4 }],
+      }),
+    ).rejects.toThrow(/private/i);
+    await expect(
+      assertSafeSubscriptionUrl('https://fakeip-public.example.test/pack.tgz', {
+        lookupFn: async () => [{ address: '198.18.104.218', family: 4 }],
+        dohResolveFn: async () => [{ address: '123.206.117.151', family: 4 }],
+      }),
+    ).resolves.toBeInstanceOf(URL);
+    await expect(
+      assertSafeSubscriptionUrl('https://fakeip-mapped-v6.example.test/pack.tgz', {
+        lookupFn: async () => [{ address: '::ffff:198.19.0.42', family: 6 }],
+        dohResolveFn: async () => [{ address: '123.206.117.151', family: 4 }],
+      }),
+    ).resolves.toBeInstanceOf(URL);
     await expect(
       fetchSubscriptionArchive('https://public.example.test/pack.tgz', {
         allowLoopback: true,

@@ -24,14 +24,16 @@ import {
 export function QuotaPaceCaption({ pace }: { readonly pace: RemainingPace | null | undefined }) {
   const { t, locale } = useI18n();
   if (pace === null || pace === undefined || pace.state === 'on_track') return null;
-  const text = pace.state === 'depleting'
-    ? t('usage.quota.pace.depleting', { eta: formatPaceEta(pace.etaSeconds, locale) })
-    : t('usage.quota.pace.fast');
+  const text = pace.state === 'exhausted'
+    ? t('usage.quota.pace.exhausted')
+    : pace.state === 'depleting'
+      ? t('usage.quota.pace.depleting', { eta: formatPaceEta(pace.etaSeconds, locale) })
+      : t('usage.quota.pace.fast');
   return (
     <p
       data-quota-pace={pace.state}
       className={`font-sans tracking-normal text-[12px] leading-4 tabular-nums ${
-        pace.state === 'depleting'
+        pace.state === 'depleting' || pace.state === 'exhausted'
           ? 'text-[var(--kiki-chart-danger-text)]'
           : 'text-[var(--kiki-chart-warn-text)]'
       }`}
