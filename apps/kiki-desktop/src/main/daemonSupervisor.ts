@@ -1519,18 +1519,25 @@ export class DaemonSupervisor extends EventEmitter {
   }
 
   async shutdownAllManagedDaemons(options: {
+    readonly action?: 'quit' | 'update';
     readonly interruptWork: boolean;
     readonly probeTimeoutMs?: number;
     readonly graceMs?: number;
     readonly preProbed?: ManagedQuitPlan;
   }): Promise<StopManagedDaemonResult> {
     this.markShuttingDown();
+    const action = options.action ?? 'quit';
     const cached =
-      this.cachedQuitPlan !== null && this.now() - this.cachedQuitPlan.at <= QUIT_PLAN_CACHE_TTL_MS
+      action === 'quit' &&
+      this.cachedQuitPlan !== null &&
+      this.now() - this.cachedQuitPlan.at <= QUIT_PLAN_CACHE_TTL_MS
         ? this.cachedQuitPlan.plan
         : undefined;
     this.cachedQuitPlan = null;
     const plan = options.preProbed ?? cached;
+    const defaultProbeTimeoutMs =
+      action === 'update' ? DEFAULT_HTTP_TIMEOUT_MS : this.quitProbeTimeoutMs;
+    const defaultGraceMs = action === 'update' ? this.shutdownGraceMs : this.quitGraceMs;
     const preReady = this.preReadyChild;
     this.preReadyChild = null;
     if (preReady !== null) {
@@ -1542,10 +1549,10 @@ export class DaemonSupervisor extends EventEmitter {
         const homeKey = canonicalHomeKey(homeDir);
         const hasPreProbed = plan?.byHomeKey.has(homeKey) === true;
         return this.stopManagedDaemonForHome(homeDir, {
-          action: 'quit',
+          action,
           interruptWork: options.interruptWork,
-          probeTimeoutMs: options.probeTimeoutMs ?? this.quitProbeTimeoutMs,
-          graceMs: options.graceMs ?? this.quitGraceMs,
+          probeTimeoutMs: options.probeTimeoutMs ?? defaultProbeTimeoutMs,
+          graceMs: options.graceMs ?? defaultGraceMs,
           ...(hasPreProbed ? { preProbed: { resolved: plan.byHomeKey.get(homeKey) ?? null } } : {}),
         }).catch((): StopManagedDaemonResult => ({ stopped: false, reason: 'not-running' }));
       }),

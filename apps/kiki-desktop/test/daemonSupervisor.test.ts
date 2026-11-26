@@ -702,5 +702,47 @@ describe('DaemonSupervisor', () => {
     expect(supervisor.isShuttingDown).toBe(true);
     await supervisor.checkHealthAndRecoverIfNeeded();
     await expect(supervisor.discoverConnection()).rejects.toThrow(/shutting down/i);
+
+    // Update-install drain sends action: 'update' and uses shutdownGraceMs instead of quitGraceMs!
+    const updateHome = makeTempHome();
+    mkdirSync(join(updateHome, 'server', 'instances'), { recursive: true });
+    writeFileSync(join(updateHome, 'server.local-owner'), 'tok-upd');
+    writeFileSync(
+      join(updateHome, 'server', 'instances', 'u.json'),
+      JSON.stringify({ server_id: 'srv-upd', pid: 5303, port: 53003, started_at: 3000 }),
+    );
+    const updatePostedActions: string[] = [];
+    let updAlive = true;
+    const updSupervisor = new DaemonSupervisor(
+      {
+        electronBinary: '/opt/kiki/kiki-desktop',
+        serverEntry: '/opt/kiki/server-entry.mjs',
+        homeDir: updateHome,
+      },
+      {
+        isPidAlive: () => updAlive,
+        quitGraceMs: 10,
+        shutdownGraceMs: 25,
+        fetchFn: async (input, init) => {
+          const url = new URL(requestUrlString(input));
+          if (url.pathname === '/api/meta') {
+            return jsonResponse({ code: 0, data: { server_id: 'srv-upd', home_id: 'main', desktop_managed: true } });
+          }
+          if (url.pathname === '/api/desktop-lifecycle' && (!init?.method || init.method === 'GET')) {
+            return jsonResponse({ code: 0, data: { server_id: 'srv-upd', home_id: 'main', managed: true, draining: false, work_pending: [] } });
+          }
+          if (url.pathname === '/api/desktop-lifecycle' && init?.method === 'POST') {
+            const parsed = JSON.parse(typeof init.body === 'string' ? init.body : '{}') as { action?: string };
+            if (parsed.action) updatePostedActions.push(parsed.action);
+            updAlive = false;
+            return jsonResponse({ code: 0, data: { ok: true } });
+          }
+          return jsonResponse({ code: 1 }, 404);
+        },
+      },
+    );
+    await updSupervisor.discoverConnection();
+    await updSupervisor.shutdownAllManagedDaemons({ action: 'update', interruptWork: true });
+    expect(updatePostedActions).toEqual(['update']);
   });
 });

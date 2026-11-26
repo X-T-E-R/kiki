@@ -730,7 +730,7 @@ if (!singleInstanceLock) {
       return confirmShutdownDialog('Installing the update', pending);
     },
     prepareDaemonForUpdate: async () => {
-      await daemon.shutdownAllManagedDaemons({ interruptWork: true });
+      await daemon.shutdownAllManagedDaemons({ action: 'update', interruptWork: true });
     },
     markInstallingUpdate: (flag) => {
       installingUpdate = flag;
