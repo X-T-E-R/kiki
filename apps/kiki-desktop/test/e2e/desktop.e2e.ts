@@ -807,7 +807,7 @@ describe('kiki-desktop real unpacked binary E2E (Layer 2)', () => {
     }
   });
 
-  it('hides windows immediately, tree-kills a hung daemon + grandchild process within <= 6s, and exits 0 on Quit (t1026 regression)', async () => {
+  it('hides windows immediately (<50ms), tree-kills a hung daemon + grandchild process within <= 2.2s, and exits 0 on Quit (t1026 regression)', async () => {
     const { exe } = resolveUnpackedPaths();
     const scratch = mkdtempSync(join(tmpdir(), 'kiki-e2e-hung-quit-'));
     const hungHome = join(scratch, 'hung-home');
@@ -919,8 +919,8 @@ describe('kiki-desktop real unpacked binary E2E (Layer 2)', () => {
       app.quit();
     });
 
-    // Window must hide immediately (< 1s) while background grace + tree-kill completes!
-    await delay(250);
+    // Window must hide immediately (< 50ms) while background 1.2s grace + tree-kill completes!
+    await delay(50);
     const visibleDuringGrace = await hungApp
       .evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some((w) => w.isVisible()))
       .catch(() => false);
@@ -932,7 +932,7 @@ describe('kiki-desktop real unpacked binary E2E (Layer 2)', () => {
     hungApp = undefined;
 
     expect(exitCode).toBe(0);
-    expect(quitElapsedMs).toBeLessThan(6_500);
+    expect(quitElapsedMs).toBeLessThan(2_500);
     expect(await waitForPidExit(hungDaemonPid, 1_500)).toBe(true);
     expect(await waitForPidExit(grandchildPid, 1_500)).toBe(true);
     expect(readInstanceReceipts(hungHome)).toEqual([]);

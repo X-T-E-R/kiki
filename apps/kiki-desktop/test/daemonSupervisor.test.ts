@@ -620,6 +620,7 @@ describe('DaemonSupervisor', () => {
     const alivePids = new Set<number>([5101, 5202]);
     const treeKilledPids: number[] = [];
     const events: string[] = [];
+    const lifecycleGetCounts = new Map<number, number>();
 
     const supervisor = new DaemonSupervisor(
       {
@@ -651,6 +652,7 @@ describe('DaemonSupervisor', () => {
             });
           }
           if (url.pathname === '/api/desktop-lifecycle' && (!init?.method || init.method === 'GET')) {
+            lifecycleGetCounts.set(port, (lifecycleGetCounts.get(port) ?? 0) + 1);
             return jsonResponse({
               code: 0,
               data: {
@@ -691,9 +693,11 @@ describe('DaemonSupervisor', () => {
       },
     });
 
-    // Window hides BEFORE waiting on daemon shutdown, both hung PIDs are tree-killed, and stale instance records are cleaned!
+    // Window hides BEFORE waiting on daemon shutdown, GET /api/desktop-lifecycle runs ONLY ONCE per space (zero duplicate round-trip), both hung PIDs are tree-killed, and stale instance records are cleaned!
     expect(events[0]).toBe('hide-windows-immediately');
     expect(events.at(-1)).toBe('app-exit-0');
+    expect(lifecycleGetCounts.get(51001)).toBe(1);
+    expect(lifecycleGetCounts.get(52002)).toBe(1);
     expect(treeKilledPids.toSorted()).toEqual([5101, 5202]);
     expect(supervisor.isShuttingDown).toBe(true);
     await supervisor.checkHealthAndRecoverIfNeeded();

@@ -28,7 +28,7 @@ import {
   KIKI_APP_SCHEME,
 } from '#/main/appProtocol';
 import { parseWindowsCfHdropBuffer } from '#/main/clipboardDropFiles';
-import { DaemonSupervisor } from '#/main/daemonSupervisor';
+import { DaemonSupervisor, type ManagedQuitPlan } from '#/main/daemonSupervisor';
 import {
   decodeClipboardUriList,
   FileAndClipboardService,
@@ -656,17 +656,33 @@ if (!singleInstanceLock) {
       persistCurrentWindowBounds(activeBrowserWindow);
     }
     windows.hideAllForQuit();
+    for (const bw of BrowserWindow.getAllWindows()) {
+      if (!bw.isDestroyed() && bw.isVisible()) {
+        try {
+          bw.hide();
+        } catch {
+          // Ignore already-closing window during quit.
+        }
+      }
+    }
     daemon.markShuttingDown();
     cleanupGlobalUiHandles();
   };
 
   const requestConfirmedQuit = (): Promise<void> => {
     if (quitInFlight !== null) return quitInFlight;
+    let quitPlan: ManagedQuitPlan | undefined;
     quitInFlight = executeTrayQuit({
-      collectPendingWork: () => daemon.collectManagedQuitPendingWork(),
+      collectPendingWork: async () => {
+        quitPlan = await daemon.probeManagedQuitPlan();
+        return quitPlan.pendingWork;
+      },
       beginImmediateQuitUi,
       stopManagedDaemon: ({ interruptWork }) =>
-        daemon.shutdownAllManagedDaemons({ interruptWork }),
+        daemon.shutdownAllManagedDaemons({
+          interruptWork,
+          ...(quitPlan !== undefined ? { preProbed: quitPlan } : {}),
+        }),
       confirmInterruptPendingWork: (pending) => confirmShutdownDialog('Quitting Kiki', pending),
       detachDesktop: () => {
         daemon.detachDesktop();

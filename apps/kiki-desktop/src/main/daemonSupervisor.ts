@@ -44,8 +44,10 @@ const execFileAsync = promisify(execFile);
 const DEFAULT_STARTUP_TIMEOUT_MS = 120_000;
 const DEFAULT_POLL_INTERVAL_MS = 200;
 const DEFAULT_HTTP_TIMEOUT_MS = 10_000;
-const DEFAULT_QUIT_PROBE_TIMEOUT_MS = 1_200;
+const DEFAULT_QUIT_PROBE_TIMEOUT_MS = 600;
+const DEFAULT_QUIT_GRACE_MS = 1_200;
 const DEFAULT_SHUTDOWN_GRACE_MS = 3_000;
+const QUIT_PLAN_CACHE_TTL_MS = 15_000;
 const HEARTBEAT_FRESHNESS_MS = 60_000;
 const ENSURE_LOCK_STALE_MS = 30_000;
 const RECOVERY_MAX_ATTEMPTS = 3;
@@ -130,9 +132,20 @@ export interface DaemonSupervisorDeps {
   readonly startupTimeoutMs?: number;
   readonly pollIntervalMs?: number;
   readonly quitProbeTimeoutMs?: number;
+  readonly quitGraceMs?: number;
   readonly shutdownGraceMs?: number;
   readonly baseEnv?: NodeJS.ProcessEnv;
   readonly autoRecoverManagedExit?: boolean;
+}
+
+export interface ProbedHomeLifecycle {
+  readonly backend: VerifiedBackend;
+  readonly state: DaemonLifecycleState;
+}
+
+export interface ManagedQuitPlan {
+  readonly pendingWork: string[];
+  readonly byHomeKey: ReadonlyMap<string, ProbedHomeLifecycle | null>;
 }
 
 export interface StopManagedDaemonResult {
@@ -309,12 +322,14 @@ export class DaemonSupervisor extends EventEmitter {
   private readonly startupTimeoutMs: number;
   private readonly pollIntervalMs: number;
   private readonly quitProbeTimeoutMs: number;
+  private readonly quitGraceMs: number;
   private readonly shutdownGraceMs: number;
   private readonly baseEnv: NodeJS.ProcessEnv;
   private readonly autoRecoverManagedExit: boolean;
 
   private descriptor: DaemonRuntimeDescriptor;
   private attached: VerifiedBackend | null = null;
+  private cachedQuitPlan: { readonly at: number; readonly plan: ManagedQuitPlan } | null = null;
   private discoveryFlight: Promise<LocalConnection> | null = null;
   private startupAbort: AbortController | null = null;
   private preReadyChild: SpawnedDaemonChild | null = null;
@@ -348,6 +363,7 @@ export class DaemonSupervisor extends EventEmitter {
     this.startupTimeoutMs = deps.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
     this.pollIntervalMs = deps.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.quitProbeTimeoutMs = deps.quitProbeTimeoutMs ?? DEFAULT_QUIT_PROBE_TIMEOUT_MS;
+    this.quitGraceMs = deps.quitGraceMs ?? deps.shutdownGraceMs ?? DEFAULT_QUIT_GRACE_MS;
     this.shutdownGraceMs = deps.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
     this.baseEnv = deps.baseEnv ?? process.env;
     this.autoRecoverManagedExit = deps.autoRecoverManagedExit ?? false;
@@ -444,6 +460,7 @@ export class DaemonSupervisor extends EventEmitter {
     };
     this.recordManagedHome(homeDir, {});
     this.attached = null;
+    this.cachedQuitPlan = null;
     this.recoveryAttempts = 0;
     this.lastReadyAt = 0;
   }
@@ -1169,26 +1186,34 @@ export class DaemonSupervisor extends EventEmitter {
   async readLifecycleStateForHome(
     homeDir: string,
     timeoutMs: number = DEFAULT_HTTP_TIMEOUT_MS,
-  ): Promise<{
-    readonly backend: VerifiedBackend;
-    readonly state: DaemonLifecycleState;
-  } | null> {
-    const backend = await this.discoverVerifiedForHome(homeDir, undefined, timeoutMs);
-    if (backend === null) return null;
-    try {
-      const response = await this.fetchFn(`${backend.config.url}/api/desktop-lifecycle`, {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${backend.config.token}` },
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-      if (!response.ok) return null;
-      const payload = (await response.json()) as { code?: number; data?: unknown };
-      if (payload.code !== 0) return null;
-      const parsed = lifecycleStateSchema.safeParse(payload.data);
-      return parsed.success ? { backend, state: parsed.data } : null;
-    } catch {
-      return null;
+  ): Promise<ProbedHomeLifecycle | null> {
+    const deadlineSignal = AbortSignal.timeout(timeoutMs);
+    const fetchLifecycle = async (backend: VerifiedBackend): Promise<ProbedHomeLifecycle | null> => {
+      try {
+        const response = await this.fetchFn(`${backend.config.url}/api/desktop-lifecycle`, {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${backend.config.token}` },
+          signal: deadlineSignal,
+        });
+        if (!response.ok) return null;
+        const payload = (await response.json()) as { code?: number; data?: unknown };
+        if (payload.code !== 0) return null;
+        const parsed = lifecycleStateSchema.safeParse(payload.data);
+        return parsed.success ? { backend, state: parsed.data } : null;
+      } catch {
+        return null;
+      }
+    };
+
+    if (this.isActiveHome(homeDir) && this.attached !== null) {
+      const fast = await fetchLifecycle(this.attached);
+      if (fast !== null) return fast;
+      if (deadlineSignal.aborted) return null;
     }
+
+    const backend = await this.discoverVerifiedForHome(homeDir, deadlineSignal, timeoutMs);
+    if (backend === null || deadlineSignal.aborted) return null;
+    return fetchLifecycle(backend);
   }
 
   async readLifecycleState(timeoutMs: number = DEFAULT_HTTP_TIMEOUT_MS): Promise<DaemonLifecycleState | null> {
@@ -1280,7 +1305,7 @@ export class DaemonSupervisor extends EventEmitter {
     if (pid === undefined || pid <= 0) return;
 
     const deadline = this.now() + Math.max(0, graceMs);
-    const stepMs = Math.min(100, this.pollIntervalMs);
+    const stepMs = Math.min(25, this.pollIntervalMs);
     while (this.now() < deadline) {
       if (!this.isPidAlive(pid)) {
         this.clearManagedHomeRuntime(homeDir, pid);
@@ -1343,16 +1368,22 @@ export class DaemonSupervisor extends EventEmitter {
       readonly interruptWork?: boolean;
       readonly probeTimeoutMs?: number;
       readonly graceMs?: number;
+      readonly preProbed?: { readonly resolved: ProbedHomeLifecycle | null };
     },
   ): Promise<StopManagedDaemonResult> {
     const probeTimeoutMs =
       options.probeTimeoutMs ??
       (options.action === 'quit' ? this.quitProbeTimeoutMs : DEFAULT_HTTP_TIMEOUT_MS);
-    const graceMs = options.graceMs ?? this.shutdownGraceMs;
+    const graceMs =
+      options.graceMs ??
+      (options.action === 'quit' ? this.quitGraceMs : this.shutdownGraceMs);
 
     this.intentionalStopCount += 1;
     try {
-      const resolved = await this.readLifecycleStateForHome(homeDir, probeTimeoutMs);
+      const resolved =
+        options.preProbed !== undefined
+          ? options.preProbed.resolved
+          : await this.readLifecycleStateForHome(homeDir, probeTimeoutMs);
       if (resolved === null) {
         if (options.action === 'quit' || options.interruptWork === true) {
           const wedged = await this.findWedgedManagedTarget(homeDir);
@@ -1454,29 +1485,52 @@ export class DaemonSupervisor extends EventEmitter {
     return [...byKey.values()];
   }
 
-  async collectManagedQuitPendingWork(
+  async probeManagedQuitPlan(
     probeTimeoutMs: number = this.quitProbeTimeoutMs,
-  ): Promise<string[]> {
+  ): Promise<ManagedQuitPlan> {
     const homes = this.getTrackedManagedHomes();
-    const results = await Promise.all(
-      homes.map((homeDir) => this.readLifecycleStateForHome(homeDir, probeTimeoutMs)),
+    const entries = await Promise.all(
+      homes.map(async (homeDir) => [
+        canonicalHomeKey(homeDir),
+        await this.readLifecycleStateForHome(homeDir, probeTimeoutMs),
+      ] as const),
     );
+    const byHomeKey = new Map<string, ProbedHomeLifecycle | null>(entries);
     const pending = new Set<string>();
-    for (const resolved of results) {
+    for (const [, resolved] of entries) {
       if (resolved === null || !resolved.state.managed) continue;
       for (const sessionId of resolved.state.work_pending) {
         pending.add(sessionId);
       }
     }
-    return [...pending];
+    const plan: ManagedQuitPlan = {
+      pendingWork: [...pending],
+      byHomeKey,
+    };
+    this.cachedQuitPlan = { at: this.now(), plan };
+    return plan;
+  }
+
+  async collectManagedQuitPendingWork(
+    probeTimeoutMs: number = this.quitProbeTimeoutMs,
+  ): Promise<string[]> {
+    const plan = await this.probeManagedQuitPlan(probeTimeoutMs);
+    return plan.pendingWork;
   }
 
   async shutdownAllManagedDaemons(options: {
     readonly interruptWork: boolean;
     readonly probeTimeoutMs?: number;
     readonly graceMs?: number;
+    readonly preProbed?: ManagedQuitPlan;
   }): Promise<StopManagedDaemonResult> {
     this.markShuttingDown();
+    const cached =
+      this.cachedQuitPlan !== null && this.now() - this.cachedQuitPlan.at <= QUIT_PLAN_CACHE_TTL_MS
+        ? this.cachedQuitPlan.plan
+        : undefined;
+    this.cachedQuitPlan = null;
+    const plan = options.preProbed ?? cached;
     const preReady = this.preReadyChild;
     this.preReadyChild = null;
     if (preReady !== null) {
@@ -1484,14 +1538,17 @@ export class DaemonSupervisor extends EventEmitter {
     }
     const homes = this.getTrackedManagedHomes();
     const results = await Promise.all(
-      homes.map((homeDir) =>
-        this.stopManagedDaemonForHome(homeDir, {
+      homes.map((homeDir) => {
+        const homeKey = canonicalHomeKey(homeDir);
+        const hasPreProbed = plan?.byHomeKey.has(homeKey) === true;
+        return this.stopManagedDaemonForHome(homeDir, {
           action: 'quit',
           interruptWork: options.interruptWork,
           probeTimeoutMs: options.probeTimeoutMs ?? this.quitProbeTimeoutMs,
-          graceMs: options.graceMs ?? this.shutdownGraceMs,
-        }).catch((): StopManagedDaemonResult => ({ stopped: false, reason: 'not-running' })),
-      ),
+          graceMs: options.graceMs ?? this.quitGraceMs,
+          ...(hasPreProbed ? { preProbed: { resolved: plan.byHomeKey.get(homeKey) ?? null } } : {}),
+        }).catch((): StopManagedDaemonResult => ({ stopped: false, reason: 'not-running' }));
+      }),
     );
     const anyStopped = results.some((item) => item.stopped);
     return {
