@@ -5281,6 +5281,7 @@ export interface AgentStateSnapshot {
             readonly timeout?: number;
             readonly ownedProcessTree?: boolean;
             readonly ownedProcessLifetime?: 'owner' | 'process';
+            readonly signal?: AbortSignal;
           }) => Promise</* IHostProcess — packages/agent-core-v2/src/os/interface/hostProcess.ts */ {
             readonly _serviceBrand: undefined;
             readonly pid: number;

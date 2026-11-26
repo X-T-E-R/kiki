@@ -9,9 +9,30 @@ interface ErrorHandlerHost {
     handler: (
       err: FastifyError,
       req: { id: string; log: { error: (obj: object | string, msg?: string) => void; debug?: (obj: object | string, msg?: string) => void } },
-      reply: Pick<FastifyReply, 'status' | 'send' | 'type' | 'serializer' | 'removeHeader'> & { readonly raw?: { readonly destroyed: boolean; readonly writableEnded: boolean } },
+      reply: Pick<FastifyReply, 'status' | 'send' | 'type' | 'serializer' | 'removeHeader'> & {
+        readonly sent?: boolean;
+        readonly raw?: { readonly destroyed: boolean; readonly writableEnded: boolean; readonly headersSent?: boolean };
+      },
     ) => void,
   ): unknown;
+}
+
+function classifyErrorType(err: { readonly code?: unknown; readonly name?: unknown }): string {
+  if (typeof err.code === 'string' && err.code.length > 0) return err.code;
+  if (typeof err.name === 'string' && err.name.length > 0) return err.name;
+  return 'Error';
+}
+
+function isReplyFinalized(reply: {
+  readonly sent?: boolean;
+  readonly raw?: { readonly destroyed: boolean; readonly writableEnded: boolean; readonly headersSent?: boolean };
+}): boolean {
+  return (
+    reply.sent === true ||
+    reply.raw?.headersSent === true ||
+    reply.raw?.writableEnded === true ||
+    reply.raw?.destroyed === true
+  );
 }
 
 /** Installs the catch-all REST error handler. Provider failures keep their wire code but add the
@@ -20,54 +41,63 @@ interface ErrorHandlerHost {
 export function installErrorHandler(app: ErrorHandlerHost): void {
   app.setErrorHandler((err, req, reply) => {
     const requestId = req.id;
-    reply.type('application/json').serializer(JSON.stringify);
-    reply.removeHeader('content-length');
-    reply.removeHeader('content-range');
-    reply.removeHeader('content-disposition');
-    if (err.code === 'FST_ERR_CTP_BODY_TOO_LARGE') {
-      reply
-        .status(413)
-        .send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'request body exceeds the allowed size limit', requestId));
+    const errorType = classifyErrorType(err);
+    if (isReplyFinalized(reply)) {
+      if (err.name === 'AbortError' && reply.raw?.destroyed === true && !reply.raw.writableEnded) {
+        req.log.debug?.({ request_id: requestId }, 'request aborted by client');
+      } else {
+        req.log.error({ error_type: errorType, request_id: requestId }, 'unhandled error');
+      }
       return;
     }
-    if (isError2(err) && err.code === ErrorCodes.CONFIG_INVALID) {
-      reply
-        .status(200)
-        .send(errEnvelope(ErrorCode.VALIDATION_FAILED, err.message, requestId, err.stack));
-      return;
-    }
-    if (isError2(err) && err.code === ErrorCodes.STORAGE_LOCKED) {
-      reply.status(200).send(errEnvelope(ErrorCode.SESSION_LOCKED, err.message, requestId, err.stack));
-      return;
-    }
-    if (isError2(err) && err.code === ErrorCodes.WORK_ADMISSION_FENCED) {
+    try {
+      reply.type('application/json').serializer(JSON.stringify);
+      reply.removeHeader('content-length');
+      reply.removeHeader('content-range');
+      reply.removeHeader('content-disposition');
+      if (err.code === 'FST_ERR_CTP_BODY_TOO_LARGE') {
+        reply
+          .status(413)
+          .send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'request body exceeds the allowed size limit', requestId));
+        return;
+      }
+      if (isError2(err) && err.code === ErrorCodes.CONFIG_INVALID) {
+        reply
+          .status(200)
+          .send(errEnvelope(ErrorCode.VALIDATION_FAILED, err.message, requestId, err.stack));
+        return;
+      }
+      if (isError2(err) && err.code === ErrorCodes.STORAGE_LOCKED) {
+        reply.status(200).send(errEnvelope(ErrorCode.SESSION_LOCKED, err.message, requestId, err.stack));
+        return;
+      }
+      if (isError2(err) && err.code === ErrorCodes.WORK_ADMISSION_FENCED) {
+        reply.status(200).send({
+          ...errEnvelope(ErrorCode.WORK_ADMISSION_FENCED, err.message, requestId, err.stack),
+          details: err.details,
+        });
+        return;
+      }
+      if (isError2(err) && err.code === ErrorCodes.SESSION_INDEX_BUILDING) {
+        reply
+          .status(200)
+          .send(errEnvelope(ErrorCode.SESSION_INDEX_BUILDING, err.message, requestId, err.stack));
+        return;
+      }
+      req.log.error({ error_type: errorType, request_id: requestId }, 'unhandled error');
+      const errorKind = isError2(err) ? providerErrorKindOf(err.details) : undefined;
       reply.status(200).send({
-        ...errEnvelope(ErrorCode.WORK_ADMISSION_FENCED, err.message, requestId, err.stack),
-        details: err.details,
+        ...errEnvelope(
+          ErrorCode.INTERNAL_ERROR,
+          err.message !== undefined && err.message !== '' ? err.message : 'internal error',
+          requestId,
+          err.stack,
+        ),
+        ...(errorKind === undefined ? {} : { details: { error_kind: errorKind } }),
       });
+    } catch {
       return;
     }
-    if (isError2(err) && err.code === ErrorCodes.SESSION_INDEX_BUILDING) {
-      reply
-        .status(200)
-        .send(errEnvelope(ErrorCode.SESSION_INDEX_BUILDING, err.message, requestId, err.stack));
-      return;
-    }
-    if (err.name === 'AbortError' && reply.raw?.destroyed === true && !reply.raw.writableEnded) {
-      req.log.debug?.({ request_id: requestId }, 'request aborted by client');
-    } else {
-      req.log.error({ error_type: err.code ?? err.name, request_id: requestId }, 'unhandled error');
-    }
-    const errorKind = isError2(err) ? providerErrorKindOf(err.details) : undefined;
-    reply.status(200).send({
-      ...errEnvelope(
-        ErrorCode.INTERNAL_ERROR,
-        err.message !== undefined && err.message !== '' ? err.message : 'internal error',
-        requestId,
-        err.stack,
-      ),
-      ...(errorKind === undefined ? {} : { details: { error_kind: errorKind } }),
-    });
   });
 }
 

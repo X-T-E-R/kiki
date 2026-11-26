@@ -12,6 +12,8 @@ import { TestInstantiationService } from '#/_base/di/test';
 import { resetUnexpectedErrorHandler, setUnexpectedErrorHandler } from '#/_base/errors/unexpectedError';
 import { ILogService } from '#/_base/log/log';
 import { IAgentBlobService } from '#/agent/blob/agentBlobService';
+import { CpuWorkerPool } from '#/app/cpuWorker/host';
+import { ICpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
 import { ITelemetryService, noopTelemetryService } from '#/app/telemetry/telemetry';
 import type { ContentPart } from '#/kosong/contract/message';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
@@ -1896,5 +1898,171 @@ describe('WireService flush', () => {
       readBack.push(item);
     }
     expect(readBack).toContainEqual({ type: 'wire.test.single_encode', text: '单次编码🚀', time: 42 });
+  });
+
+  it('streams >= 256 KiB journals through ICpuWorkerService with exact byteOffset progress, replay slimming, and tail startByteOffset', async () => {
+    const workerPool = new CpuWorkerPool(new URL('../../src/app/cpuWorker/bootstrap.mjs', import.meta.url), {
+      maxWorkers: 2,
+    });
+    try {
+      const workerIx = disposables.add(new TestInstantiationService());
+      const workerStorage = new InMemoryStorageService();
+      workerIx.stub(IFileSystemStorageService, workerStorage);
+      workerIx.stub(ICpuWorkerService, {
+        _serviceBrand: undefined,
+        request: <T>(op: unknown, opts?: Parameters<CpuWorkerPool['request']>[1]) =>
+          workerPool.request<T>(op, opts),
+      });
+      workerIx.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+      const workerLog = workerIx.get(IAppendLogStore);
+      const workerWire = registerTestAgentWire(workerIx, testWireScope(SCOPE, 'worker-journal'), {
+        log: workerLog,
+        storage: workerStorage,
+        logger: noopLogger,
+        telemetry: noopTelemetryService,
+      });
+
+      await workerWire.seal();
+      const bigTools = Array.from({ length: 60 }, (_, idx) => ({
+        name: `Tool_${idx}`,
+        description: 'd'.repeat(4096),
+        parameters: { type: 'object' },
+      }));
+      workerWire.appendRecord({
+        type: 'llm.tools_snapshot',
+        hash: 'snap-1',
+        tools: bigTools,
+        time: 1,
+      });
+      workerWire.appendRecord({
+        type: 'llm.request',
+        stepId: 's1',
+        systemPrompt: 'S'.repeat(65_536),
+        time: 2,
+      });
+      for (let i = 0; i < 64; i++) {
+        workerWire.appendRecord({
+          type: 'wire.test.utf8_batch',
+          index: i,
+          text: `多字节边界校验🚀-${i}-${'p'.repeat(4096)}`,
+          time: 10 + i,
+        });
+      }
+      await workerWire.flush();
+      const identity = await workerWire.journalIdentity!();
+      expect(identity.size).toBeGreaterThan(256 * 1024);
+
+      const offsets: number[] = [];
+      const replayed: WireRecord[] = [];
+      for await (const record of workerWire.readJournal({
+        onProgress: ({ byteOffset, canCheckpoint }) => {
+          expect(canCheckpoint).toBe(true);
+          offsets.push(byteOffset);
+        },
+      })) {
+        replayed.push(record);
+      }
+
+      expect(replayed).toHaveLength(67);
+      expect(replayed[0]).toMatchObject({ type: 'metadata' });
+      expect(replayed[1]).toMatchObject({ type: 'llm.tools_snapshot', tools: [] });
+      expect(replayed[2]).toMatchObject({ type: 'llm.request', systemPrompt: '1' });
+      expect(replayed.at(-1)).toMatchObject({
+        type: 'wire.test.utf8_batch',
+        index: 63,
+      });
+      expect(offsets).toHaveLength(67);
+      expect(offsets.at(-1)).toBe(identity.size);
+
+      const midOffset = offsets[30]!;
+      const tailRecords: WireRecord[] = [];
+      for await (const record of workerWire.readJournal({ startByte: midOffset })) {
+        tailRecords.push(record);
+      }
+      expect(tailRecords).toEqual(replayed.slice(31));
+    } finally {
+      await workerPool.close();
+    }
+  });
+
+  it('retries readUnverifiedTail up to 3 attempts during sealTranscriptEpoch and warns instead of throwing on exhaustion', async () => {
+    const warnings: Array<{ message: string; data?: unknown }> = [];
+    const customLogger: ILogService = {
+      ...noopLogger,
+      warn: (message, data) => {
+        warnings.push({ message, data });
+      },
+    };
+
+    const makeSealRig = (failCount: number) => {
+      const scopeName = testWireScope(SCOPE, `seal-${failCount}`);
+      const rigIx = disposables.add(new TestInstantiationService());
+      const rigStorage = new InMemoryStorageService();
+      let sealing = false;
+      let tailReads = 0;
+      const origReadStream = rigStorage.readStream.bind(rigStorage);
+      rigStorage.readStream = async function* (scopeKey, key, range) {
+        if (sealing && key === AGENT_WIRE_RECORD_KEY) {
+          tailReads += 1;
+          if (tailReads <= failCount) {
+            return;
+          }
+        }
+        yield* origReadStream(scopeKey, key, range);
+      };
+      rigIx.stub(IFileSystemStorageService, rigStorage);
+      rigIx.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+      const rigLog = rigIx.get(IAppendLogStore);
+      const rigWire = registerTestAgentWire(rigIx, scopeName, {
+        log: rigLog,
+        storage: rigStorage,
+        logger: customLogger,
+        telemetry: noopTelemetryService,
+      });
+      return {
+        rigWire,
+        rigStorage,
+        scopeName,
+        setSealing: (val: boolean) => {
+          sealing = val;
+        },
+        getTailReads: () => tailReads,
+      };
+    };
+
+    const recoverable = makeSealRig(1);
+    await recoverable.rigStorage.write(
+      recoverable.scopeName,
+      AGENT_WIRE_RECORD_KEY,
+      Buffer.from(`${JSON.stringify({ type: 'wire.test.untrusted', time: 1 })}\n`),
+    );
+    await recoverable.rigWire.beginTranscriptEpoch!();
+    recoverable.setSealing(true);
+    await expect(recoverable.rigWire.sealTranscriptEpoch!()).resolves.toBeUndefined();
+    expect(recoverable.getTailReads()).toBeGreaterThanOrEqual(2);
+    const savedReceipt = await recoverable.rigStorage.read(
+      recoverable.scopeName,
+      WIRE_TRANSCRIPT_RECEIPT_KEY,
+    );
+    expect(parseWireTranscriptReceipt(JSON.parse(Buffer.from(savedReceipt!).toString('utf8')))?.state).toBe('sealed');
+
+    const exhausted = makeSealRig(5);
+    await exhausted.rigStorage.write(
+      exhausted.scopeName,
+      AGENT_WIRE_RECORD_KEY,
+      Buffer.from(`${JSON.stringify({ type: 'wire.test.exhaust', time: 2 })}\n`),
+    );
+    await exhausted.rigWire.beginTranscriptEpoch!();
+    exhausted.setSealing(true);
+    await expect(exhausted.rigWire.sealTranscriptEpoch!()).resolves.toBeUndefined();
+    expect(exhausted.getTailReads()).toBeGreaterThanOrEqual(2);
+    expect(
+      warnings.some((entry) => entry.message.includes('changed while sealing its epoch; skipping sealed receipt')),
+    ).toBe(true);
+    const openReceipt = await exhausted.rigStorage.read(
+      exhausted.scopeName,
+      WIRE_TRANSCRIPT_RECEIPT_KEY,
+    );
+    expect(parseWireTranscriptReceipt(JSON.parse(Buffer.from(openReceipt!).toString('utf8')))?.state).toBe('open');
   });
 });

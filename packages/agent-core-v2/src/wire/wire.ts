@@ -22,10 +22,17 @@ export interface WireJournalIdentity {
   readonly storeGeneration?: string;
 }
 
+/** Byte-aligned progress reported while streaming canonical journal records. */
+export interface WireJournalProgress {
+  readonly byteOffset: number;
+  readonly canCheckpoint: boolean;
+}
+
 /** `startByte` reads the appended tail without migrating or rewriting the prefix. */
 export interface WireJournalReadOptions {
   readonly startByte?: number;
   readonly signal?: AbortSignal;
+  readonly onProgress?: (progress: WireJournalProgress) => void;
 }
 
 export class JournalTailUnreadableError extends Error {

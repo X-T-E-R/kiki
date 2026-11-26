@@ -18,6 +18,7 @@ import {
   IConfigService,
   IFlagService,
   IQueryStore,
+  isQueryStoreValueTooLarge,
   ISessionIndex,
   ISessionInteractionService,
   ISessionMetadata,
@@ -134,6 +135,7 @@ const TRANSCRIPT_CHECKPOINT_COLLECTION = '__transcript_projection_checkpoint__';
 const TRANSCRIPT_CHECKPOINT_FORMAT = 34;
 const TRANSCRIPT_CHECKPOINT_MIN_RECORDS = 256;
 const TRANSCRIPT_CHECKPOINT_MAX_WIRE_BYTES = 8 << 20;
+export const TRANSCRIPT_CHECKPOINT_MAX_PAYLOAD_BYTES = 4 << 20;
 const OPS_JOURNAL_COMPACT_MIN_HEAD = 1024;
 const OPS_JOURNAL_ESTIMATE_NODE_OVERHEAD_BYTES = 64;
 const OPS_JOURNAL_ESTIMATE_SCALAR_BYTES = 8;
@@ -6049,11 +6051,35 @@ export class TranscriptService {
           acceptedDurableFacts: reducer.checkpoint(),
         };
         if (checkpointStore !== undefined) {
-          await checkpointStore.put(
-            TRANSCRIPT_CHECKPOINT_COLLECTION,
-            checkpointKey,
+          const estimatedBytes = estimateColdSnapshotBytes(
             checkpointPayload,
-          ).catch(() => undefined);
+            TRANSCRIPT_CHECKPOINT_MAX_PAYLOAD_BYTES,
+          );
+          if (estimatedBytes <= TRANSCRIPT_CHECKPOINT_MAX_PAYLOAD_BYTES) {
+            let encodedBytes = Infinity;
+            try {
+              encodedBytes = Buffer.byteLength(JSON.stringify(checkpointPayload), 'utf8');
+            } catch {
+              encodedBytes = Infinity;
+            }
+            if (encodedBytes <= TRANSCRIPT_CHECKPOINT_MAX_PAYLOAD_BYTES) {
+              await checkpointStore.put(
+                TRANSCRIPT_CHECKPOINT_COLLECTION,
+                checkpointKey,
+                checkpointPayload,
+              ).catch(() => undefined);
+            } else {
+              await checkpointStore.delete(
+                TRANSCRIPT_CHECKPOINT_COLLECTION,
+                checkpointKey,
+              ).catch(() => undefined);
+            }
+          } else {
+            await checkpointStore.delete(
+              TRANSCRIPT_CHECKPOINT_COLLECTION,
+              checkpointKey,
+            ).catch(() => undefined);
+          }
         }
       }
       captureReplayState?.({ adapter: adapter.checkpoint(), acceptedDurableFacts: reducer.checkpoint() });
@@ -7248,7 +7274,10 @@ async function readTranscriptProjectionCheckpoint(
       return undefined;
     }
     return value;
-  } catch {
+  } catch (error) {
+    if (isQueryStoreValueTooLarge(error)) {
+      await store.delete(TRANSCRIPT_CHECKPOINT_COLLECTION, key).catch(() => undefined);
+    }
     return undefined;
   }
 }

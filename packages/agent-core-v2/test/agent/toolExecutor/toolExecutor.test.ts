@@ -2538,6 +2538,36 @@ describe('truncation pipeline', () => {
       vi.useRealTimers();
     }
   });
+
+  it('autonomously aborts wedged foreground tools via foregroundTimeoutMs without caller signal abort', async () => {
+    let sawAbort = false;
+    registry.register(
+      new TestTool('WedgedRead', {
+        foregroundTimeoutMs: 40,
+        execute: async (ctx) => {
+          await new Promise<void>((_resolve, reject) => {
+            ctx.signal.addEventListener(
+              'abort',
+              () => {
+                sawAbort = true;
+                reject(ctx.signal.reason ?? new DOMException('aborted', 'AbortError'));
+              },
+              { once: true },
+            );
+          });
+          return { output: 'unreachable' };
+        },
+      }),
+    );
+
+    const caller = new AbortController();
+    const results = await execute([toolCall('call-wedged', 'WedgedRead', {})], caller.signal);
+    expect(caller.signal.aborted).toBe(false);
+    expect(sawAbort).toBe(true);
+    expect(results).toHaveLength(1);
+    expect(results[0]?.isError).toBe(true);
+    expect(results[0]?.output).toContain('timed out after');
+  });
 });
 
 function toPosix(path: string): string {
@@ -2630,6 +2660,7 @@ class TestTool implements ExecutableTool<Record<string, unknown>> {
       readonly stopBatchAfterThis?: boolean;
       readonly description?: string;
       readonly display?: ToolInputDisplay;
+      readonly foregroundTimeoutMs?: number;
       readonly result?: ExecutableToolResult;
       readonly execute?: (
         ctx: ExecutableToolContext,
@@ -2648,6 +2679,7 @@ class TestTool implements ExecutableTool<Record<string, unknown>> {
       stopBatchAfterThis: this.options.stopBatchAfterThis,
       description: this.options.description,
       display: this.options.display,
+      foregroundTimeoutMs: this.options.foregroundTimeoutMs,
       execute: async (ctx) => {
         this.calls.push({ ...ctx, args });
         if (this.options.execute !== undefined) {

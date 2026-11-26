@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { abortable } from '#/_base/utils/abort';
 import { autoCompactOverrideKey } from '#/agent/fullCompaction/autoCompactOps';
 import { contextStrategyOverrideKey } from '#/agent/fullCompaction/contextStrategyOps';
 import { contextMemoryKey } from '#/agent/contextMemory/contextOps';
@@ -59,6 +60,7 @@ export const LIGHTWEIGHT_STATE_NAMES = new Set([
 const CHECKPOINT_SUBSCOPE = 'replay-checkpoints';
 const CHECKPOINT_KEY = 'engine-v1';
 const CHECKPOINT_CACHE_MAX_ENTRIES = 128;
+const CHECKPOINT_READ_TIMEOUT_MS = 15_000;
 const checkpointCaches = new WeakMap<IFileSystemStorageService, Map<string, DecodedCheckpoint | null>>();
 const checkpointFlights = new WeakMap<IFileSystemStorageService, Map<string, Promise<DecodedCheckpoint | undefined>>>();
 
@@ -141,7 +143,7 @@ async function decodeCheckpointSource(
   if (workers !== undefined && checkpointPath !== undefined) {
     return workers.request<{ readonly wire: ReplayCheckpointWire; readonly states: Map<string, unknown> } | undefined>(
       { type: 'checkpoint.read', path: checkpointPath, names: [...names] },
-      { signal, priority: 'high' },
+      { signal, timeoutMs: CHECKPOINT_READ_TIMEOUT_MS, priority: 'high' },
     );
   }
   const checkpoint = await docs?.get<Checkpoint>(checkpointScope, checkpointKey);
@@ -255,9 +257,10 @@ export async function readPersistedAgentCheckpoint(
     })().finally(() => {
       if (flights.get(cacheKey) === flight) flights.delete(cacheKey);
     });
+    void flight.catch(() => {});
     flights.set(cacheKey, flight);
   }
-  const resolved = await flight;
+  const resolved = signal === undefined ? await flight : await abortable(flight, signal);
   signal?.throwIfAborted();
   return projectRequestedStates(resolved, names);
 }

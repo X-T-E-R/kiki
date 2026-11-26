@@ -36,6 +36,10 @@ export class WebSearchTool implements IWebSearchTool {
       const subject = input.action === 'run' ? (Array.isArray(input.query) ? input.query.join('\n') : input.query) : `${input.action} ${input.job_id}`;
       return {
         accesses: ToolAccesses.none(),
+        foregroundTimeoutMs:
+          input.action === 'run' && input.timeout_ms !== undefined
+            ? input.timeout_ms + 5_000
+            : undefined,
         description: `Search: ${sliceUtf16(subject, 0, 80)}`,
         display: { kind: 'search', query: subject },
         approvalRule: literalRulePattern(this.name, subject),

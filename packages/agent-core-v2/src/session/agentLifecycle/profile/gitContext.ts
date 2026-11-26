@@ -65,6 +65,7 @@ export async function collectGitContext(
   const flight = computeGitContext(process, cwd, log, cache).finally(() => {
     if (flights.get(cwd) === flight) flights.delete(cwd);
   });
+  void flight.catch(() => {});
   flights.set(cwd, flight);
   return flight;
 }

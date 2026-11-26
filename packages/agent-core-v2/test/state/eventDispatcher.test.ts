@@ -23,7 +23,7 @@ import { EventBusService } from '#/app/event/eventBusService';
 import { Event2, event2FromRecord } from '#/app/event/event2';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IEventDispatcher } from '#/state/eventDispatcher';
-import { CycleError, EventDispatcherService } from '#/state/eventDispatcherService';
+import { CycleError, EventDispatcherService, REPLAY_INCREMENTAL_CHECKPOINT_BYTES } from '#/state/eventDispatcherService';
 import { defineState, type PatchEntry } from '#/state/state';
 import { decodeReplayCheckpointGraph, encodeReplayCheckpointGraph, encodeReplayCheckpointGraphAsync, type ReplayCheckpointGraph } from '#/state/replayCheckpointCodec';
 import { IWireService, type WireJournalReadOptions } from '#/wire/wire';
@@ -1046,5 +1046,104 @@ describe('EventDispatcherService', () => {
     expect(second.state.get(undoableTodoKey).items).toEqual(['before-anchor']);
     expect(second.dispatcher.checkpointDepth(undoableTodoKey)).toBe(0);
     expect(second.state.get(contextMemoryKey)).toEqual([]);
+  });
+
+  it('persists incremental replay checkpoints during large journal replay so an aborted restore resumes from the checkpoint offset', async () => {
+    const counterKey = defineState<CounterState>('state.test.incremental_counter', () => ({ value: 0 }))
+      .replayable({ schema: z.custom<CounterState>() })
+      .on(CounterAdd, (draft, event) => {
+        draft.value += event.by;
+      });
+    const documents = new Map<string, unknown>();
+    const docs = {
+      _serviceBrand: undefined,
+      get: async <T>(scopeKey: string, key: string) => documents.get(`${scopeKey}/${key}`) as T | undefined,
+      set: async <T>(scopeKey: string, key: string, value: T) => {
+        documents.set(`${scopeKey}/${key}`, structuredClone(value));
+      },
+      update: async () => undefined,
+      delete: async () => {},
+      list: async () => [],
+      watch: () => () => ({ dispose: () => {} }),
+      acquire: () => ({ dispose: () => {} }),
+    } as unknown as IAtomicDocumentStore;
+    const scope = {
+      _serviceBrand: undefined,
+      agentId: 'main',
+      agentScope: 'sessions/ws/s-inc/agents/main',
+      parentAgentId: undefined,
+      scope: (subKey?: string) =>
+        subKey === undefined ? 'sessions/ws/s-inc/agents/main' : `sessions/ws/s-inc/agents/main/${subKey}`,
+    } as unknown as IAgentScopeContext;
+
+    const stepSize = Math.ceil(REPLAY_INCREMENTAL_CHECKPOINT_BYTES / 2) + 1024;
+    const totalRecords = 6;
+    const totalBytes = totalRecords * stepSize;
+    const readStarts: Array<number | undefined> = [];
+    const shaOf = (tag: number): string => tag.toString(16).padStart(64, '0');
+
+    const createRig = (abortController?: AbortController, abortAtIndex?: number) => {
+      const wire: IWireService = {
+        _serviceBrand: undefined,
+        seal: async () => {},
+        appendRecord: () => {},
+        flush: async () => {},
+        journalIdentity: async () => ({
+          size: totalBytes,
+          mtimeMs: 500,
+          headHash: shaOf(1),
+          storeGeneration: 'gen-inc-1',
+        }),
+        journalSha256: async (maxBytes?: number) => shaOf(maxBytes ?? totalBytes),
+        journalBoundarySha256: async (byteOffset: number) => shaOf(byteOffset),
+        readJournal: async function* (options?: WireJournalReadOptions) {
+          readStarts.push(options?.startByte);
+          const startIdx =
+            options?.startByte === undefined ? 0 : Math.floor(options.startByte / stepSize);
+          for (let idx = startIdx; idx < totalRecords; idx++) {
+            const endOffset = (idx + 1) * stepSize;
+            options?.onProgress?.({ byteOffset: endOffset, canCheckpoint: true });
+            yield { type: CounterAdd.type, by: idx + 1, time: idx + 1 };
+            if (abortAtIndex !== undefined && idx === abortAtIndex) {
+              await new Promise((resolve) => setTimeout(resolve, 40));
+              abortController?.abort(new DOMException('restore deadline', 'TimeoutError'));
+              options?.signal?.throwIfAborted();
+            }
+          }
+        },
+      };
+      const host = disposables.add(new TestInstantiationService());
+      host.set(IEventBus, new SyncDescriptor(EventBusService));
+      host.set(IAgentBlobService, noopBlob);
+      host.set(IWireService, wire);
+      host.set(IAtomicDocumentStore, docs);
+      host.set(IAgentScopeContext, scope);
+      host.set(IAgentStateService, new AgentStateService());
+      host.set(IEventDispatcher, new SyncDescriptor(EventDispatcherService));
+      const dispatcher = host.get(IEventDispatcher);
+      const state = host.get(IAgentStateService);
+      state.contributeState(counterKey);
+      return { host, dispatcher, state };
+    };
+
+    const firstAbort = new AbortController();
+    const first = createRig(firstAbort, 2);
+    await expect(
+      withRestoreLifetime({ ownerManaged: false, signal: firstAbort.signal }, () => first.dispatcher.restore()),
+    ).rejects.toThrow();
+    await first.host.dispose();
+
+    const savedAfterAbort = documents.get('sessions/ws/s-inc/agents/main/replay-checkpoints/engine-v1') as
+      | { wire: { size: number; boundarySha256?: string } }
+      | undefined;
+    expect(savedAfterAbort).toBeDefined();
+    expect(savedAfterAbort!.wire.size).toBeGreaterThanOrEqual(REPLAY_INCREMENTAL_CHECKPOINT_BYTES);
+    expect(savedAfterAbort!.wire.size).toBeLessThan(totalBytes);
+    expect(savedAfterAbort!.wire.boundarySha256).toBe(shaOf(savedAfterAbort!.wire.size));
+
+    const second = createRig();
+    await second.dispatcher.restore();
+    expect(readStarts).toEqual([undefined, savedAfterAbort!.wire.size]);
+    expect(second.state.get(counterKey).value).toBe(21);
   });
 });

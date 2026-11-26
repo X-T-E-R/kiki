@@ -264,3 +264,9 @@ export class QueryStoreBusyError extends Error {
 export function isQueryStoreBusy(error: unknown): boolean {
   return error instanceof QueryStoreBusyError || (error as { code?: unknown } | null)?.code === 'query_store.busy';
 }
+
+export {
+  QUERY_STORE_MAX_VALUE_BYTES,
+  QueryStoreValueTooLargeError,
+  isQueryStoreValueTooLarge,
+} from './queryStoreLimits';

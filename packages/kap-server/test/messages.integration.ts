@@ -16,6 +16,7 @@ import {
   IAppendLogStore,
   IAuthSummaryService,
   IFileSystemStorageService,
+  IQueryStore,
   IWireService,
   ensureMainAgent,
   getLiveSessionById,
@@ -47,7 +48,11 @@ import type { TranscriptResponse } from '@kiki/transcript';
 
 import { type RunningServer, startServer } from '../src/start';
 import { TranscriptService } from '../src/services/transcript/transcriptService';
-import { MESSAGE_HISTORY_CACHE_MAX_ENTRY_BYTES, messageHistoryCacheReport } from '../src/services/messages/messageHistory';
+import {
+  MESSAGE_HISTORY_CACHE_MAX_ENTRY_BYTES,
+  MESSAGE_HISTORY_SPILL_MAX_BYTES,
+  messageHistoryCacheReport,
+} from '../src/services/messages/messageHistory';
 import { SessionEventBroadcaster } from '../src/transport/ws/v1/sessionEventBroadcaster';
 import { PROMPT_BODY_LIMIT_BYTES } from '../src/routes/prompts';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
@@ -1496,6 +1501,22 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
     expect(second.body.data.items[0]?.content[0]?.['text']).toBe(bigText);
     expect(messageHistoryCacheReport(server!.core).entries).toBe(0);
     expect(reads).toBe(1);
+  });
+
+  it('skips writing SQLite __message_history_spill__ rows above the 4 MiB spill cap while serving canonical wire', async () => {
+    const id = await createSession();
+    const hugeText = 'y'.repeat(MESSAGE_HISTORY_SPILL_MAX_BYTES + 4096);
+    await seedMainAgentMessages(id, [
+      { role: 'user', content: [{ type: 'text', text: hugeText }], toolCalls: [] },
+    ]);
+
+    const first = await getJson<PageWire>(`/api/sessions/${id}/messages`);
+    expect(first.body.data.items).toHaveLength(1);
+    expect(first.body.data.items[0]?.content[0]?.['text']).toBe(hugeText);
+    expect(messageHistoryCacheReport(server!.core).entries).toBe(0);
+
+    const queryStore = server!.core.accessor.get(IQueryStore);
+    expect(await queryStore.get('__message_history_spill__', id)).toBeUndefined();
   });
 
   it('edits a sent image message with its original image after the staged upload is deleted', async () => {

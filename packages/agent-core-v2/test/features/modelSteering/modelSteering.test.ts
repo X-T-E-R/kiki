@@ -17,6 +17,10 @@ import { ContinuationStepRequest } from '#/agent/loop/stepRequest';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { DEFAULT_AGENT_PROFILE_NAME } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import {
+  DEFAULT_SAME_SOURCE_STEER_STEPS,
+  countCoalescedSteps,
+} from '#/features/modelSteering/modelSteeringService';
 import { IAgentModelSteeringService } from '#/features/modelSteering/modelSteering';
 import { wrapSystemReminder } from '#/agent/systemReminder/systemReminder';
 import type { CognitionContent } from '#/kosong/model/model';
@@ -42,6 +46,16 @@ function steeringMessages(context: IAgentContextMemoryService): readonly Context
   return context.get().filter((message) => {
     return message.origin?.kind === 'injection' && message.origin.variant === 'model_steering';
   });
+}
+
+function appendCompletedSteps(context: IAgentContextMemoryService, count: number): void {
+  for (let i = 0; i < count; i++) {
+    context.append({
+      role: 'assistant',
+      content: [{ type: 'text', text: `completed step ${i}` }],
+      toolCalls: [],
+    });
+  }
 }
 
 describe('AgentModelSteeringService', () => {
@@ -238,18 +252,17 @@ describe('AgentModelSteeringService', () => {
     const correctionTail = [
       expect.objectContaining({ role: 'user', content: [{ type: 'text', text: 'Understand the complete intent first.\n\nThen prioritize the intended use.' }] }),
     ];
-    if (configured) correctionTail.push(expect.objectContaining({ role: 'user', content: [{ type: 'text', text: wrapSystemReminder('CLASSIFY THEN ACT') }] }));
     expect(scripted.calls[1]!.history.slice(-correctionTail.length)).toEqual(correctionTail);
-    for (const [index, call] of scripted.calls.entries()) {
+    for (const call of scripted.calls) {
       const texts = call.history.flatMap((message) => message.content).filter((part) => part.type === 'text').map((part) => part.text);
       expect(texts).not.toContain('Cancelled correction');
       expect(texts).not.toContain('Superseded correction');
-      expect(texts.filter((text) => text === wrapSystemReminder('CLASSIFY THEN ACT'))).toHaveLength(configured ? Math.min(index + 1, 2) : 0);
+      expect(texts.filter((text) => text === wrapSystemReminder('CLASSIFY THEN ACT'))).toHaveLength(configured ? 1 : 0);
     }
-    expect(steeringMessages(memory)).toHaveLength(configured ? 2 : 0);
+    expect(steeringMessages(memory)).toHaveLength(configured ? 1 : 0);
   });
 
-  it('injects steering on each new turn and skips intra-turn steps', async () => {
+  it('injects steering on first turn, suppresses rapid same-source turns within cooldown, and re-injects after coalesced steps', async () => {
     ctx = createTestAgent(homeDirServices(homeDir));
     const current = ctx.kimiConfig.models?.[MOCK_MODEL];
     expect(current).toBeDefined();
@@ -280,6 +293,13 @@ describe('AgentModelSteeringService', () => {
     await runWillBeginStepHooks(loop, false);
     expect(steeringMessages(memory)).toHaveLength(1);
 
+    appendCompletedSteps(memory, DEFAULT_SAME_SOURCE_STEER_STEPS - 1);
+    memory.append({ role: 'user', content: [{ type: 'text', text: 'Rapid follow-up' }], toolCalls: [], origin: { kind: 'user' } });
+    await runWillBeginStepHooks(loop, true);
+    expect(steeringMessages(memory)).toHaveLength(1);
+
+    appendCompletedSteps(memory, 1);
+    memory.append({ role: 'user', content: [{ type: 'text', text: 'Follow-up after work' }], toolCalls: [], origin: { kind: 'user' } });
     await runWillBeginStepHooks(loop, true);
     expect(steeringMessages(memory)).toHaveLength(2);
   });
@@ -291,6 +311,7 @@ describe('AgentModelSteeringService', () => {
     const memory = ctx.get(IAgentContextMemoryService);
     memory.append({ role: 'user', content: [{ type: 'text', text: 'Initial user request' }], toolCalls: [], origin: { kind: 'user' } });
     await runWillBeginStepHooks(loop, true);
+    appendCompletedSteps(memory, DEFAULT_SAME_SOURCE_STEER_STEPS);
     const nonHumanOrigins: ContextMessage['origin'][] = [
       undefined,
       { kind: 'injection', variant: 'background_notice' },
@@ -310,6 +331,7 @@ describe('AgentModelSteeringService', () => {
       { kind: 'skill_activation', activationId: 'example-slash-skill', skillName: 'example', trigger: 'user-slash' },
     ];
     for (const [index, origin] of humanOrigins.entries()) {
+      appendCompletedSteps(memory, DEFAULT_SAME_SOURCE_STEER_STEPS);
       const input: ContextMessage = {
         role: 'user', content: [{ type: 'text', text: 'Human correction' }, { type: 'image_url', imageUrl: { url: 'https://example.com/image.png' } }], toolCalls: [], origin,
       };
@@ -333,6 +355,7 @@ describe('AgentModelSteeringService', () => {
     memory.append({ role: 'user', content: [{ type: 'text', text: 'Initial input' }], toolCalls: [], origin: { kind: 'user' } });
     await runWillBeginStepHooks(loop, true);
     await writeFile(join(homeDir, 'cognition/steering.md'), 'CHANGED ON DISK');
+    appendCompletedSteps(memory, DEFAULT_SAME_SOURCE_STEER_STEPS);
     memory.append({ role: 'user', content: [{ type: 'text', text: 'Correction' }], toolCalls: [], origin: { kind: 'user' } });
     await runWillBeginStepHooks(loop, false);
     expect(steeringMessages(memory)).toHaveLength(2);
@@ -347,20 +370,26 @@ describe('AgentModelSteeringService', () => {
 
   it.each([true, false])('steering cadence combines actual model steps and Send now input (onInput=%s)', async (onInput) => {
     ctx = createTestAgent(homeDirServices(homeDir), permissionModeServices('manual'));
-    await bindModel(true, { steeringOnInput: onInput, steeringIntervalSteps: 2 });
+    await bindModel(true, { steeringOnInput: onInput });
     const agent = ctx;
     const loop = agent.get(IAgentLoopService);
     const prompts = agent.get(IAgentPromptService);
+    const memory = agent.get(IAgentContextMemoryService);
     const steerings: Array<ReturnType<typeof prompts.steer>> = [];
     const subscription = loop.hooks.onDidFinishStep.register('test.steer-and-continue', async ({ step }, next) => {
       if (step === 1) {
-        const correction = await prompts.enqueue({ message: { role: 'user', content: [{ type: 'text', text: 'Accepted correction' }], toolCalls: [], origin: { kind: 'user' } } });
-        steerings.push(prompts.steer([correction.id]));
-        for (let index = 0; index < 3; index++) loop.enqueue(new ContinuationStepRequest());
+        const early = await prompts.enqueue({ message: { role: 'user', content: [{ type: 'text', text: 'Rapid correction' }], toolCalls: [], origin: { kind: 'user' } } });
+        steerings.push(prompts.steer([early.id]));
+        loop.enqueue(new ContinuationStepRequest());
+      } else if (step === 2) {
+        appendCompletedSteps(memory, DEFAULT_SAME_SOURCE_STEER_STEPS - 2);
+        const mature = await prompts.enqueue({ message: { role: 'user', content: [{ type: 'text', text: 'Accepted correction' }], toolCalls: [], origin: { kind: 'user' } } });
+        steerings.push(prompts.steer([mature.id]));
+        loop.enqueue(new ContinuationStepRequest());
       }
       await next();
     });
-    for (let index = 0; index < 4; index++) agent.mockNextResponse({ type: 'text', text: `answer ${index}` });
+    for (let index = 0; index < 3; index++) agent.mockNextResponse({ type: 'text', text: `answer ${index}` });
     try {
       await agent.rpc.prompt({ input: [{ type: 'text', text: 'Initial request' }] });
       await loop.settled();
@@ -368,12 +397,12 @@ describe('AgentModelSteeringService', () => {
     } finally {
       await subscription.dispose();
     }
-    expect(agent.llmCalls).toHaveLength(4);
+    expect(agent.llmCalls).toHaveLength(3);
     const counts = agent.llmCalls.map((call) => call.history.flatMap((message) => message.content)
       .filter((part) => part.type === 'text' && part.text === wrapSystemReminder('CLASSIFY THEN ACT')).length);
-    expect(counts).toEqual(onInput ? [1, 2, 2, 3] : [1, 1, 2, 2]);
-    expect(agent.llmCalls[1]!.history.at(onInput ? -2 : -1)).toMatchObject({ role: 'user', content: [{ type: 'text', text: 'Accepted correction' }] });
-    if (onInput) expect(agent.llmCalls[1]!.history.at(-1)).toMatchObject({ role: 'user', content: [{ type: 'text', text: wrapSystemReminder('CLASSIFY THEN ACT') }] });
+    expect(counts).toEqual(onInput ? [1, 1, 2] : [1, 1, 1]);
+    expect(agent.llmCalls[2]!.history.at(onInput ? -2 : -1)).toMatchObject({ role: 'user', content: [{ type: 'text', text: 'Accepted correction' }] });
+    if (onInput) expect(agent.llmCalls[2]!.history.at(-1)).toMatchObject({ role: 'user', content: [{ type: 'text', text: wrapSystemReminder('CLASSIFY THEN ACT') }] });
   });
 
   it('steering cadence can disable all triggers, including new turns and compaction re-arm', async () => {
@@ -580,7 +609,7 @@ describe('AgentModelSteeringService', () => {
     } },
   ] satisfies { label: string; creator: string; origin: ContextMessage['origin'] }[])('inherits steering for each later message from the $label while other peers stay off', async ({ creator, origin }) => {
     ctx = createTestAgent(homeDirServices(homeDir), permissionModeServices('manual'));
-    await bindModel(true);
+    await bindModel(true, { steeringIntervalSteps: 1 });
     const agent = ctx;
     const metadata = agent.get(ISessionMetadata);
     await metadata.update({ custom: { ...(await metadata.read()).custom, [CREATED_BY_SESSION_ID_KEY]: creator } });
@@ -658,5 +687,75 @@ describe('AgentModelSteeringService', () => {
     expect(steeringMessages(memory)[0]!.content).toEqual([
       { type: 'text', text: '<system-reminder>\nPREWRAPPED STEERING\n</system-reminder>' },
     ]);
+  });
+
+  it('coalesces passive meta tools as 0 steps, consecutive read runs as 1 step, and fires immediately on provenance switch', async () => {
+    ctx = createTestAgent(homeDirServices(homeDir));
+    await bindModel(true, {
+      steeringIntervalSteps: 3,
+      steeringSources: {
+        task: { mode: 'custom', custom: { steering: { text: 'TASK CUE' } } },
+      },
+    });
+    const memory = ctx.get(IAgentContextMemoryService);
+    const loop = ctx.get(IAgentLoopService);
+
+    memory.append({ role: 'user', content: [{ type: 'text', text: 'Start work' }], toolCalls: [], origin: { kind: 'user' } });
+    await runWillBeginStepHooks(loop, true);
+    expect(steeringMessages(memory)).toHaveLength(1);
+
+    for (const [idx, toolName] of ['TodoList', 'SelectTools', 'MemorySearch'].entries()) {
+      const id = `passive-${idx}`;
+      memory.append({
+        role: 'assistant',
+        content: [{ type: 'text', text: 'updating tracker' }],
+        toolCalls: [{ id, type: 'function', name: toolName, arguments: '{}' }],
+      });
+      memory.append({ role: 'tool', toolCallId: id, content: [{ type: 'text', text: 'ok' }], toolCalls: [] });
+    }
+    expect(countCoalescedSteps(memory.get(), 2)).toBe(0);
+    await runWillBeginStepHooks(loop, false);
+    expect(steeringMessages(memory)).toHaveLength(1);
+
+    for (const [idx, toolName] of ['Glob', 'Grep', 'Read', 'ReadMediaFile'].entries()) {
+      const id = `read-${idx}`;
+      memory.append({
+        role: 'assistant',
+        content: [],
+        toolCalls: [{ id, type: 'function', name: toolName, arguments: '{}' }],
+      });
+      memory.append({ role: 'tool', toolCallId: id, content: [{ type: 'text', text: 'content' }], toolCalls: [] });
+    }
+    expect(countCoalescedSteps(memory.get(), 2)).toBe(1);
+    await runWillBeginStepHooks(loop, false);
+    expect(steeringMessages(memory)).toHaveLength(1);
+
+    memory.append({
+      role: 'assistant',
+      content: [],
+      toolCalls: [{ id: 'edit-1', type: 'function', name: 'Edit', arguments: '{}' }],
+    });
+    memory.append({ role: 'tool', toolCallId: 'edit-1', content: [{ type: 'text', text: 'edited' }], toolCalls: [] });
+    expect(countCoalescedSteps(memory.get(), 2)).toBe(2);
+
+    memory.append({
+      role: 'user',
+      content: [{ type: 'text', text: 'Child completed' }],
+      toolCalls: [],
+      origin: { kind: 'task', taskId: 'example-task', notificationId: 'n1', status: 'completed' },
+    });
+    await runWillBeginStepHooks(loop, false);
+    expect(steeringMessages(memory)).toHaveLength(2);
+    expect(steeringMessages(memory).at(-1)!.content).toEqual([{ type: 'text', text: wrapSystemReminder('TASK CUE') }]);
+
+    memory.append({
+      role: 'user',
+      content: [{ type: 'text', text: 'Immediate user Send now after task' }],
+      toolCalls: [],
+      origin: { kind: 'user' },
+    });
+    await runWillBeginStepHooks(loop, false);
+    expect(steeringMessages(memory)).toHaveLength(3);
+    expect(steeringMessages(memory).at(-1)!.content).toEqual([{ type: 'text', text: wrapSystemReminder('CLASSIFY THEN ACT') }]);
   });
 });

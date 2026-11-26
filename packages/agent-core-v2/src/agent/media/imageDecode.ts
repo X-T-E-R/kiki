@@ -1,4 +1,5 @@
 import { crc32, inflateSync } from 'node:zlib';
+import { isAbortError } from '#/_base/utils/abort';
 import { decodeWebp } from './webp-decode';
 import { pngWithoutAncillaryChunks } from './pngDecode';
 
@@ -29,7 +30,11 @@ export function trySniffPngSize(bytes: Uint8Array): { readonly width: number; re
   return { width, height };
 }
 
-export function tryFastDecodePng(bytes: Uint8Array): { data: Buffer; width: number; height: number; opaque: boolean } | undefined {
+export function tryFastDecodePng(
+  bytes: Uint8Array,
+  signal?: AbortSignal,
+): { data: Buffer; width: number; height: number; opaque: boolean } | undefined {
+  signal?.throwIfAborted();
   if (bytes.length < 33) return undefined;
   for (let i = 0; i < 8; i += 1) {
     if (bytes[i] !== PNG_SIG[i]) return undefined;
@@ -41,7 +46,9 @@ export function tryFastDecodePng(bytes: Uint8Array): { data: Buffer; width: numb
   const idatChunks: Uint8Array[] = [];
   let offset = 8;
   let sawIend = false;
+  let chunkCount = 0;
   while (offset + 12 <= bytes.length) {
+    if ((chunkCount++ & 63) === 0) signal?.throwIfAborted();
     const length = view.getUint32(offset, false);
     const type = view.getUint32(offset + 4, false);
     const dataStart = offset + 8;
@@ -89,16 +96,21 @@ export function tryFastDecodePng(bytes: Uint8Array): { data: Buffer; width: numb
   const expectedRawLen = height * (stride + 1);
   let raw: Buffer;
   try {
+    signal?.throwIfAborted();
     const joined = idatChunks.length === 1 ? idatChunks[0]! : Buffer.concat(idatChunks);
     raw = inflateSync(joined, { maxOutputLength: expectedRawLen + 1024 });
-  } catch {
+  } catch (error) {
+    signal?.throwIfAborted();
+    if (isAbortError(error)) throw error;
     return undefined;
   }
+  signal?.throwIfAborted();
   if (raw.length !== expectedRawLen) return undefined;
   const rgba = Buffer.allocUnsafeSlow(width * height * 4);
   let prevRow = new Uint8Array(stride);
   let curRow = new Uint8Array(stride);
   for (let y = 0; y < height; y += 1) {
+    if ((y & 31) === 0) signal?.throwIfAborted();
     const rowOff = y * (stride + 1);
     const filterType = raw[rowOff]!;
     const srcStart = rowOff + 1;
@@ -142,10 +154,17 @@ export function tryFastDecodePng(bytes: Uint8Array): { data: Buffer; width: numb
   return { data: rgba, width, height, opaque: colorType === 2 };
 }
 
-export async function decodeToJimp(bytes: Uint8Array, normalizedMime: string): Promise<JimpImage> {
+export async function decodeToJimp(
+  bytes: Uint8Array,
+  normalizedMime: string,
+  signal?: AbortSignal,
+): Promise<JimpImage> {
+  signal?.throwIfAborted();
   const { Jimp } = await import('jimp');
+  signal?.throwIfAborted();
   if (normalizedMime === 'image/webp') {
     const decoded = await decodeWebp(bytes);
+    signal?.throwIfAborted();
     return Jimp.fromBitmap({
       data: Buffer.from(decoded.data.buffer, decoded.data.byteOffset, decoded.data.byteLength),
       width: decoded.width,
@@ -153,23 +172,44 @@ export async function decodeToJimp(bytes: Uint8Array, normalizedMime: string): P
     });
   }
   if (normalizedMime === 'image/png') {
-    const fast = tryFastDecodePng(bytes);
+    const fast = tryFastDecodePng(bytes, signal);
     if (fast !== undefined) {
+      signal?.throwIfAborted();
       return Jimp.fromBitmap(fast);
     }
   }
+  signal?.throwIfAborted();
   const buffer = Buffer.from(bytes);
   try {
-    return await Jimp.fromBuffer(buffer);
+    const image = await Jimp.fromBuffer(buffer);
+    signal?.throwIfAborted();
+    return image;
   } catch (error) {
+    signal?.throwIfAborted();
+    if (isAbortError(error)) throw error;
     if (normalizedMime !== 'image/png') throw error;
     const stripped = pngWithoutAncillaryChunks(buffer);
     if (stripped === undefined) throw error;
-    return Jimp.fromBuffer(stripped);
+    signal?.throwIfAborted();
+    const image = await Jimp.fromBuffer(stripped);
+    signal?.throwIfAborted();
+    return image;
   }
 }
 
-export async function decodeImageVerdict(bytes: Uint8Array, mimeType: string): Promise<boolean> {
-  try { await decodeToJimp(bytes, mimeType); return true; }
-  catch { return false; }
+export async function decodeImageVerdict(
+  bytes: Uint8Array,
+  mimeType: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  signal?.throwIfAborted();
+  try {
+    await decodeToJimp(bytes, mimeType, signal);
+    signal?.throwIfAborted();
+    return true;
+  } catch (error) {
+    signal?.throwIfAborted();
+    if (isAbortError(error)) throw error;
+    return false;
+  }
 }

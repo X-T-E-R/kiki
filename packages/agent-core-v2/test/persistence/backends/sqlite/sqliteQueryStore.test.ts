@@ -13,7 +13,13 @@ import { TestInstantiationService } from '#/_base/di/test';
 import { RESOURCE_DEFAULTS } from '#/_base/node/resourceDefaults';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { ILogService } from '#/_base/log/log';
-import { IQueryStore, type WriteOp } from '#/persistence/interface/queryStore';
+import {
+  IQueryStore,
+  QUERY_STORE_MAX_VALUE_BYTES,
+  isQueryStoreValueTooLarge,
+  type WriteOp,
+} from '#/persistence/interface/queryStore';
+import { QueryStoreWorker } from '#/persistence/backends/sqlite/host';
 import { SqliteQueryStore, SQLITE_QUERY_STORE_SUBDIR, configureQueryStoreWorkerRuntime } from '#/persistence/backends/sqlite/sqliteQueryStore';
 import { drainQueryStoreDisposals } from '#/persistence/queryStoreDisposals';
 import { stubBootstrap } from '../../../app/bootstrap/stubs';
@@ -136,7 +142,7 @@ describe('SqliteQueryStore', () => {
     const entry = new URL('../../../../src/persistence/backends/sqlite/entry.ts', import.meta.url);
     const wrapper = join(home, 'prepared-statements.mjs');
     const fixed = [
-      'SELECT json FROM rows WHERE collection=? AND key=?',
+      `SELECT CASE WHEN length(CAST(json AS BLOB)) <= ${QUERY_STORE_MAX_VALUE_BYTES} THEN json ELSE NULL END AS json, length(CAST(json AS BLOB)) AS bytes FROM rows WHERE collection=? AND key=?`,
       'INSERT INTO rows VALUES(?,?,?) ON CONFLICT(collection,key) DO UPDATE SET json=excluded.json',
       'DELETE FROM rows WHERE collection=? AND key=?',
       'DELETE FROM columns WHERE collection=? AND key=?',
@@ -468,5 +474,70 @@ describe('SqliteQueryStore', () => {
     expect(first.nextCursor).toBeDefined();
     await store.put('sort_mix', 'k4', { id: 4, v: 'mixed-string' });
     await expect(store.query('sort_mix').orderBy('v').limit(1).cursor(first.nextCursor).execute()).rejects.toThrow('Invalid SQLite query cursor');
+  });
+
+  it('rejects oversized values cleanly on write and read without crashing the SQLite worker', async () => {
+    const store = open();
+    await store.put('healthy', 'ok', { status: 'ready' });
+    const huge = { blob: 'x'.repeat(QUERY_STORE_MAX_VALUE_BYTES + 1024) };
+    await expect(store.put('oversized', 'too-big', huge)).rejects.toSatisfy(isQueryStoreValueTooLarge);
+    await expect(
+      store.batch([{ kind: 'put', collection: 'oversized', key: 'batch-big', value: huge }]),
+    ).rejects.toSatisfy(isQueryStoreValueTooLarge);
+    expect(await store.get('healthy', 'ok')).toEqual({ status: 'ready' });
+
+    const dbPath = join(home, 'cache', SQLITE_QUERY_STORE_SUBDIR, 'index.sqlite');
+    const direct = new DatabaseSync(dbPath);
+    try {
+      direct
+        .prepare('INSERT INTO rows(collection, key, json) VALUES (?, ?, ?)')
+        .run('legacy_spill', Buffer.from('giant'), JSON.stringify(huge));
+    } finally {
+      direct.close();
+    }
+
+    await expect(store.get('legacy_spill', 'giant')).rejects.toSatisfy(isQueryStoreValueTooLarge);
+    await expect(store.getMany('legacy_spill', ['giant'])).rejects.toSatisfy(isQueryStoreValueTooLarge);
+    await expect(store.query('legacy_spill').execute()).rejects.toSatisfy(isQueryStoreValueTooLarge);
+    await store.delete('legacy_spill', 'giant');
+    expect(await store.get('legacy_spill', 'giant')).toBeUndefined();
+    expect(await store.get('healthy', 'ok')).toEqual({ status: 'ready' });
+  });
+
+  it('sweeps stale lock tmp and dead-PID watch sidecars on query-store startup while keeping live-PID sidecars', async () => {
+    const directory = join(home, 'cache', SQLITE_QUERY_STORE_SUBDIR);
+    await mkdir(directory, { recursive: true });
+    const deadTmp = join(directory, 'staging.lock.tmp-999999999-1-dead');
+    const liveTmp = join(directory, `staging.lock.tmp-${process.pid}-1-live`);
+    const deadWatch = join(directory, 'staging.lock.watch-999999999-1');
+    const liveWatch = join(directory, `staging.lock.watch-${process.pid}-1`);
+    await writeFile(deadTmp, JSON.stringify({ pid: 999_999_999 }));
+    await writeFile(liveTmp, JSON.stringify({ pid: process.pid }));
+    await writeFile(deadWatch, 'unparsed-dead-watch');
+    await writeFile(liveWatch, 'unparsed-live-watch');
+
+    const store = open();
+    await store.put('sweep_check', 'k1', { ok: true });
+    await expect(readFile(deadTmp)).rejects.toThrow();
+    await expect(readFile(deadWatch)).rejects.toThrow();
+    expect(JSON.parse(await readFile(liveTmp, 'utf8'))).toMatchObject({ pid: process.pid });
+    expect(await readFile(liveWatch, 'utf8')).toBe('unparsed-live-watch');
+  });
+
+  it('terminates a wedged QueryStoreWorker via the per-request watchdog', async () => {
+    const directory = join(home, 'cache', SQLITE_QUERY_STORE_SUBDIR);
+    await mkdir(directory, { recursive: true });
+    const dbPath = join(directory, 'watchdog.sqlite');
+    const worker = new QueryStoreWorker(dbPath, 40);
+    try {
+      const internalWorker = (worker as unknown as { worker: Worker }).worker;
+      internalWorker.postMessage = (() => {}) as typeof internalWorker.postMessage;
+      await expect(worker.request({ type: 'get', collection: 'c', keys: ['k'] })).rejects.toThrow(
+        /timed out after 40ms/i,
+      );
+      expect(worker.isStopped).toBe(true);
+    } finally {
+      await worker.close(100).catch(() => undefined);
+    }
   });
 });
