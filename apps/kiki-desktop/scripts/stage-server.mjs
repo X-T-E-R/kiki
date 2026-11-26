@@ -17,6 +17,7 @@ import {
   SOURCE_OWNED_ADAPTER_FILES,
 } from '../../../scripts/external-harness/production-manifest.mjs';
 import { BUILT_IN_CATALOG_DEFINE, builtInCatalogDefine } from '../../kimi-code/scripts/built-in-catalog.mjs';
+import { stageWindowsToolchain } from '../../kiki-gui/scripts/stage-windows-toolchain.mjs';
 import { copyKikiDocs } from '../../kimi-code/scripts/local-docs.mjs';
 import { resolvePnpmInvocation } from '../../kimi-code/scripts/native/01-bundle.mjs';
 import { collectAuthNativePackage } from '../../kimi-code/scripts/native/assets.mjs';
@@ -394,6 +395,24 @@ export async function stageDesktopServer({ skipGuiBuild = false } = {}) {
       outputDir: join(serverOutDir, 'native'),
       prebuiltPath: process.env['KIKI_WINDOWS_PROCESS_HELPER_ARTIFACT'],
     });
+    const toolchainDir = resolve(desktopRoot, 'dist/toolchain');
+    if (process.env['KIKI_SKIP_WINDOWS_TOOLCHAIN'] === '1') {
+      await mkdir(toolchainDir, { recursive: true });
+    } else {
+      const rustWindowsTarget =
+        arch === 'arm64' ? 'aarch64-pc-windows-msvc' : 'x86_64-pc-windows-msvc';
+      const toolchain = await stageWindowsToolchain({
+        target: rustWindowsTarget,
+        outputDir: toolchainDir,
+      });
+      if (!toolchain.skipped) {
+        const mb = (toolchain.bytes / (1024 * 1024)).toFixed(1);
+        const mode = toolchain.reused ? 'reused cached' : 'staged';
+        console.log(
+          `[stage-server] ${mode} Windows toolchain (${toolchain.files} files, ${mb} MiB) -> ${toolchain.outputDir}`,
+        );
+      }
+    }
   }
 
   await writeFile(

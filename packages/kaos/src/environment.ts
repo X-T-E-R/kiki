@@ -38,6 +38,11 @@ export interface Environment {
 
 export type HostEnvironmentInfo = Environment;
 
+export interface WindowsToolchainLookupOptions {
+  readonly resourcesPath?: string;
+  readonly entryScriptPath?: string;
+}
+
 export interface EnvironmentDeps {
   // Accepts the full Node `Platform` enum plus arbitrary strings for
   // forward-compatible OS kinds.
@@ -46,6 +51,8 @@ export interface EnvironmentDeps {
   readonly release: string;
   readonly homeDir?: string;
   readonly execPath?: string;
+  readonly resourcesPath?: string;
+  readonly entryScriptPath?: string;
   readonly env: Record<string, string | undefined>;
   readonly isFile: (path: string) => Promise<boolean>;
   readonly execFileText: (
@@ -120,6 +127,7 @@ function findEnvPathEntry(
 export function bundledWindowsToolchainCandidates(
   env: Readonly<Record<string, string | undefined>>,
   execPath?: string,
+  options?: WindowsToolchainLookupOptions,
 ): readonly string[] {
   if (env['KIKI_DISABLE_BUNDLED_TOOLCHAIN'] === '1') return [];
   const candidates: string[] = [];
@@ -131,7 +139,12 @@ export function bundledWindowsToolchainCandidates(
     const normalizedExec = nodePath.win32.normalize(normalizeWindowsPath(execPath));
     const execDir = nodePath.win32.dirname(normalizedExec);
     const execBase = nodePath.win32.basename(normalizedExec).toLowerCase();
-    if (execBase !== 'node.exe' && execBase !== 'node') {
+    const isStockNodeOrDevElectron =
+      execBase === 'node.exe' ||
+      execBase === 'node' ||
+      ((execBase === 'electron.exe' || execBase === 'electron') &&
+        normalizedExec.toLowerCase().includes('\\node_modules\\'));
+    if (!isStockNodeOrDevElectron) {
       candidates.push(nodePath.win32.join(execDir, 'toolchain'));
       candidates.push(nodePath.win32.join(execDir, 'resources', 'toolchain'));
       candidates.push(nodePath.win32.normalize(nodePath.win32.join(execDir, '..', 'toolchain')));
@@ -143,14 +156,54 @@ export function bundledWindowsToolchainCandidates(
       );
     }
   }
+  const rawResourcesPath = options?.resourcesPath?.trim();
+  if (
+    rawResourcesPath !== undefined &&
+    rawResourcesPath.length > 0 &&
+    isAbsoluteWindowsPath(rawResourcesPath)
+  ) {
+    const normalizedRes = nodePath.win32.normalize(normalizeWindowsPath(rawResourcesPath));
+    if (!normalizedRes.toLowerCase().includes('\\node_modules\\electron\\dist\\')) {
+      candidates.push(nodePath.win32.join(nodePath.win32.dirname(normalizedRes), 'toolchain'));
+      candidates.push(nodePath.win32.join(normalizedRes, 'toolchain'));
+    }
+  }
+  const rawEntry = options?.entryScriptPath?.trim();
+  if (rawEntry !== undefined && rawEntry.length > 0 && isAbsoluteWindowsPath(rawEntry)) {
+    const normalizedEntry = nodePath.win32.normalize(normalizeWindowsPath(rawEntry));
+    const lowerEntry = normalizedEntry.toLowerCase();
+    const asarMarker = '\\resources\\app.asar';
+    const asarIdx = lowerEntry.indexOf(asarMarker);
+    if (asarIdx > 0) {
+      const appRoot = normalizedEntry.slice(0, asarIdx);
+      candidates.push(nodePath.win32.join(appRoot, 'toolchain'));
+      candidates.push(nodePath.win32.join(appRoot, 'resources', 'toolchain'));
+      candidates.push(nodePath.win32.normalize(nodePath.win32.join(appRoot, '..', 'toolchain')));
+    } else if (
+      lowerEntry.endsWith('\\dist\\server\\server-entry.mjs') ||
+      lowerEntry.endsWith('\\dist\\main\\index.js')
+    ) {
+      const desktopRoot = nodePath.win32.normalize(
+        nodePath.win32.join(nodePath.win32.dirname(normalizedEntry), '..', '..'),
+      );
+      candidates.push(nodePath.win32.join(desktopRoot, 'dist', 'toolchain'));
+      candidates.push(nodePath.win32.join(desktopRoot, 'out', 'win-unpacked', 'toolchain'));
+    }
+  }
   return dedupeWindowsPaths(candidates);
 }
 
 export async function locateBundledWindowsToolchainRoot(
-  deps: Pick<EnvironmentDeps, 'platform' | 'env' | 'execPath' | 'isFile'>,
+  deps: Pick<
+    EnvironmentDeps,
+    'platform' | 'env' | 'execPath' | 'resourcesPath' | 'entryScriptPath' | 'isFile'
+  >,
 ): Promise<string | undefined> {
   if (deps.platform !== 'win32') return undefined;
-  for (const root of bundledWindowsToolchainCandidates(deps.env, deps.execPath)) {
+  for (const root of bundledWindowsToolchainCandidates(deps.env, deps.execPath, {
+    resourcesPath: deps.resourcesPath,
+    entryScriptPath: deps.entryScriptPath,
+  })) {
     const markers = [
       nodePath.win32.join(root, 'git', 'bin', 'bash.exe'),
       nodePath.win32.join(root, 'git', 'usr', 'bin', 'bash.exe'),
@@ -165,7 +218,10 @@ export async function locateBundledWindowsToolchainRoot(
 }
 
 export async function applyBundledWindowsToolchainPath(
-  deps: Pick<EnvironmentDeps, 'platform' | 'env' | 'execPath' | 'isFile'>,
+  deps: Pick<
+    EnvironmentDeps,
+    'platform' | 'env' | 'execPath' | 'resourcesPath' | 'entryScriptPath' | 'isFile'
+  >,
 ): Promise<string | undefined> {
   if (deps.platform !== 'win32') return undefined;
   const toolchainRoot = await locateBundledWindowsToolchainRoot(deps);
@@ -325,7 +381,10 @@ async function locateWindowsShell(
     return { shellName: inferWindowsShellName(override), shellPath: override };
   }
 
-  const bundledRoots = bundledWindowsToolchainCandidates(deps.env, deps.execPath);
+  const bundledRoots = bundledWindowsToolchainCandidates(deps.env, deps.execPath, {
+    resourcesPath: deps.resourcesPath,
+    entryScriptPath: deps.entryScriptPath,
+  });
   const pathValue = findEnvPathEntry(deps.env, 'win32').value;
   const gitExecutables = await findExecutablesOnPath(
     'git.exe',
@@ -518,6 +577,8 @@ function createNodeProbeDeps(): HostEnvironmentProbeDeps {
     release: nodeOs.release(),
     homeDir: nodeOs.homedir(),
     execPath: process.execPath,
+    resourcesPath: (process as { readonly resourcesPath?: string }).resourcesPath,
+    entryScriptPath: process.argv[1],
     env,
     isFile,
     execFileText,

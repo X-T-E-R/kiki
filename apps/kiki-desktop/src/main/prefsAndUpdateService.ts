@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { atomicWriteJson } from '@kiki/kaos/atomic-fs';
 import { readSpaceHome } from '@kiki/kaos/space-home';
@@ -32,6 +32,169 @@ import type {
 } from '#/shared/types';
 
 export type DesktopWindowTheme = 'light' | 'dark' | 'system';
+export type DesktopDistribution = 'github' | 'local' | 'custom';
+
+export function normalizeHttpsUpdaterFeedBaseUrl(rawUrl: unknown): string | null {
+  if (typeof rawUrl !== 'string') return null;
+  const trimmed = rawUrl.trim();
+  if (trimmed === '' || /[\u0000-\u001F\u007F\s]/.test(trimmed)) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if (
+    parsed.protocol !== 'https:' ||
+    parsed.hostname === '' ||
+    parsed.username !== '' ||
+    parsed.password !== '' ||
+    parsed.search !== '' ||
+    parsed.hash !== ''
+  ) {
+    return null;
+  }
+  return `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, '');
+}
+
+export function resolveCustomUpdaterFeedUrl(
+  updaterFeedBaseUrl: string | undefined,
+  channel: UpdateChannel,
+): string | null {
+  const base = normalizeHttpsUpdaterFeedBaseUrl(updaterFeedBaseUrl);
+  return base === null ? null : `${base}/${channel}`;
+}
+
+export interface DesktopBuildReceiptUpdaterMeta {
+  readonly distribution?: DesktopDistribution;
+  readonly updaterFeedBaseUrl?: string;
+}
+
+export function readDesktopBuildReceiptUpdaterMeta(
+  candidatePaths: readonly string[],
+): DesktopBuildReceiptUpdaterMeta {
+  for (const receiptPath of candidatePaths) {
+    if (!existsSync(receiptPath)) continue;
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(receiptPath, 'utf8'));
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) continue;
+      const record = parsed as Record<string, unknown>;
+      const rawDist = record['distribution'];
+      const distribution: DesktopDistribution | undefined =
+        rawDist === 'github' || rawDist === 'local' || rawDist === 'custom' ? rawDist : undefined;
+      const normalizedFeed = normalizeHttpsUpdaterFeedBaseUrl(record['updaterFeedBaseUrl']);
+      return {
+        ...(distribution !== undefined ? { distribution } : {}),
+        ...(normalizedFeed !== null ? { updaterFeedBaseUrl: normalizedFeed } : {}),
+      };
+    } catch {
+      continue;
+    }
+  }
+  return {};
+}
+
+export function resolveDesktopUpdaterConfig(input: {
+  readonly isPackaged: boolean;
+  readonly envDistribution?: string;
+  readonly envUpdaterFeedBaseUrl?: string;
+  readonly receipt?: DesktopBuildReceiptUpdaterMeta;
+  readonly bakedDistribution?: string;
+  readonly bakedUpdaterFeedBaseUrl?: string;
+}): {
+  readonly distribution: DesktopDistribution;
+  readonly updaterFeedBaseUrl?: string;
+} {
+  const pickDistribution = (value: string | undefined): DesktopDistribution | undefined => {
+    const trimmed = value?.trim();
+    return trimmed === 'github' || trimmed === 'local' || trimmed === 'custom'
+      ? trimmed
+      : undefined;
+  };
+  const distribution: DesktopDistribution =
+    pickDistribution(input.envDistribution) ??
+    input.receipt?.distribution ??
+    pickDistribution(input.bakedDistribution) ??
+    (input.isPackaged ? 'github' : 'local');
+
+  const rawFeedCandidate =
+    (input.envUpdaterFeedBaseUrl !== undefined && input.envUpdaterFeedBaseUrl.trim() !== ''
+      ? input.envUpdaterFeedBaseUrl
+      : undefined) ??
+    input.receipt?.updaterFeedBaseUrl ??
+    (input.bakedUpdaterFeedBaseUrl !== undefined && input.bakedUpdaterFeedBaseUrl.trim() !== ''
+      ? input.bakedUpdaterFeedBaseUrl
+      : undefined);
+  const normalizedFeed = normalizeHttpsUpdaterFeedBaseUrl(rawFeedCandidate);
+
+  return {
+    distribution,
+    ...(normalizedFeed !== null ? { updaterFeedBaseUrl: normalizedFeed } : {}),
+  };
+}
+
+export interface AutoUpdaterDriver {
+  autoDownload: boolean;
+  allowPrerelease: boolean;
+  channel: string | null;
+  setFeedURL(options: { readonly provider: 'generic'; readonly url: string }): void;
+  checkForUpdates(): Promise<{
+    readonly updateInfo?: {
+      readonly version: string;
+      readonly releaseDate?: string;
+      readonly releaseNotes?: unknown;
+    };
+  } | null>;
+  downloadUpdate(): Promise<unknown>;
+  quitAndInstall(): void;
+}
+
+export function createElectronUpdaterAdapter(params: {
+  readonly autoUpdater: AutoUpdaterDriver;
+  readonly getCurrentVersion: () => string;
+  readonly distribution: DesktopDistribution;
+  readonly updaterFeedBaseUrl?: string;
+  readonly getEnvFeedUrlOverride?: () => string | undefined;
+}): UpdaterFeedAdapter {
+  const applyChannelAndFeed = (channel: UpdateChannel): void => {
+    params.autoUpdater.allowPrerelease = channel === 'beta';
+    params.autoUpdater.channel = channel === 'beta' ? 'beta' : 'latest';
+    if (params.distribution === 'custom') {
+      const customFeedUrl = resolveCustomUpdaterFeedUrl(params.updaterFeedBaseUrl, channel);
+      if (customFeedUrl === null) {
+        throw new Error('Desktop updater is not available for this distribution');
+      }
+      params.autoUpdater.setFeedURL({ provider: 'generic', url: customFeedUrl });
+      return;
+    }
+    const envOverride = params.getEnvFeedUrlOverride?.()?.trim();
+    if (envOverride !== undefined && envOverride !== '') {
+      params.autoUpdater.setFeedURL({ provider: 'generic', url: envOverride });
+    }
+  };
+
+  return {
+    async checkForUpdate(channel: UpdateChannel): Promise<DesktopUpdateOffer | null> {
+      params.autoUpdater.autoDownload = false;
+      applyChannelAndFeed(channel);
+      const result = await params.autoUpdater.checkForUpdates();
+      const info = result?.updateInfo;
+      const currentVersion = params.getCurrentVersion();
+      if (info === undefined || info.version === currentVersion) return null;
+      return {
+        currentVersion,
+        version: info.version,
+        date: info.releaseDate,
+        notes: typeof info.releaseNotes === 'string' ? info.releaseNotes : undefined,
+      };
+    },
+    async downloadAndInstall(channel: UpdateChannel): Promise<void> {
+      applyChannelAndFeed(channel);
+      await params.autoUpdater.downloadUpdate();
+      params.autoUpdater.quitAndInstall();
+    },
+  };
+}
 
 const UPDATE_CHECK_CACHE_TTL_MS = 30_000;
 const logLevelSchema = z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']);
@@ -268,7 +431,8 @@ export interface PrefsAndUpdateServiceDeps {
   readonly linuxDesktopEntryPath?: string;
   readonly shortcutWriter?: ShortcutWriter;
   readonly desktopDir?: string;
-  readonly distribution?: 'github' | 'local';
+  readonly distribution?: DesktopDistribution;
+  readonly updaterFeedBaseUrl?: string;
   readonly updaterAdapter?: UpdaterFeedAdapter;
   readonly confirmShutdownForUpdate?: () => Promise<boolean>;
   readonly prepareDaemonForUpdate?: () => Promise<void>;
@@ -737,7 +901,12 @@ export class PrefsAndUpdateService {
   }
 
   supportsUpdates(): boolean {
-    return this.deps.distribution === 'github' && this.deps.updaterAdapter !== undefined;
+    if (this.deps.updaterAdapter === undefined) return false;
+    if (this.deps.distribution === 'github') return true;
+    if (this.deps.distribution === 'custom') {
+      return normalizeHttpsUpdaterFeedBaseUrl(this.deps.updaterFeedBaseUrl) !== null;
+    }
+    return false;
   }
 
   async checkUpdate(channel: UpdateChannel = 'stable'): Promise<DesktopUpdateOffer | null> {

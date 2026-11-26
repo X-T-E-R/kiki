@@ -37,7 +37,7 @@ import {
   SemanticJumpSlot,
   useSemanticContext,
 } from './timeline/ToolSemanticParts';
-import { describeTool } from './toolSemantics';
+import { describeTool, isTaskWaitMovedToBackground } from './toolSemantics';
 import { extractExternalSubagentSnapshot, type ExternalSubagentSnapshot } from './externalSubagentInfo';
 import { toolRecordCopy } from './toolRecordCopy';
 import { LoadedToolText, ReadableToolText, recordText } from './timeline/LoadedToolText';
@@ -649,6 +649,12 @@ ${engineError}`;
 
   if (memoryRow) return <MemoryToolRow block={block} agentId={agentId} />;
 
+  const movedToBackground = !external && isTaskWaitMovedToBackground(block);
+  const effectiveStopped = block.status === 'stopped' && !movedToBackground;
+  const effectiveStatusBlock: ToolBlock = movedToBackground && block.status === 'stopped'
+    ? { ...block, status: 'done' }
+    : block;
+
   const target = keepCommandSummary ? (
     <span className="font-mono">
       {summary}
@@ -660,7 +666,7 @@ ${engineError}`;
     ) : (
       <span title={errorTitle} className={codedError === undefined ? 'font-mono' : undefined}>{errorSummary}</span>
     )
-  ) : block.status === 'stopped' ? (
+  ) : effectiveStopped ? (
     <span
       title={typeof block.output === 'string' && block.output.trim() !== '' ? block.output : t('transcript.stopped')}
     >
@@ -684,7 +690,7 @@ ${engineError}`;
   // Tone comes from the outcome, not the tool: a failure lights the whole
   // line, a stop washes it amber, success stays as quiet as a Read.
   const tone: ActivityTone =
-    block.status === 'error' ? (calmed ? 'plain' : 'danger') : block.status === 'stopped' ? 'warn' : 'plain';
+    block.status === 'error' ? (calmed ? 'plain' : 'danger') : effectiveStopped ? 'warn' : 'plain';
   // Only a frame-measured duration is this tool's own; a turn-level fallback
   // is never passed off as runtime. An unknown duration leaves the column
   // empty in every state — a dash placeholder next to the outcome mark read
@@ -694,7 +700,7 @@ ${engineError}`;
   const durationMeta =
     block.status === 'running' || frameDuration === undefined
       ? undefined
-      : block.status === 'done' && frameDuration < DURATION_WORTH_SHOWING_MS
+      : (block.status === 'done' || movedToBackground) && frameDuration < DURATION_WORTH_SHOWING_MS
         ? undefined
         : time.formatDuration(frameDuration);
   const inputWell = <ToolRecordField block={block} agentId={agentId} field="input" />;
@@ -704,14 +710,14 @@ ${engineError}`;
     // One skeleton for every built-in tool: the verb, what it acted on, the
     // outcome in the trailing column; failure, stop and progress read exactly
     // as they do on any other step.
-    const settled = block.status === 'done';
+    const settled = block.status === 'done' || movedToBackground;
     const semanticDetail = errorSummary !== undefined ? (
       calmed && calmedErrorSummary !== undefined ? (
         <span title={errorTitle} className={superseded ? 'text-ink-faint' : 'text-ink-soft'}>{calmedErrorSummary}</span>
       ) : (
         <span title={errorTitle}>{errorSummary}</span>
       )
-    ) : block.status === 'stopped'
+    ) : effectiveStopped
       ? target
       : semantics.object === undefined && semantics.note === undefined && block.status === 'running' && block.progressText !== undefined
         ? <span className="text-ink-faint">{block.progressText}</span>
@@ -739,9 +745,9 @@ ${engineError}`;
         expanded={expanded}
         onToggle={() => { setExpanded((value) => !value); }}
         layout={block.name === 'AskUserQuestion' ? 'question' : undefined}
-        meta={block.name === 'AskUserQuestion' ? <span className="inline-flex items-center gap-1">{fact}<StatusIcon block={block} calmed={calmed} superseded={superseded} /></span> : fact}
+        meta={block.name === 'AskUserQuestion' ? <span className="inline-flex items-center gap-1">{fact}<StatusIcon block={effectiveStatusBlock} calmed={calmed} superseded={superseded} /></span> : fact}
         metaWidth="auto"
-        status={block.name === 'AskUserQuestion' ? undefined : <StatusIcon block={block} calmed={calmed} superseded={superseded} />}
+        status={block.name === 'AskUserQuestion' ? undefined : <StatusIcon block={effectiveStatusBlock} calmed={calmed} superseded={superseded} />}
         aside={block.name === 'AskUserQuestion' ? undefined : <SemanticJumpSlot link={semantics.link} onOpenAgent={onOpenAgent} />}
       >
         {expanded ? (
@@ -794,7 +800,7 @@ ${engineError}`;
             ? <span title={block.name}>{resolvePluginLocalizedText(pluginToolSlot.actionVerb, locale)}</span>
             : <span title={block.name}>{external ? (externalSubagent !== undefined ? t('tc.ext.agent') : externalActionLabel(block, t)) : toolDisplayName(block.name)}</span>
       }
-      detail={errorSummary === undefined && block.status !== 'stopped' && pluginTarget !== undefined ? pluginTarget : target}
+      detail={errorSummary === undefined && !effectiveStopped && pluginTarget !== undefined ? pluginTarget : target}
       expanded={expanded}
       onToggle={() => { setExpanded((value) => !value); }}
       stats={
@@ -803,7 +809,7 @@ ${engineError}`;
           : undefined
       }
       meta={durationMeta}
-      status={<StatusIcon block={block} calmed={calmed} superseded={superseded} />}
+      status={<StatusIcon block={effectiveStatusBlock} calmed={calmed} superseded={superseded} />}
     >
       {expanded ? (
         // Expands in place under the line; no frame of its own — the wells

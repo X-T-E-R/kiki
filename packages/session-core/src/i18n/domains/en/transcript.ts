@@ -329,6 +329,7 @@ export const transcriptEn = {
   'tc.sem.task.anyTask': 'any task',
   'tc.sem.task.list': 'Running tasks',
   'tc.sem.task.listAll': 'All tasks',
+  'tc.sem.task.movedToBackground': 'Continued in background',
   'tc.sem.task.none': 'No tasks',
   'tc.sem.task.output': 'Task output',
   'tc.sem.task.stop': 'Stop task',

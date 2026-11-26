@@ -329,6 +329,7 @@ export const transcriptZh = {
   'tc.sem.task.anyTask': '任一任务',
   'tc.sem.task.list': '运行中的任务',
   'tc.sem.task.listAll': '全部任务',
+  'tc.sem.task.movedToBackground': '已转后台继续',
   'tc.sem.task.none': '没有任务',
   'tc.sem.task.output': '任务输出',
   'tc.sem.task.stop': '停止任务',

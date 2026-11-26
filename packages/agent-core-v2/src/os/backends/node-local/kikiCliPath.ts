@@ -6,6 +6,7 @@ import { basename, dirname, join } from 'node:path';
 import { resolveKikiHome } from '@kiki/oauth';
 
 const CLI_ENTRY_BASENAME = 'main.mjs';
+const ELECTRON_SERVER_ENTRY_BASENAME = 'server-entry.mjs';
 const SHIM_DIRECTORY = 'shim';
 const NODE_SHIM_DIRECTORY = 'node-shim';
 const SHIM_FILE_MODE = 0o755;
@@ -25,6 +26,7 @@ export interface KikiCliNodeEntry {
   readonly kind: 'node';
   readonly nodePath: string;
   readonly entryPath: string;
+  readonly electronRunAsNode?: boolean;
 }
 
 export interface KikiCliLaunchDeps {
@@ -48,9 +50,17 @@ export async function resolveKikiCliLaunch(
   if (deps.isSea()) return { kind: 'executable', executable: deps.execPath };
   const entry = deps.argv[1];
   if (entry === undefined || entry.length === 0) return undefined;
-  if (basename(entry) !== CLI_ENTRY_BASENAME) return undefined;
+  const entryBase = basename(entry);
+  if (entryBase !== CLI_ENTRY_BASENAME && entryBase !== ELECTRON_SERVER_ENTRY_BASENAME) {
+    return undefined;
+  }
   if (!(await deps.isFile(entry))) return undefined;
-  return { kind: 'node', nodePath: deps.execPath, entryPath: entry };
+  return {
+    kind: 'node',
+    nodePath: deps.execPath,
+    entryPath: entry,
+    ...(entryBase === ELECTRON_SERVER_ENTRY_BASENAME ? { electronRunAsNode: true } : {}),
+  };
 }
 
 export interface KikiShimFile {
@@ -84,8 +94,13 @@ export function kikiShimFiles(launch: KikiCliLaunch, platform: string): readonly
     launch.kind === 'executable'
       ? [shellPath(launch.executable)]
       : [shellPath(launch.nodePath), shellPath(launch.entryPath)];
+  const electronRunAsNode = launch.kind === 'node' && launch.electronRunAsNode === true;
   const files: KikiShimFile[] = [
-    { name: POSIX_SHIM_NAME, content: renderPosixShim(shellArgs), mode: SHIM_FILE_MODE },
+    {
+      name: POSIX_SHIM_NAME,
+      content: renderPosixShim(shellArgs, electronRunAsNode),
+      mode: SHIM_FILE_MODE,
+    },
   ];
   if (platform === 'win32') {
     files.push({
@@ -97,8 +112,9 @@ export function kikiShimFiles(launch: KikiCliLaunch, platform: string): readonly
   return files;
 }
 
-function renderPosixShim(args: readonly string[]): string {
-  return `#!/bin/sh\nexec ${args.map(quoteShell).join(' ')} "$@"\n`;
+function renderPosixShim(args: readonly string[], electronRunAsNode = false): string {
+  const prefix = electronRunAsNode ? 'ELECTRON_RUN_AS_NODE=1 ' : '';
+  return `#!/bin/sh\n${prefix}exec ${args.map(quoteShell).join(' ')} "$@"\n`;
 }
 
 function quoteShell(value: string): string {
@@ -108,6 +124,9 @@ function quoteShell(value: string): string {
 function renderCmdShim(launch: KikiCliLaunch): string {
   const args =
     launch.kind === 'executable' ? [launch.executable] : [launch.nodePath, launch.entryPath];
+  if (launch.kind === 'node' && launch.electronRunAsNode === true) {
+    return `@echo off\r\nsetlocal\r\nset "ELECTRON_RUN_AS_NODE=1"\r\n${args.map(quoteDouble).join(' ')} %*\r\n`;
+  }
   return `@echo off\r\n${args.map(quoteDouble).join(' ')} %*\r\n`;
 }
 

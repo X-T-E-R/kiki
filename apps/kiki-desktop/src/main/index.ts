@@ -21,7 +21,7 @@ import {
   type Event as ElectronEvent,
 } from 'electron';
 import { autoUpdater } from 'electron-updater';
-import { join, resolve } from 'pathe';
+import { dirname, join, resolve } from 'pathe';
 import {
   createKikiAppProtocolHandler,
   KIKI_APP_ORIGIN,
@@ -41,10 +41,12 @@ import {
 import { NotificationService } from '#/main/notificationService';
 import {
   createDefaultWindowsRegistryRunner,
+  createElectronUpdaterAdapter,
   PrefsAndUpdateService,
+  readDesktopBuildReceiptUpdaterMeta,
   readDesktopSpaceToml,
   resolveDesktopOauthHome,
-  type UpdaterFeedAdapter,
+  resolveDesktopUpdaterConfig,
 } from '#/main/prefsAndUpdateService';
 import { registerDesktopIpc } from '#/main/registerIpc';
 import {
@@ -78,14 +80,13 @@ import { readWindowState, rescueWindowBounds, writeWindowState } from '#/main/wi
 import { IPC_EVENTS } from '#/shared/ipcChannels';
 import type {
   DesktopSpace,
-  DesktopUpdateOffer,
   LocalSpaceSummary,
-  UpdateChannel,
 } from '#/shared/types';
 
 declare const __KIKI_DESKTOP_BUILD_ID__: string | undefined;
 declare const __KIKI_DESKTOP_CHANNEL__: string | undefined;
 declare const __KIKI_DESKTOP_DISTRIBUTION__: string | undefined;
+declare const __KIKI_UPDATER_FEED_BASE_URL__: string | undefined;
 
 const BASE_APP_ID = 'com.kiki.desktop';
 const APP_NAME = 'Kiki';
@@ -226,9 +227,26 @@ if (!singleInstanceLock) {
       ? __KIKI_DESKTOP_CHANNEL__
       : undefined) ?? process.env['KIKI_CHANNEL']?.trim();
   const bakedDistributionRaw =
-    (typeof __KIKI_DESKTOP_DISTRIBUTION__ === 'string' && __KIKI_DESKTOP_DISTRIBUTION__ !== ''
+    typeof __KIKI_DESKTOP_DISTRIBUTION__ === 'string' && __KIKI_DESKTOP_DISTRIBUTION__ !== ''
       ? __KIKI_DESKTOP_DISTRIBUTION__
-      : undefined) ?? process.env['KIKI_DESKTOP_DISTRIBUTION']?.trim();
+      : undefined;
+  const bakedUpdaterFeedBaseUrlRaw =
+    typeof __KIKI_UPDATER_FEED_BASE_URL__ === 'string' && __KIKI_UPDATER_FEED_BASE_URL__ !== ''
+      ? __KIKI_UPDATER_FEED_BASE_URL__
+      : undefined;
+  const receiptUpdaterMeta = readDesktopBuildReceiptUpdaterMeta([
+    join(dirname(process.execPath), 'desktop-build-receipt.json'),
+    join(process.resourcesPath, 'desktop-build-receipt.json'),
+    resolve(MAIN_DIR, '../../desktop-build-receipt.json'),
+  ]);
+  const resolvedUpdaterConfig = resolveDesktopUpdaterConfig({
+    isPackaged: app.isPackaged,
+    envDistribution: process.env['KIKI_DESKTOP_DISTRIBUTION'],
+    envUpdaterFeedBaseUrl: process.env['KIKI_UPDATER_FEED_BASE_URL'],
+    receipt: receiptUpdaterMeta,
+    bakedDistribution: bakedDistributionRaw,
+    bakedUpdaterFeedBaseUrl: bakedUpdaterFeedBaseUrlRaw,
+  });
 
   const initialOauthHome = await resolveDesktopOauthHome({
     homeDir: startupHome,
@@ -588,32 +606,15 @@ if (!singleInstanceLock) {
     openExternal: (validatedUrl) => shell.openExternal(validatedUrl),
   });
 
-  const electronUpdaterAdapter: UpdaterFeedAdapter = {
-    async checkForUpdate(channel: UpdateChannel): Promise<DesktopUpdateOffer | null> {
-      autoUpdater.autoDownload = false;
-      autoUpdater.allowPrerelease = channel === 'beta';
-      autoUpdater.channel = channel === 'beta' ? 'beta' : 'latest';
-      const customFeedUrl = process.env['KIKI_UPDATE_FEED_URL']?.trim();
-      if (customFeedUrl !== undefined && customFeedUrl !== '') {
-        autoUpdater.setFeedURL({ provider: 'generic', url: customFeedUrl });
-      }
-      const result = await autoUpdater.checkForUpdates();
-      const info = result?.updateInfo;
-      if (info === undefined || info.version === app.getVersion()) return null;
-      return {
-        currentVersion: app.getVersion(),
-        version: info.version,
-        date: info.releaseDate,
-        notes: typeof info.releaseNotes === 'string' ? info.releaseNotes : undefined,
-      };
-    },
-    async downloadAndInstall(channel: UpdateChannel): Promise<void> {
-      autoUpdater.allowPrerelease = channel === 'beta';
-      autoUpdater.channel = channel === 'beta' ? 'beta' : 'latest';
-      await autoUpdater.downloadUpdate();
-      autoUpdater.quitAndInstall();
-    },
-  };
+  const electronUpdaterAdapter = createElectronUpdaterAdapter({
+    autoUpdater,
+    getCurrentVersion: () => app.getVersion(),
+    distribution: resolvedUpdaterConfig.distribution,
+    ...(resolvedUpdaterConfig.updaterFeedBaseUrl !== undefined
+      ? { updaterFeedBaseUrl: resolvedUpdaterConfig.updaterFeedBaseUrl }
+      : {}),
+    getEnvFeedUrlOverride: () => process.env['KIKI_UPDATE_FEED_URL'],
+  });
 
   const confirmShutdownDialog = async (_reason: string, pendingWork: readonly string[]): Promise<boolean> => {
     const zh = activeLocaleCached === 'zh';
@@ -681,11 +682,6 @@ if (!singleInstanceLock) {
     return quitInFlight;
   };
 
-  const distribution: 'github' | 'local' =
-    bakedDistributionRaw === 'github' || (app.isPackaged && bakedDistributionRaw !== 'local')
-      ? 'github'
-      : 'local';
-
   const prefsAndUpdates = new PrefsAndUpdateService({
     mainHome,
     getActiveHome: () => spaces.getActiveSpace().path,
@@ -707,7 +703,10 @@ if (!singleInstanceLock) {
           }
         : undefined,
     desktopDir: process.env['KIKI_DESKTOP_SHORTCUT_DIR']?.trim() || app.getPath('desktop'),
-    distribution,
+    distribution: resolvedUpdaterConfig.distribution,
+    ...(resolvedUpdaterConfig.updaterFeedBaseUrl !== undefined
+      ? { updaterFeedBaseUrl: resolvedUpdaterConfig.updaterFeedBaseUrl }
+      : {}),
     updaterAdapter: electronUpdaterAdapter,
     confirmShutdownForUpdate: async () => {
       const pending = await daemon.collectManagedQuitPendingWork();

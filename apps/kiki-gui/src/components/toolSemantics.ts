@@ -583,6 +583,17 @@ function taskItems(text: string, ctx: SemanticContext): SemanticItem[] {
   }));
 }
 
+export function isTaskWaitMovedToBackground(block: Pick<ToolBlock, 'name' | 'output'>): boolean {
+  if (block.name !== 'TaskWait') return false;
+  const text = outputText(block.output);
+  if (text === undefined) return false;
+  const fields = plainFields(text);
+  if (fields.get('wait_status') === 'interrupted' && fields.get('reason') === 'steer') {
+    return true;
+  }
+  return /New input ended (?:this wait early|the foreground wait)/i.test(text);
+}
+
 function describeTask(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
   const { t, tp } = ctx;
   const args = rec(block.args) ?? {};
@@ -622,6 +633,7 @@ function describeTask(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
       };
     case 'TaskWait': {
       const waitStatus = fields.get('wait_status');
+      const movedToBackground = isTaskWaitMovedToBackground(block);
       const finished = text === undefined ? undefined : section(text, 'finished');
       const finishedFields = finished === undefined ? new Map<string, string>() : plainFields(finished);
       const timeout = num(args['timeout']);
@@ -634,11 +646,13 @@ function describeTask(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
           ? taskState(finishedFields.get('status') ?? 'completed', ctx)
           : waitStatus === 'timed_out'
             ? { text: t('tc.sem.timedOut'), tone: 'warn' }
-            : waitStatus === 'interrupted'
-              ? { text: t('tc.sem.interrupted'), tone: 'warn' }
-              : waitStatus === 'no_tasks'
-                ? { text: t('tc.sem.task.none'), tone: 'plain' }
-                : undefined,
+            : movedToBackground
+              ? { text: t('tc.sem.task.movedToBackground'), tone: 'plain' }
+              : waitStatus === 'interrupted'
+                ? { text: t('tc.sem.interrupted'), tone: 'warn' }
+                : waitStatus === 'no_tasks'
+                  ? { text: t('tc.sem.task.none'), tone: 'plain' }
+                  : undefined,
         fields: taskFields(finishedFields.size > 0 ? finishedFields : fields, ctx),
         items: text === undefined ? [] : [
           ...(section(text, 'still_running') === undefined ? [] : taskItems(section(text, 'still_running')!, ctx)),

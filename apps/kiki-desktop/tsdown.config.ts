@@ -15,6 +15,7 @@ const sharedDefines = {
   __KIKI_DESKTOP_BUILD_ID__: JSON.stringify(process.env['KIKI_BUILD_ID'] ?? ''),
   __KIKI_DESKTOP_CHANNEL__: JSON.stringify(process.env['KIKI_CHANNEL'] ?? ''),
   __KIKI_DESKTOP_DISTRIBUTION__: JSON.stringify(process.env['KIKI_DESKTOP_DISTRIBUTION'] ?? ''),
+  __KIKI_UPDATER_FEED_BASE_URL__: JSON.stringify(process.env['KIKI_UPDATER_FEED_BASE_URL'] ?? ''),
 };
 
 export default defineConfig([

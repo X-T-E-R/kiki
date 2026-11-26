@@ -19,9 +19,15 @@ import {
 } from '#/main/fileAndClipboardService';
 import { NotificationService, type NativeNotificationHandle } from '#/main/notificationService';
 import {
+  createElectronUpdaterAdapter,
+  normalizeHttpsUpdaterFeedBaseUrl,
   PrefsAndUpdateService,
+  readDesktopBuildReceiptUpdaterMeta,
   readDesktopSpaceToml,
+  resolveCustomUpdaterFeedUrl,
   resolveDesktopOauthHome,
+  resolveDesktopUpdaterConfig,
+  type AutoUpdaterDriver,
 } from '#/main/prefsAndUpdateService';
 import { createIpcHandlers } from '#/main/registerIpc';
 import { SpaceCatalog } from '#/main/spaceCatalog';
@@ -31,6 +37,7 @@ import { WindowService } from '#/main/windowService';
 import { rescueWindowBounds } from '#/main/windowState';
 import { IPC_CHANNELS, IPC_EVENTS } from '#/shared/ipcChannels';
 import { verifyFuseConfig } from '../scripts/verify-fuses.mjs';
+import { writeElectronBuildReceipt } from '../scripts/write-build-receipt.mjs';
 
 const tempDirs: string[] = [];
 
@@ -637,5 +644,149 @@ describe('save sink, notifications, prefs, updates, IPC Zod validation, and Elec
     });
     expect(broken.ok).toBe(false);
     expect(broken.failures).toHaveLength(2);
+  });
+
+  it('supports domain-neutral custom updater feed in desktop-build-receipt.json and routes electronUpdaterAdapter to ${updaterFeedBaseUrl}/${channel}', async () => {
+    const candidateDir = makeTempDir();
+    const unpackedServerDir = join(
+      candidateDir,
+      'resources',
+      'app.asar.unpacked',
+      'dist',
+      'server',
+    );
+    await import('node:fs/promises').then((fs) => fs.mkdir(unpackedServerDir, { recursive: true }));
+    writeFileSync(join(candidateDir, 'kiki-desktop.exe'), 'electron-bin');
+    writeFileSync(join(candidateDir, 'resources', 'app.asar'), 'asar-payload');
+    writeFileSync(join(unpackedServerDir, 'server-entry.mjs'), 'export {};\n');
+    writeFileSync(join(unpackedServerDir, 'native-addons.json'), '{"version":1}\n');
+
+    const commit = 'a'.repeat(40);
+    await expect(
+      writeElectronBuildReceipt({
+        candidateDir,
+        sourceCommit: commit,
+        distribution: 'custom',
+      }),
+    ).rejects.toThrow(/valid https:\/\/ KIKI_UPDATER_FEED_BASE_URL/);
+    await expect(
+      writeElectronBuildReceipt({
+        candidateDir,
+        sourceCommit: commit,
+        distribution: 'custom',
+        updaterFeedBaseUrl: 'http://example.com/updater',
+      }),
+    ).rejects.toThrow(/valid https:\/\/ KIKI_UPDATER_FEED_BASE_URL/);
+
+    const written = await writeElectronBuildReceipt({
+      candidateDir,
+      sourceCommit: commit,
+      distribution: 'custom',
+      updaterFeedBaseUrl: 'https://example.com/updater/',
+    });
+    expect(written.receipt.distribution).toBe('custom');
+    expect(written.receipt.updaterFeedBaseUrl).toBe('https://example.com/updater');
+
+    expect(normalizeHttpsUpdaterFeedBaseUrl('https://example.com/updater///')).toBe(
+      'https://example.com/updater',
+    );
+    expect(normalizeHttpsUpdaterFeedBaseUrl('http://example.com/updater')).toBeNull();
+    expect(normalizeHttpsUpdaterFeedBaseUrl('https://user:pass@example.com/updater')).toBeNull();
+    expect(normalizeHttpsUpdaterFeedBaseUrl('https://example.com/updater?foo=1')).toBeNull();
+    expect(resolveCustomUpdaterFeedUrl('https://example.com/updater/', 'stable')).toBe(
+      'https://example.com/updater/stable',
+    );
+    expect(resolveCustomUpdaterFeedUrl('https://example.com/updater/', 'beta')).toBe(
+      'https://example.com/updater/beta',
+    );
+
+    const parsedMeta = readDesktopBuildReceiptUpdaterMeta([written.receiptPath]);
+    expect(parsedMeta).toEqual({
+      distribution: 'custom',
+      updaterFeedBaseUrl: 'https://example.com/updater',
+    });
+
+    const resolvedConfig = resolveDesktopUpdaterConfig({
+      isPackaged: true,
+      receipt: parsedMeta,
+    });
+    expect(resolvedConfig).toEqual({
+      distribution: 'custom',
+      updaterFeedBaseUrl: 'https://example.com/updater',
+    });
+
+    const feedCalls: Array<{ readonly provider: 'generic'; readonly url: string }> = [];
+    let quitAndInstallCalled = false;
+    const fakeAutoUpdater: AutoUpdaterDriver = {
+      autoDownload: true,
+      allowPrerelease: false,
+      channel: null,
+      setFeedURL: (opts) => {
+        feedCalls.push(opts);
+      },
+      checkForUpdates: async () => ({
+        updateInfo: {
+          version: '0.7.1',
+          releaseDate: '2026-11-26T00:00:00.000Z',
+          releaseNotes: 'Domain-neutral custom feed release',
+        },
+      }),
+      downloadUpdate: async () => [],
+      quitAndInstall: () => {
+        quitAndInstallCalled = true;
+      },
+    };
+
+    const adapter = createElectronUpdaterAdapter({
+      autoUpdater: fakeAutoUpdater,
+      getCurrentVersion: () => '0.7.0',
+      distribution: resolvedConfig.distribution,
+      updaterFeedBaseUrl: resolvedConfig.updaterFeedBaseUrl,
+    });
+
+    const homeDir = makeTempDir();
+    const customSvc = new PrefsAndUpdateService({
+      mainHome: homeDir,
+      getActiveHome: () => homeDir,
+      resolveLaunchExecutable: () => 'C:/Kiki/kiki-desktop.exe',
+      distribution: resolvedConfig.distribution,
+      updaterFeedBaseUrl: resolvedConfig.updaterFeedBaseUrl,
+      updaterAdapter: adapter,
+    });
+    expect(customSvc.supportsUpdates()).toBe(true);
+
+    const stableOffer = await customSvc.checkUpdate('stable');
+    expect(stableOffer).toMatchObject({ currentVersion: '0.7.0', version: '0.7.1' });
+    expect(fakeAutoUpdater.autoDownload).toBe(false);
+    expect(fakeAutoUpdater.allowPrerelease).toBe(false);
+    expect(fakeAutoUpdater.channel).toBe('latest');
+
+    const betaOffer = await customSvc.checkUpdate('beta');
+    expect(betaOffer?.version).toBe('0.7.1');
+    expect(fakeAutoUpdater.allowPrerelease).toBe(true);
+    expect(fakeAutoUpdater.channel).toBe('beta');
+
+    await customSvc.writePrefs({ updateChannel: 'beta' });
+    await customSvc.installUpdate('beta', '0.7.1');
+    expect(quitAndInstallCalled).toBe(true);
+    expect(feedCalls).toEqual([
+      { provider: 'generic', url: 'https://example.com/updater/stable' },
+      { provider: 'generic', url: 'https://example.com/updater/beta' },
+      { provider: 'generic', url: 'https://example.com/updater/beta' },
+      { provider: 'generic', url: 'https://example.com/updater/beta' },
+    ]);
+
+    const invalidCustomSvc = new PrefsAndUpdateService({
+      mainHome: homeDir,
+      getActiveHome: () => homeDir,
+      resolveLaunchExecutable: () => 'C:/Kiki/kiki-desktop.exe',
+      distribution: 'custom',
+      updaterFeedBaseUrl: 'http://example.com/insecure',
+      updaterAdapter: adapter,
+    });
+    expect(invalidCustomSvc.supportsUpdates()).toBe(false);
+    await expect(invalidCustomSvc.checkUpdate('stable')).rejects.toThrow(
+      /Desktop updater is not available/,
+    );
   });
 });

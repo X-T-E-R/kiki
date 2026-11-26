@@ -128,6 +128,38 @@ try {
     const abs = join(serverDir, rel);
     assert.ok(existsSync(abs), `Missing unpacked server asset: ${abs}`);
   }
+  if (process.platform === 'win32') {
+    const unpackedDir = join(desktopRoot, 'out', 'win-unpacked');
+    for (const relTool of [
+      'toolchain/git/bin/bash.exe',
+      'toolchain/git/cmd/git.exe',
+      'toolchain/bin/rg.exe',
+      'toolchain/bin/node.cmd',
+      'toolchain/bin/node',
+      'toolchain/toolchain-manifest.json',
+      'THIRD_PARTY_NOTICES.md',
+    ]) {
+      const absTool = join(unpackedDir, relTool);
+      assert.ok(existsSync(absTool), `Missing bundled Windows toolchain asset: ${absTool}`);
+    }
+    const comSpec = process.env['ComSpec'] ?? 'C:\\Windows\\System32\\cmd.exe';
+    const nodeCmdOut = execFileSync(
+      comSpec,
+      ['/d', '/s', '/c', `""${join(unpackedDir, 'toolchain', 'bin', 'node.cmd')}" -p "20 + 22""`],
+      {
+        encoding: 'utf8',
+        windowsVerbatimArguments: true,
+        env: {
+          SystemRoot: process.env['SystemRoot'] ?? 'C:\\Windows',
+          ComSpec: comSpec,
+          PATH: 'C:\\Windows\\System32;C:\\Windows',
+          TEMP: scratchRoot,
+          TMP: scratchRoot,
+        },
+      },
+    ).trim();
+    assert.equal(nodeCmdOut, '42', `Bundled toolchain node.cmd failed on virgin PATH: ${nodeCmdOut}`);
+  }
 
   const sqliteAndWorkerProbe = `
     import assert from 'node:assert/strict';

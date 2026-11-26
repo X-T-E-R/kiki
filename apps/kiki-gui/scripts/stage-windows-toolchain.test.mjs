@@ -173,12 +173,51 @@ describe('stage-windows-toolchain helpers', () => {
 
         const missingSeaEnv = { ...process.env };
         delete missingSeaEnv['KIKI_SEA_EXEC'];
+        delete missingSeaEnv['KIKI_ELECTRON_NODE_EXEC'];
+        delete missingSeaEnv['KIKI_ELECTRON_SERVER_ENTRY'];
         const missingRes = spawnSync(
           comSpec,
           ['/d', '/s', '/c', `""${nodeCmdPath}" -v"`],
           { env: missingSeaEnv, encoding: 'utf8', windowsVerbatimArguments: true },
         );
         assert.equal(missingRes.status, 127);
+
+        const electronAppDir = join(tempDir, 'win-unpacked');
+        const electronToolchainBin = join(electronAppDir, 'toolchain', 'bin');
+        const electronServerDir = join(electronAppDir, 'resources', 'app.asar.unpacked', 'dist', 'server');
+        mkdirSync(electronToolchainBin, { recursive: true });
+        mkdirSync(electronServerDir, { recursive: true });
+        const unpackedNodeCmd = join(electronToolchainBin, 'node.cmd');
+        writeFileSync(unpackedNodeCmd, cmdShim, 'utf8');
+        writeFileSync(
+          join(electronServerDir, 'server-entry.mjs'),
+          'export {};\n',
+          'utf8',
+        );
+        const fakeElectronCmd = join(tempDir, 'fake-electron.cmd');
+        writeFileSync(
+          fakeElectronCmd,
+          [
+            '@echo off',
+            'if not "%ELECTRON_RUN_AS_NODE%"=="1" exit /b 9',
+            'if "%~2"=="__plugin_run_node" echo %~4& exit /b 0',
+            'exit /b 4',
+            '',
+          ].join('\r\n'),
+          'utf8',
+        );
+        const electronEnv = {
+          ...missingSeaEnv,
+          KIKI_ELECTRON_NODE_EXEC: fakeElectronCmd,
+          KIKI_ELECTRON_SERVER_ENTRY: join(electronServerDir, 'server-entry.mjs'),
+        };
+        const electronRes = spawnSync(
+          comSpec,
+          ['/d', '/s', '/c', `""${unpackedNodeCmd}" -e "console.log('electron-node-ok')""`],
+          { env: electronEnv, encoding: 'utf8', windowsVerbatimArguments: true },
+        );
+        assert.equal(electronRes.status, 0, electronRes.stderr);
+        assert.equal(electronRes.stdout.trim(), "console.log('electron-node-ok')");
       } finally {
         rmSync(tempDir, { recursive: true, force: true });
       }

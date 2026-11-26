@@ -15,6 +15,7 @@ export {
   type OsKind,
   type PathClass,
   type ShellName,
+  type WindowsToolchainLookupOptions,
 } from './environment';
 export {
   KaosShellNotFoundError,

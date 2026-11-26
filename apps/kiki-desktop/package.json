@@ -71,6 +71,7 @@
     ],
     "files": [
       "dist/**",
+      "!dist/toolchain/**",
       "package.json",
       "!node_modules/**"
     ],
@@ -109,6 +110,19 @@
       "target": [
         "nsis",
         "dir"
+      ],
+      "extraFiles": [
+        {
+          "from": "dist/toolchain",
+          "to": "toolchain",
+          "filter": [
+            "**/*"
+          ]
+        },
+        {
+          "from": "../../THIRD_PARTY_NOTICES.md",
+          "to": "THIRD_PARTY_NOTICES.md"
+        }
       ]
     },
     "linux": {

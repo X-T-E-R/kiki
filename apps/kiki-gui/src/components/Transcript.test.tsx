@@ -10874,6 +10874,18 @@ describe('semantic tool cards', () => {
       contains: ['Stopped — user cancelled'],
     },
     {
+      label: 'TaskWait steer-detached state stays neutral plain instead of amber stopped',
+      name: 'TaskWait',
+      args: { timeout: 60, task_id: 'bash-build' },
+      output: 'wait_status: interrupted\nreason: steer\ntask_id: bash-build\nwaited_ms: 1200\ntimeout_ms: 60000\nNew input ended this wait early. Read the new input before deciding what to do next. Background tasks have not been stopped; completion still arrives via automatic notification.',
+      overrides: { status: 'stopped' },
+      contains: ['Wait for task', 'bash-build'],
+      notContains: ['Stopped —', 'Interrupted'],
+      stateText: 'Continued in background',
+      statePlain: true,
+      noJumpSelector: '[data-outcome="stopped"]',
+    },
+    {
       label: 'HistorySearch running state',
       name: 'HistorySearch',
       args: { query: 'deploy' },
@@ -10895,6 +10907,10 @@ describe('semantic tool cards', () => {
       const state = scope.querySelector('[data-tool-state]');
       expect(state?.textContent).toContain(c.stateText);
       if (c.stateDanger) expect(state?.className).toContain('text-danger');
+      if ('statePlain' in c && c.statePlain) {
+        expect(state?.className).toContain('text-ink-faint');
+        expect(state?.className).not.toContain('text-amber-ink');
+      }
     }
     if (c.count === null) expect(container.querySelector('[data-tool-count]')).toBeNull();
     else if (c.count !== undefined) expect(container.querySelector('[data-tool-count]')?.textContent).toBe(c.count);

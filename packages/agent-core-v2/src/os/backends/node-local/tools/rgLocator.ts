@@ -151,7 +151,10 @@ async function downloadRgWithLock(probe: RgProbe, shareDir: string): Promise<RgR
 export function getVendorRgPath(binName: string = rgBinaryName()): string | undefined {
   if (process.env['KIKI_DISABLE_BUNDLED_TOOLCHAIN'] === '1') return undefined;
   if (process.platform === 'win32') {
-    for (const root of bundledWindowsToolchainCandidates(process.env, process.execPath)) {
+    for (const root of bundledWindowsToolchainCandidates(process.env, process.execPath, {
+      resourcesPath: (process as { readonly resourcesPath?: string }).resourcesPath,
+      entryScriptPath: process.argv[1],
+    })) {
       const candidate = join(root, 'bin', binName);
       if (existsSync(candidate)) return candidate;
     }

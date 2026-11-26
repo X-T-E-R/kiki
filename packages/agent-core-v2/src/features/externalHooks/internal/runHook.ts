@@ -79,7 +79,10 @@ export function resolveHookEnvOverrides(
   } else if (isWindows) {
     const mergedLookup: Record<string, string | undefined> = { ...baseEnv, ...overrides };
     let hasToolchainNodeShim = false;
-    for (const root of bundledWindowsToolchainCandidates(mergedLookup, execPath)) {
+    for (const root of bundledWindowsToolchainCandidates(mergedLookup, execPath, {
+      resourcesPath: (process as { readonly resourcesPath?: string }).resourcesPath,
+      entryScriptPath: process.argv[1],
+    })) {
       const gitCmd = path.win32.join(root, 'git', 'cmd');
       if (pathExists(path.win32.join(gitCmd, 'git.exe'))) appendIfMissing(gitCmd);
       for (const sysPrefix of ['ucrt64', 'mingw64', 'clang64', 'clangarm64']) {
@@ -103,21 +106,53 @@ export function resolveHookEnvOverrides(
       return clean.length > 0 && pathExists(path.win32.join(clean, 'node.exe'));
     });
     if (!hasSystemNode) {
-      if (overrides?.['KIKI_SEA_EXEC'] === undefined && baseEnv['KIKI_SEA_EXEC'] === undefined) {
-        extraEnv['KIKI_SEA_EXEC'] = execPath;
-      }
-      if (!hasToolchainNodeShim) {
-        const home = context.homeDir ?? safeHomedir();
-        const kikiHome =
-          overrides?.['KIKI_HOME']?.trim() ||
-          baseEnv['KIKI_HOME']?.trim() ||
-          (home.length > 0 ? path.win32.join(home, '.kiki') : '');
-        const shimBuilder =
-          context.ensureNodeShimDir ??
-          ((resolvedHome: string, seaExec: string) => ensureKikiNodeShimSync(resolvedHome, seaExec, 'win32'));
-        const nodeShimDir = kikiHome.length > 0 ? shimBuilder(kikiHome, execPath) : undefined;
-        if (nodeShimDir !== undefined) {
-          appendIfMissing(nodeShimDir);
+      const isElectronBinary =
+        execBase === 'kiki-desktop.exe' ||
+        execBase === 'electron.exe' ||
+        (context.execPath === undefined && process.versions['electron'] !== undefined);
+      if (isElectronBinary) {
+        const unpackedEntry = path.win32.join(
+          path.win32.dirname(execPath),
+          'resources',
+          'app.asar.unpacked',
+          'dist',
+          'server',
+          'server-entry.mjs',
+        );
+        const currentArgv1 = process.argv[1];
+        const serverEntry =
+          pathExists(unpackedEntry)
+            ? unpackedEntry
+            : currentArgv1 !== undefined &&
+                currentArgv1.toLowerCase().endsWith('server-entry.mjs') &&
+                pathExists(currentArgv1)
+              ? currentArgv1
+              : undefined;
+        if (
+          serverEntry !== undefined &&
+          overrides?.['KIKI_ELECTRON_NODE_EXEC'] === undefined &&
+          baseEnv['KIKI_ELECTRON_NODE_EXEC'] === undefined
+        ) {
+          extraEnv['KIKI_ELECTRON_NODE_EXEC'] = execPath;
+          extraEnv['KIKI_ELECTRON_SERVER_ENTRY'] = serverEntry;
+        }
+      } else {
+        if (overrides?.['KIKI_SEA_EXEC'] === undefined && baseEnv['KIKI_SEA_EXEC'] === undefined) {
+          extraEnv['KIKI_SEA_EXEC'] = execPath;
+        }
+        if (!hasToolchainNodeShim) {
+          const home = context.homeDir ?? safeHomedir();
+          const kikiHome =
+            overrides?.['KIKI_HOME']?.trim() ||
+            baseEnv['KIKI_HOME']?.trim() ||
+            (home.length > 0 ? path.win32.join(home, '.kiki') : '');
+          const shimBuilder =
+            context.ensureNodeShimDir ??
+            ((resolvedHome: string, seaExec: string) => ensureKikiNodeShimSync(resolvedHome, seaExec, 'win32'));
+          const nodeShimDir = kikiHome.length > 0 ? shimBuilder(kikiHome, execPath) : undefined;
+          if (nodeShimDir !== undefined) {
+            appendIfMissing(nodeShimDir);
+          }
         }
       }
     }

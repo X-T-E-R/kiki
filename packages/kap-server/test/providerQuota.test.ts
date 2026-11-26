@@ -221,11 +221,12 @@ describe('provider quotas', () => {
   });
 
   it('probes OpenRouter /credits alongside /key and StepFun /v1/accounts alongside /step_plan/v1/usage', async () => {
+    const urlText = (u: string | URL | Request): string => (u instanceof Request ? u.url : typeof u === 'string' ? u : u.href);
     const orAdapter = selectQuotaAdapter('https://openrouter.ai/api/v1', false)!;
     expect(orAdapter.url).toBe('https://openrouter.ai/api/v1/credits');
     expect(orAdapter.secondaryUrl).toBe('https://openrouter.ai/api/v1/key');
     const orFetch = vi.fn(async (url: string | URL | Request) => {
-      if (String(url).endsWith('/credits')) return new Response(JSON.stringify({ data: { total_credits: 25, total_usage: 5.5 } }));
+      if (urlText(url).endsWith('/credits')) return new Response(JSON.stringify({ data: { total_credits: 25, total_usage: 5.5 } }));
       return new Response(JSON.stringify({ data: { limit: 10, limit_remaining: 6, usage: 4 } }));
     });
     const orMeters = await fetchOfficialQuota(orAdapter, 'YOUR_API_KEY', orFetch);
@@ -235,7 +236,7 @@ describe('provider quotas', () => {
     ]);
 
     const orRestricted = await fetchOfficialQuota(orAdapter, 'YOUR_API_KEY', async (url) => {
-      if (String(url).endsWith('/credits')) return new Response('forbidden', { status: 403 });
+      if (urlText(url).endsWith('/credits')) return new Response('forbidden', { status: 403 });
       return new Response(JSON.stringify({ data: { limit: 10, limit_remaining: 7, usage: 3 } }));
     });
     expect(orRestricted).toMatchObject([{ id: 'key-limit', scope: 'key', remaining: 7 }]);
@@ -244,7 +245,7 @@ describe('provider quotas', () => {
     expect(stepAdapter.url).toBe('https://api.stepfun.com/v1/accounts');
     expect(stepAdapter.secondaryUrl).toBe('https://api.stepfun.com/step_plan/v1/usage');
     const stepCodingMeters = await fetchOfficialQuota(stepAdapter, 'YOUR_API_KEY', async (url) => {
-      if (String(url).endsWith('/accounts')) return new Response(JSON.stringify({ balance: '18.25' }));
+      if (urlText(url).endsWith('/accounts')) return new Response(JSON.stringify({ balance: '18.25' }));
       return new Response(JSON.stringify({
         status: 1,
         five_hour_usage_left_rate: 0.75,
@@ -276,13 +277,13 @@ describe('provider quotas', () => {
     expect(stepCreditMeters[0]).toMatchObject({ id: 'step-plan-credits', unit: 'credits', limit: 1000, remaining: 950, used: 50 });
 
     const stepPayg = await fetchOfficialQuota(stepAdapter, 'YOUR_API_KEY', async (url) => {
-      if (String(url).endsWith('/accounts')) return new Response(JSON.stringify({ balance: '12.00' }));
+      if (urlText(url).endsWith('/accounts')) return new Response(JSON.stringify({ balance: '12.00' }));
       return new Response('not found', { status: 404 });
     });
     expect(stepPayg).toMatchObject([{ id: 'balance', currency: 'CNY', limit: null, remaining: 12 }]);
 
     await expect(fetchOfficialQuota(orAdapter, 'YOUR_API_KEY', async (url) => {
-      if (String(url).endsWith('/credits')) return new Response('rate limit', { status: 429 });
+      if (urlText(url).endsWith('/credits')) return new Response('rate limit', { status: 429 });
       return new Response(JSON.stringify({ data: { limit: 10, limit_remaining: 7, usage: 3 } }));
     })).rejects.toMatchObject({
       reason: 'rate_limited',
@@ -290,7 +291,7 @@ describe('provider quotas', () => {
     });
 
     await expect(fetchOfficialQuota(stepAdapter, 'YOUR_API_KEY', async (url) => {
-      if (String(url).endsWith('/accounts')) return new Response('bad gateway', { status: 502 });
+      if (urlText(url).endsWith('/accounts')) return new Response('bad gateway', { status: 502 });
       return new Response(JSON.stringify({ status: 0 }));
     })).rejects.toMatchObject({ reason: 'request_failed' });
 
@@ -301,7 +302,7 @@ describe('provider quotas', () => {
       revision: 'rev-1', active: true, supported: true, auth: { action: 'provider_settings', provider: 'openrouter' },
       source: { label: 'OpenRouter', url: orAdapter.url },
       fetch: (signal) => fetchOfficialQuota(orAdapter, 'YOUR_API_KEY', async (url) => {
-        if (String(url).endsWith('/credits')) {
+        if (urlText(url).endsWith('/credits')) {
           if (mode === 'both') return new Response(JSON.stringify({ data: { total_credits: 25, total_usage: 5.5 } }));
           if (mode === 'credits_empty') return new Response(JSON.stringify({ data: {} }));
           return new Response('rate limited', { status: 429 });
@@ -554,10 +555,10 @@ describe('provider quotas', () => {
   });
   it('deduplicates providers sharing the same quota endpoint and credential while preserving distinct keys', async () => {
     const providers = {
-      axon: { type: 'openai_responses', baseUrl: 'https://api.zjuam.art/v1', apiKey: 'ah-test-shared-001' },
-      'axon-message': { type: 'anthropic', baseUrl: 'https://api.zjuam.art', apiKey: 'ah-test-shared-001' },
-      'axon-alt': { type: 'openai_responses', baseUrl: 'https://api.zjuam.art/v1', apiKey: 'ah-test-other-002' },
-      'axon-empty': { type: 'openai_responses', baseUrl: 'https://api.zjuam.art/v1' },
+      axon: { type: 'openai_responses', baseUrl: 'https://api.example.com/v1', apiKey: 'ah-test-shared-001' },
+      'axon-message': { type: 'anthropic', baseUrl: 'https://api.example.com', apiKey: 'ah-test-shared-001' },
+      'axon-alt': { type: 'openai_responses', baseUrl: 'https://api.example.com/v1', apiKey: 'ah-test-other-002' },
+      'axon-empty': { type: 'openai_responses', baseUrl: 'https://api.example.com/v1' },
     };
     const services = new Map<unknown, unknown>([
       [IProviderService, { ready: Promise.resolve(), list: () => providers }],
@@ -568,7 +569,7 @@ describe('provider quotas', () => {
     ]);
     const core = { accessor: { get: (token: unknown) => { expect(services.has(token)).toBe(true); return services.get(token); } } } as unknown as Scope;
     const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-      expect(String(url)).toBe('https://api.zjuam.art/v1/kiki/quota');
+      expect(url instanceof Request ? url.url : typeof url === 'string' ? url : url.href).toBe('https://api.example.com/v1/kiki/quota');
       expect(init?.redirect).toBe('error');
       const auth = new Headers(init?.headers).get('authorization');
       const tag = auth === 'Bearer ah-test-shared-001' ? '我们组' : '共享曹';

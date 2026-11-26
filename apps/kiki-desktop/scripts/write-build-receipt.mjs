@@ -20,6 +20,72 @@ const REPO_ROOT = resolve(APP_DIR, '..', '..');
 const UNPACKED_SERVER_ENTRY_REL = 'resources/app.asar.unpacked/dist/server/server-entry.mjs';
 const UNPACKED_NATIVE_ADDONS_REL = 'resources/app.asar.unpacked/dist/server/native-addons.json';
 const UNPACKED_APP_ASAR_REL = 'resources/app.asar';
+const VALID_DISTRIBUTIONS = new Set(['github', 'local', 'custom']);
+
+export function normalizeHttpsUpdaterFeedBaseUrl(rawUrl) {
+  if (typeof rawUrl !== 'string') return null;
+  const trimmed = rawUrl.trim();
+  if (trimmed === '' || /[\u0000-\u001F\u007F\s]/.test(trimmed)) return null;
+  let parsed;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if (
+    parsed.protocol !== 'https:' ||
+    parsed.hostname === '' ||
+    parsed.username !== '' ||
+    parsed.password !== '' ||
+    parsed.search !== '' ||
+    parsed.hash !== ''
+  ) {
+    return null;
+  }
+  return `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, '');
+}
+
+function resolveReceiptDistributionMetadata(options = {}, env = process.env) {
+  const rawDistribution = (
+    options.distribution ??
+    env['KIKI_DESKTOP_DISTRIBUTION'] ??
+    ''
+  ).trim();
+  const rawUpdaterFeedBaseUrl = (
+    options.updaterFeedBaseUrl ??
+    env['KIKI_UPDATER_FEED_BASE_URL'] ??
+    ''
+  ).trim();
+
+  if (rawDistribution === '') {
+    if (rawUpdaterFeedBaseUrl !== '') {
+      throw new Error(
+        'KIKI_UPDATER_FEED_BASE_URL requires KIKI_DESKTOP_DISTRIBUTION=custom.',
+      );
+    }
+    return {};
+  }
+  if (!VALID_DISTRIBUTIONS.has(rawDistribution)) {
+    throw new Error(
+      `Invalid KIKI_DESKTOP_DISTRIBUTION "${rawDistribution}". Expected one of: github, local, custom.`,
+    );
+  }
+  if (rawDistribution === 'custom') {
+    const normalizedFeedBaseUrl = normalizeHttpsUpdaterFeedBaseUrl(rawUpdaterFeedBaseUrl);
+    if (normalizedFeedBaseUrl === null) {
+      throw new Error(
+        'KIKI_DESKTOP_DISTRIBUTION=custom requires a valid https:// KIKI_UPDATER_FEED_BASE_URL (without credentials, query, or hash).',
+      );
+    }
+    return {
+      distribution: 'custom',
+      updaterFeedBaseUrl: normalizedFeedBaseUrl,
+    };
+  }
+  return {
+    distribution: rawDistribution,
+  };
+}
 
 async function sha256File(filePath) {
   const st = statSync(filePath);
@@ -56,6 +122,8 @@ export async function writeElectronBuildReceipt(options = {}) {
     'checkRef',
   );
 
+  const distributionMeta = resolveReceiptDistributionMetadata(options);
+
   const desktopInfo = await sha256File(resolve(candidateDir, DESKTOP_EXE));
   const appAsarInfo = await sha256File(resolve(candidateDir, UNPACKED_APP_ASAR_REL));
   const serverEntryInfo = await sha256File(resolve(candidateDir, UNPACKED_SERVER_ENTRY_REL));
@@ -67,6 +135,7 @@ export async function writeElectronBuildReceipt(options = {}) {
     sourceCommit,
     acceptanceRef,
     checkRef,
+    ...distributionMeta,
     serverEntry: UNPACKED_SERVER_ENTRY_REL,
     nativeAddons: UNPACKED_NATIVE_ADDONS_REL,
     files: {
@@ -94,6 +163,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       'source-commit': { type: 'string' },
       'acceptance-ref': { type: 'string' },
       'check-ref': { type: 'string' },
+      distribution: { type: 'string' },
+      'updater-feed-base-url': { type: 'string' },
     },
   });
   const result = await writeElectronBuildReceipt({
@@ -101,6 +172,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     sourceCommit: parsed.values['source-commit'],
     acceptanceRef: parsed.values['acceptance-ref'],
     checkRef: parsed.values['check-ref'],
+    distribution: parsed.values.distribution,
+    updaterFeedBaseUrl: parsed.values['updater-feed-base-url'],
   });
   console.log(`[write-build-receipt] Wrote ${result.receiptPath} (releaseId=${result.releaseId})`);
 }

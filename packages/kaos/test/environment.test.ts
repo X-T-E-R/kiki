@@ -415,6 +415,31 @@ describe('detectEnvironment', () => {
     );
     expect(virginWithBundle.shellName).toBe('bash');
     expect(virginWithBundle.shellPath).toBe(bundledBash);
+
+    const electronUnpackedBash = 'E:\\kiki-070-trial\\app\\toolchain\\git\\bin\\bash.exe';
+    const electronPackaged = await detectEnvironment({
+      ...stubDeps({
+        platform: 'win32',
+        execPath: 'E:\\kiki-070-trial\\app\\kiki-desktop.exe',
+        existingPaths: [electronUnpackedBash],
+      }),
+      entryScriptPath:
+        'E:\\kiki-070-trial\\app\\resources\\app.asar.unpacked\\dist\\server\\server-entry.mjs',
+    });
+    expect(electronPackaged.shellName).toBe('bash');
+    expect(electronPackaged.shellPath).toBe(electronUnpackedBash);
+
+    const devElectronStageBash = 'E:\\kiki\\apps\\kiki-desktop\\dist\\toolchain\\git\\bin\\bash.exe';
+    const devElectron = await detectEnvironment({
+      ...stubDeps({
+        platform: 'win32',
+        execPath: 'E:\\kiki\\node_modules\\electron\\dist\\electron.exe',
+        existingPaths: [devElectronStageBash],
+      }),
+      entryScriptPath: 'E:\\kiki\\apps\\kiki-desktop\\dist\\server\\server-entry.mjs',
+    });
+    expect(devElectron.shellName).toBe('bash');
+    expect(devElectron.shellPath).toBe(devElectronStageBash);
   });
 
   it('falls back gracefully to PowerShell when neither system Git Bash nor bundled toolchain is present', async () => {
