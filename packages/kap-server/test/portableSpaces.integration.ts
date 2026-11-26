@@ -101,7 +101,7 @@ async function request<T>(server: RunningServer, base: string, path: string, bod
   } as never);
   const envelope = await response.json() as Envelope<unknown>;
   expect(response.status, envelope.msg).toBe(200);
-  expect(envelope.code).toBe(0);
+  expect(envelope.code, envelope.msg).toBe(0);
   expect(typeof envelope.request_id).toBe('string');
   return schema.parse(envelope.data);
 }

@@ -899,7 +899,12 @@ function applyTaskFallback(draft: DraftNode, task: AgentTaskItem): void {
     status === undefined
       ? draft.status === undefined && draft.disposedAt === undefined
       : applyStatus(draft, status, STATUS_AUTHORITY.task, startedAt, endedAt).accepted;
-  if (!accepted) return;
+  if (!accepted) {
+    if (status !== undefined && isActiveStatus(status) && isActiveStatus(draft.status ?? 'unknown')) {
+      setDraftStartedAtIfMissing(draft, startedAt);
+    }
+    return;
+  }
   draft.model = firstPresent(task.model) ?? draft.model;
   draft.thinkingEffort = firstPresent(task.thinkingEffort, task.thinking_effort) ?? draft.thinkingEffort;
   draft.thinkingEffortExplicit = task.thinkingEffortExplicit ?? task.thinking_effort_explicit ?? draft.thinkingEffortExplicit;
@@ -955,9 +960,9 @@ function applyRoster(draft: DraftNode, entry: AgentRosterDescriptor, now: number
   const status = normalizeStatus(entry.status, entry.detached === true);
   const authority = entry.statusSource === undefined ? STATUS_AUTHORITY.roster : 4;
   const metadataIdentityOnly = entry.statusSource === 'metadata' && status === 'unknown';
+  const inactiveAt = parseStatusTimestamp(entry.endedAt ?? entry.startedAt);
   let inactive = false;
   if (entry.statusSource !== undefined && !metadataIdentityOnly && (status === 'idle' || status === 'unknown')) {
-    const inactiveAt = parseStatusTimestamp(entry.endedAt ?? entry.startedAt);
     const inactiveIsOlder = inactiveAt !== undefined && draft.statusStartedAt !== undefined && inactiveAt < draft.statusStartedAt;
     inactive = !inactiveIsOlder;
   }
@@ -965,7 +970,8 @@ function applyRoster(draft: DraftNode, entry: AgentRosterDescriptor, now: number
     inactive &&
     status === 'idle' &&
     entry.statusSource === 'runtime' &&
-    draft.taskKind === 'subagent';
+    draft.taskKind === 'subagent' &&
+    (inactiveAt !== undefined || draft.statusStartedAt === undefined);
   const taskOpen = draft.taskId !== undefined && isActiveStatus(draft.status ?? 'unknown');
   const taskEnded = draft.status === 'completed' || draft.status === 'failed' || draft.status === 'cancelled';
   const idleSuppressed = inactive && (taskOpen || taskEnded) && !runtimeSubagentInactive;
@@ -983,6 +989,9 @@ function applyRoster(draft: DraftNode, entry: AgentRosterDescriptor, now: number
     draft.refreshingUntil = entry.refreshingUntil;
   }
   if (!accepted) {
+    if (status !== undefined && isActiveStatus(status) && isActiveStatus(draft.status ?? 'unknown')) {
+      setDraftStartedAtIfMissing(draft, firstPresent(entry.startedAt));
+    }
     if (idleSuppressed && draft.isBranch === true && entry.disposedAt === undefined) {
       draft.model ??= firstPresent(entry.model);
       draft.thinkingEffort ??= firstPresent(entry.thinkingEffort);
@@ -1048,7 +1057,12 @@ function applyLiveBlock(draft: DraftNode, block: AgentLiveSource): void {
       ? draft.status === undefined && draft.disposedAt === undefined
       : applyStatus(draft, status, STATUS_AUTHORITY.live, block.startedAt, block.endedAt)
           .accepted;
-  if (!accepted) return;
+  if (!accepted) {
+    if (status !== undefined && isActiveStatus(status) && isActiveStatus(draft.status ?? 'unknown')) {
+      setDraftStartedAtIfMissing(draft, firstPresent(block.startedAt));
+    }
+    return;
+  }
   draft.model = firstPresent(block.model) ?? draft.model;
   draft.thinkingEffort = firstPresent(block.thinkingEffort) ?? draft.thinkingEffort;
   draft.thinkingEffortExplicit = block.thinkingEffortExplicit ?? draft.thinkingEffortExplicit;

@@ -2,6 +2,8 @@ import { ApiError as GoogleApiError, GoogleGenAI as GenAIClient } from '@google/
 
 import {
   APIConnectionError,
+  ambiguousRequestDelivery,
+  isAmbiguousRequestDelivery,
   APIEmptyResponseError,
   APITimeoutError,
   ChatProviderError,
@@ -833,7 +835,7 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
   }
 }
 
-const NETWORK_RE = /network|connection|connect|disconnect|fetch failed/i;
+const NETWORK_RE = /network|connection|connect|disconnect|fetch failed|other side closed|premature close|terminated|socket hang up|econnreset|epipe|unexpected eof/i;
 const TRUNCATED_STREAM_RE = /^Incomplete JSON segment at the end$/i;
 const TIMEOUT_RE = /timed?\s*out|timeout|deadline/i;
 
@@ -917,7 +919,24 @@ function convertGoogleApiError(error: GoogleApiError, source: 'event' | 'http'):
 }
 
 export function convertGoogleGenAIError(error: unknown): ChatProviderError {
+  if (isAmbiguousRequestDelivery(error)) {
+    if (error instanceof ChatProviderError) {
+      if (error.cause !== undefined && !(error.cause instanceof ChatProviderError)) {
+        const converted = convertGoogleGenAISdkError(error.cause);
+        if (error.details !== undefined) {
+          attachErrorDetails(converted, { ...error.details, ...converted.details });
+        }
+        return ambiguousRequestDelivery(converted);
+      }
+      return ambiguousRequestDelivery(error);
+    }
+    return ambiguousRequestDelivery(convertGoogleGenAISdkError(error));
+  }
   if (error instanceof ChatProviderError) return error;
+  return convertGoogleGenAISdkError(error);
+}
+
+function convertGoogleGenAISdkError(error: unknown): ChatProviderError {
   if (error instanceof GoogleApiError) return convertGoogleApiError(error, 'http');
   if (error instanceof Error) {
     const msg = error.message;

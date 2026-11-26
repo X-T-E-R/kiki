@@ -6,7 +6,8 @@ import { mergeConfigCredentials } from '@kiki/agent-core-v2/app/config/credentia
 import { readBundledPluginCatalog } from '@kiki/agent-core-v2/app/plugin/defaultCatalog';
 import type { PortableSpaceDomain, PortableSpaceExcludedItem } from '@kiki/protocol';
 import { sameUnit, type VerifiedBase } from './mergeEngine';
-import { encodeToml, object, parseToml, PLAIN, type Data, type Units } from './treeProjection';
+import { encodeToml, domainForFile, hasBundledPluginManifest, isPortablePluginId, object, parseToml, PLAIN, type Data, type Units } from './treeProjection';
+import { safePortablePath } from './tarArchive';
 import { RECIPE_INSTALLATIONS, readRecipeInstallations, installBytes } from './recipeStore';
 
 type SubscriptionUnit = Units extends Map<string, infer U> ? U : never;
@@ -733,14 +734,135 @@ export function findBundledOfficialPlugin(id: string): OfficialCatalogPlugin | u
   return cachedOfficialPlugins.get(id);
 }
 
+function isSameOriginPinnedPluginZip(
+  rawSource: unknown,
+  rawSha256: unknown,
+  subscriptionOrigin: string | undefined,
+): { readonly source: string; readonly sha256: string } | undefined {
+  if (typeof rawSource !== 'string' || typeof rawSha256 !== 'string' || subscriptionOrigin === undefined) {
+    return undefined;
+  }
+  const source = rawSource.trim();
+  const sha256 = rawSha256.trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(sha256) || !URL.canParse(source)) return undefined;
+  const parsed = new URL(source);
+  if (parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== '') return undefined;
+  if (!/\.zip$/i.test(parsed.pathname)) return undefined;
+  let expectedOrigin: string;
+  try {
+    expectedOrigin = new URL(subscriptionOrigin).origin.toLowerCase();
+  } catch {
+    return undefined;
+  }
+  if (!expectedOrigin.startsWith('https://') || parsed.origin.toLowerCase() !== expectedOrigin) {
+    return undefined;
+  }
+  return { source, sha256 };
+}
+
+function validateBundledPluginManifestName(
+  pluginId: string,
+  files: ReadonlyMap<string, Buffer>,
+): string | undefined {
+  for (const manifestFile of [`plugins/${pluginId}/kimi.plugin.json`, `plugins/${pluginId}/package.json`]) {
+    const rawBytes = files.get(manifestFile);
+    if (rawBytes === undefined) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawBytes.toString('utf8'));
+    } catch {
+      return `Invalid JSON in ${manifestFile}`;
+    }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return `Invalid manifest object in ${manifestFile}`;
+    }
+    const rawName = (parsed as Record<string, unknown>)['name'];
+    if (typeof rawName === 'string' && rawName.trim().length > 0) {
+      const normalized = rawName.trim().toLowerCase().replace(/^@[^/]+\//, '');
+      if (normalized !== pluginId) {
+        return `Bundled plugin manifest name "${rawName}" does not match directory "${pluginId}"`;
+      }
+    }
+  }
+  return undefined;
+}
+
 /** Strips executable hooks, cron scripts, agent executors, recipe hooks, stdio MCP settings, and untrusted extensions from remote URL packs. */
-export function sanitizeRemoteSubscriptionFiles(files: ReadonlyMap<string, Buffer>): {
+export function sanitizeRemoteSubscriptionFiles(
+  files: ReadonlyMap<string, Buffer>,
+  subscriptionOrigin?: string,
+): {
   readonly files: Map<string, Buffer>;
   readonly excluded: PortableSpaceExcludedItem[];
 } {
   const sanitized = new Map<string, Buffer>();
   const excluded: PortableSpaceExcludedItem[] = [];
   const allowedRemoteMcpNames = new Set<string>();
+  const candidateBundledPluginPaths = new Map<string, Set<string>>();
+  for (const rawPath of files.keys()) {
+    if (!/^plugins(?:\/|$)/i.test(rawPath)) continue;
+    let canonical: string;
+    try {
+      canonical = safePortablePath(rawPath);
+    } catch {
+      excluded.push({
+        id: `plugins:${rawPath.replaceAll('%', '%25').replaceAll('.', '%2E')}`.slice(0, 512),
+        domain: 'plugins',
+        path: rawPath.slice(0, 512),
+        reason: 'Blocked unsafe bundled plugin path from remote URL subscription',
+      });
+      continue;
+    }
+    const parts = canonical.split('/');
+    const pluginId = parts[1];
+    if (parts.length < 3 || pluginId === undefined || !isPortablePluginId(pluginId) || domainForFile(canonical) !== 'plugins') {
+      excluded.push({
+        id: `plugins:${canonical.replaceAll('%', '%25').replaceAll('.', '%2E')}`.slice(0, 512),
+        domain: 'plugins',
+        path: canonical.slice(0, 512),
+        reason: 'Blocked invalid or disallowed bundled plugin file from remote URL subscription',
+      });
+      continue;
+    }
+    let set = candidateBundledPluginPaths.get(pluginId);
+    if (set === undefined) {
+      set = new Set<string>();
+      candidateBundledPluginPaths.set(pluginId, set);
+    }
+    set.add(canonical);
+  }
+  const validBundledPluginIds = new Set<string>();
+  for (const [pluginId, group] of candidateBundledPluginPaths) {
+    if (findBundledOfficialPlugin(pluginId) !== undefined) {
+      excluded.push({
+        id: `plugins:plugins.${pluginId.replaceAll('%', '%25').replaceAll('.', '%2E')}`.slice(0, 512),
+        domain: 'plugins',
+        path: `plugins/${pluginId}`.slice(0, 512),
+        reason: `Blocked bundled plugin "${pluginId}" shadowing compiled-in official catalog plugin`,
+      });
+      continue;
+    }
+    if (!hasBundledPluginManifest(pluginId, group)) {
+      excluded.push({
+        id: `plugins:plugins.${pluginId.replaceAll('%', '%25').replaceAll('.', '%2E')}`.slice(0, 512),
+        domain: 'plugins',
+        path: `plugins/${pluginId}`.slice(0, 512),
+        reason: `Bundled plugin "${pluginId}" is missing required kimi.plugin.json or package.json`,
+      });
+      continue;
+    }
+    const manifestIssue = validateBundledPluginManifestName(pluginId, files);
+    if (manifestIssue !== undefined) {
+      excluded.push({
+        id: `plugins:plugins.${pluginId.replaceAll('%', '%25').replaceAll('.', '%2E')}`.slice(0, 512),
+        domain: 'plugins',
+        path: `plugins/${pluginId}`.slice(0, 512),
+        reason: manifestIssue,
+      });
+      continue;
+    }
+    validBundledPluginIds.add(pluginId);
+  }
 
   const rawMcp = files.get('mcp.json');
   if (rawMcp !== undefined) {
@@ -880,21 +1002,60 @@ export function sanitizeRemoteSubscriptionFiles(files: ReadonlyMap<string, Buffe
         for (const rawEntry of data['plugins']) {
           const entry = object(rawEntry);
           const id = typeof entry['id'] === 'string' ? entry['id'].trim() : '';
-          if (id.length === 0 || findBundledOfficialPlugin(id) === undefined) {
+          if (id.length === 0 || !isPortablePluginId(id)) {
             excluded.push({
               id: `plugins:plugins.${(id || 'unknown').replaceAll('%', '%25').replaceAll('.', '%2E')}`.slice(0, 512),
               domain: 'plugins',
               path: `plugins.${id || 'unknown'}`.slice(0, 512),
-              reason: 'Blocked non-official plugin from remote URL subscription',
+              reason: 'Blocked invalid plugin declaration from remote URL subscription',
             });
             continue;
           }
-          if (seenPluginIds.has(id)) continue;
-          seenPluginIds.add(id);
-          keptPlugins.push({
-            id,
-            enabled: entry['enabled'] !== false,
+          if (findBundledOfficialPlugin(id) !== undefined) {
+            if (!seenPluginIds.has(id)) {
+              seenPluginIds.add(id);
+              keptPlugins.push({
+                id,
+                enabled: entry['enabled'] !== false,
+              });
+            }
+            continue;
+          }
+          if (validBundledPluginIds.has(id)) {
+            if (!seenPluginIds.has(id)) {
+              seenPluginIds.add(id);
+              keptPlugins.push({
+                id,
+                enabled: entry['enabled'] !== false,
+              });
+            }
+            continue;
+          }
+          const sameOriginZip = isSameOriginPinnedPluginZip(entry['source'], entry['sha256'], subscriptionOrigin);
+          if (sameOriginZip !== undefined) {
+            if (!seenPluginIds.has(id)) {
+              seenPluginIds.add(id);
+              keptPlugins.push({
+                id,
+                enabled: entry['enabled'] !== false,
+                source: sameOriginZip.source,
+                sha256: sameOriginZip.sha256,
+              });
+            }
+            continue;
+          }
+          excluded.push({
+            id: `plugins:plugins.${id.replaceAll('%', '%25').replaceAll('.', '%2E')}`.slice(0, 512),
+            domain: 'plugins',
+            path: `plugins.${id}`.slice(0, 512),
+            reason: 'Blocked non-official plugin from remote URL subscription',
           });
+        }
+      }
+      for (const bundledId of validBundledPluginIds) {
+        if (!seenPluginIds.has(bundledId)) {
+          seenPluginIds.add(bundledId);
+          keptPlugins.push({ id: bundledId, enabled: true });
         }
       }
       if (keptPlugins.length > 0) {
@@ -919,6 +1080,21 @@ export function sanitizeRemoteSubscriptionFiles(files: ReadonlyMap<string, Buffe
         }
       }
       sanitized.set(path, mutated ? installBytes(records) : bytes);
+      continue;
+    }
+
+    if (/^plugins(?:\/|$)/i.test(path)) {
+      let canonical: string | undefined;
+      try {
+        canonical = safePortablePath(path);
+      } catch {
+        canonical = undefined;
+      }
+      const parts = canonical?.split('/');
+      const pluginId = parts?.[1];
+      if (canonical !== undefined && pluginId !== undefined && validBundledPluginIds.has(pluginId) && domainForFile(canonical) === 'plugins') {
+        sanitized.set(canonical, bytes);
+      }
       continue;
     }
 
@@ -977,6 +1153,15 @@ export function sanitizeRemoteSubscriptionFiles(files: ReadonlyMap<string, Buffe
     }
 
     sanitized.set(path, bytes);
+  }
+
+  if (!files.has('extensions.toml') && validBundledPluginIds.size > 0) {
+    sanitized.set(
+      'extensions.toml',
+      encodeToml({
+        plugins: [...validBundledPluginIds].sort().map((id) => ({ id, enabled: true })),
+      }),
+    );
   }
 
   return { files: sanitized, excluded };

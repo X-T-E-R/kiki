@@ -105,6 +105,7 @@ export function sessionAgentRoster(
     const settledRefresh = persistenceFailure !== undefined || (current && (activity.turn !== undefined || loopOpen || activityOutcome !== undefined));
     const runtimeTurnStart = current && activity.turn !== undefined &&
       (row?.started_at === undefined || !hasTrackedStart || (lastOutcomeAt !== undefined && trackedStart <= lastOutcomeAt));
+    const runtimeLoopBootstrapStartAt = current && activity.turn === undefined && loopOpen && outcomeAt === undefined && row?.started_at === undefined ? registration?.createdAt : undefined;
     const branchBaseTurnIdRaw = labels?.['branchBaseTurnId'];
     const branchBaseMessageIdRaw = labels?.['branchBaseMessageId'];
     const projected: SnapshotSubagent = {
@@ -124,7 +125,10 @@ export function sessionAgentRoster(
       live: current || trackedActive && outcome === undefined,
       created_at: registration?.createdAt === undefined ? undefined : new Date(registration.createdAt).toISOString(),
       started_at: runtimeTurnStart
-        ? new Date(activity.turn!.since).toISOString() : row?.started_at,
+        ? new Date(activity.turn!.since).toISOString()
+        : runtimeLoopBootstrapStartAt !== undefined
+          ? new Date(runtimeLoopBootstrapStartAt).toISOString()
+          : row?.started_at,
       completed_at: persistenceFailure !== undefined || activityStatus === 'running' || activityStatus === 'suspended' ? undefined
         : terminal && (activityNewerThanOutcome ? activityTerminalAt !== undefined : (outcomeAt !== undefined || activityTerminalAt !== undefined))
           ? new Date(activityNewerThanOutcome ? activityTerminalAt! : (outcomeAt ?? activityTerminalAt!)).toISOString()

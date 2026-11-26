@@ -96,7 +96,7 @@ function openAiDecisionPayload(
   units: readonly MemorySelectorUnit[],
 ) {
   const choices = stage === 'discover' ? ['read', 'skip'] : ['apply', 'history', 'skip'];
-  const payload = { stage, query, units };
+  const payload = { stage, units, query };
   const prompt = stage === 'discover'
     ? 'Should this memory entry be read in full?'
     : 'How may this complete memory entry be used?';

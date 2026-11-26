@@ -1,5 +1,5 @@
 import type { ProviderQuotaMeter } from '@kiki/protocol';
-import { parseQuota, quotaHeaders, type QuotaAdapter } from './adapters';
+import { gatewayQuotaCacheKey, markGatewayQuotaUnsupported, parseQuota, quotaHeaders, type QuotaAdapter } from './adapters';
 import { QuotaFailure } from './service';
 
 async function fetchEndpoint(
@@ -8,11 +8,17 @@ async function fetchEndpoint(
   token: string,
   fetchImpl: typeof fetch,
   signal: AbortSignal,
+  requireJsonContentType = false,
 ): Promise<ProviderQuotaMeter[]> {
   let response: Response;
   try {
     response = await fetchImpl(url, { headers: quotaHeaders(adapter, token), redirect: 'error', signal });
   } catch { throw new QuotaFailure('request_failed'); }
+  const contentType = (response.headers.get('content-type') ?? '').toLowerCase();
+  if (contentType.includes('text/html') || (requireJsonContentType && !contentType.includes('json'))) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new QuotaFailure('invalid_response', { status: response.status });
+  }
   if (response.status === 401 || response.status === 403) throw new QuotaFailure('auth_required', { status: response.status });
   if (response.status === 429) throw new QuotaFailure('rate_limited', { status: response.status });
   if (!response.ok) throw new QuotaFailure('request_failed', { status: response.status });
@@ -43,12 +49,63 @@ function isExpectedOptionalAbsence(adapterId: QuotaAdapter['id'], isSecondary: b
 }
 
 function isOptionalEmptyAllowed(adapterId: QuotaAdapter['id'], isSecondary: boolean): boolean {
-  return adapterId === 'stepfun' && isSecondary;
+  if (adapterId === 'stepfun' && isSecondary) return true;
+  if (adapterId === 'kiki-quota') return true;
+  return false;
+}
+
+function isGatewayProbeMiss(failure: QuotaFailure): boolean {
+  return failure.status === 404
+    || failure.status === 405
+    || failure.status === 501
+    || failure.reason === 'invalid_response';
 }
 
 export async function fetchOfficialQuota(adapter: QuotaAdapter, token: string, fetchImpl: typeof fetch, signal?: AbortSignal): Promise<ProviderQuotaMeter[]> {
   const timeout = AbortSignal.timeout(8_000);
   const effectiveSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+  if (adapter.id === 'kiki-quota') {
+    const candidates: Array<{ readonly url: string; readonly strictJson: boolean }> = [
+      { url: adapter.url, strictJson: false },
+    ];
+    if (adapter.secondaryUrl !== undefined && adapter.secondaryUrl !== adapter.url) {
+      candidates.push({ url: adapter.secondaryUrl, strictJson: true });
+    }
+    try {
+      const origin = new URL(adapter.url).origin;
+      const quotasUrl = `${origin}/v1/quotas`;
+      if (!candidates.some((item) => item.url === quotasUrl)) {
+        candidates.push({ url: quotasUrl, strictJson: true });
+      }
+    } catch {}
+
+    const failures: QuotaFailure[] = [];
+    for (const candidate of candidates) {
+      try {
+        const meters = await fetchEndpoint(candidate.url, adapter, token, fetchImpl, effectiveSignal, candidate.strictJson);
+        if (meters.length > 0) return meters;
+      } catch (error) {
+        const failure = error instanceof QuotaFailure ? error : new QuotaFailure('request_failed');
+        if (failure.status === 401 || failure.reason === 'rate_limited') {
+          throw failure;
+        }
+        failures.push(failure);
+      }
+    }
+    const allUnsupported =
+      failures.length > 0
+      && failures.every((f) => isGatewayProbeMiss(f) || f.status === 403)
+      && failures.some((f) => isGatewayProbeMiss(f));
+    if (allUnsupported) {
+      markGatewayQuotaUnsupported(gatewayQuotaCacheKey(adapter));
+      return [];
+    }
+    if (failures.length > 0 && failures.every((f) => f.status === 403)) {
+      throw new QuotaFailure('auth_required', { status: 403 });
+    }
+    if (failures.length === 0) return [];
+    throw failures[0]!;
+  }
   if (adapter.secondaryUrl === undefined) {
     return fetchEndpoint(adapter.url, adapter, token, fetchImpl, effectiveSignal);
   }

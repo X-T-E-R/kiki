@@ -15,19 +15,20 @@ import { parseSkillText } from '@kiki/agent-core-v2/app/skillCatalog/parser';
 import { parseMemoryMarkdown, serializeMemoryMarkdown } from '@kiki/agent-core-v2/app/memory/memoryMarkdown';
 import { MEMORY_PERSONA_ID_PATTERN, MEMORY_WORKSPACE_ID_PATTERN, type MemoryScope } from '@kiki/agent-core-v2/app/memory/memoryScopes';
 import type { IPluginService } from '@kiki/agent-core-v2/app/plugin/plugin';
+import { fingerprintDirectory } from '@kiki/agent-core-v2/app/plugin/installPlan';
 import type { PluginSummary } from '@kiki/agent-core-v2/app/plugin/types';
 import type { IAppendLogStore } from '@kiki/agent-core-v2/persistence/interface/appendLogStore';
 import type { IMemoryPersistence } from '@kiki/agent-core-v2/persistence/interface/memoryPersistence';
 import { McpServerConfigSchema } from '@kiki/agent-core-v2/mcpCore/config-schema';
 import type { PortableSpaceOperationMode, PortableSpaceSessionSelection } from '@kiki/protocol';
-import { checkedPath, git, gitRemote, missing, readBounded, writeFileAtomic } from './spaceFiles';
-import { configProjection, encodeToml, filesFromUnits, mcpProjection, object, parseToml, sections, type Data, type Units } from './treeProjection';
+import { checkedPath, git, gitRemote, missing, readBounded, scratch, writeFileAtomic } from './spaceFiles';
+import { configProjection, domainForFile, encodeToml, filesFromUnits, hasBundledPluginManifest, isPortablePluginId, mcpProjection, object, parseToml, sections, type Data, type Units } from './treeProjection';
 import { hydrateRecipeInstallation, installBytes, readRecipeInstallations, RECIPE_INSTALLATIONS } from './recipeStore';
 import { GUI_CREDENTIALS, readGuiCredentials, readHomeFiles } from './homeFiles';
 import { writePrivateFile } from '../auth/privateFiles';
 import { sameUnit } from './mergeEngine';
 import { safePortablePath } from './tarArchive';
-import { findBundledOfficialPlugin, type OfficialCatalogPlugin } from './urlSubscription';
+import { assertSafeSubscriptionUrl, findBundledOfficialPlugin, type OfficialCatalogPlugin } from './urlSubscription';
 
 export interface OfficialPluginReconcileError {
   readonly id: string;
@@ -812,7 +813,29 @@ export async function readLive(live: LiveServices, sessions: PortableSpaceSessio
     if (plan?.transport === 'git' && plan.remoteUrl) repositories.push({ name, repo: plan.remoteUrl, branch: plan.branch ?? 'HEAD' });
     if (excluded || plan?.remoteUrl) for (const key of files.keys()) if (key.startsWith(`skills/${name}/`)) files.delete(key);
   }
-  const plugins = (await live.plugins.listPlugins()).flatMap((item) => item.source === 'github' && item.originalSource ? [{ id: item.id, enabled: item.enabled, source: item.originalSource }] : []);
+  const plugins: Data[] = [];
+  for (const item of await live.plugins.listPlugins()) {
+    if ((item as { readonly inherited?: boolean }).inherited === true || !isPortablePluginId(item.id)) continue;
+    if (item.source === 'github' && item.originalSource) {
+      plugins.push({ id: item.id, enabled: item.enabled, source: item.originalSource });
+      continue;
+    }
+    if (item.source === 'zip-url' && item.originalSource && item.zipSha256 && findBundledOfficialPlugin(item.id) === undefined) {
+      plugins.push({ id: item.id, enabled: item.enabled, source: item.originalSource, sha256: item.zipSha256 });
+      continue;
+    }
+    if (item.source === 'local-path' && findBundledOfficialPlugin(item.id) === undefined) {
+      const managedDir = join(home, 'plugins', 'managed', item.id);
+      const info = await missing(lstat(managedDir));
+      if (info?.isDirectory()) {
+        const bundled = await readPortablePluginFiles(managedDir, item.id);
+        if (hasBundledPluginManifest(item.id, new Set(bundled.keys()))) {
+          for (const [pluginPath, pluginBytes] of bundled) files.set(pluginPath, pluginBytes);
+          plugins.push({ id: item.id, enabled: item.enabled });
+        }
+      }
+    }
+  }
   const extensions = { ...parseToml(files.get('extensions.toml')), ...(repositories.length ? { skill_repos: repositories } : {}), ...(plugins.length ? { plugins } : {}) };
   if (Object.keys(extensions).length) files.set('extensions.toml', encodeToml(extensions));
   if (includeMemory) for (const scope of await discoverMemoryScopes(home, live.scopes, live.memoryPersistence)) {
@@ -886,7 +909,7 @@ export async function writeLive(
   const files = new Map<string, { path: string; bytes?: Buffer }>();
   const mutatedSessionIds = new Set<string>();
   for (const unit of changes) {
-    if (!Buffer.isBuffer(unit.value) || unit.domain === 'memories') continue;
+    if (!Buffer.isBuffer(unit.value) || unit.domain === 'memories' || unit.domain === 'plugins') continue;
     const bytes = requested.get(unit.path);
     let path = unit.path;
     let root = home;
@@ -1029,16 +1052,44 @@ export async function writeLive(
     if (data) await writeFileAtomic(join(home, 'extensions.toml'), data);
     else await rm(join(home, 'extensions.toml'), { force: true });
   }
-  const changedOfficialPlugins = new Map<string, boolean>();
+  const touchedPluginIds = new Set<string>();
   for (const unitId of changed) {
-    const nextUnit = next.get(unitId);
-    if (nextUnit === undefined || nextUnit.domain !== 'plugins' || nextUnit.key[0] !== 'plugins' || nextUnit.key[1] === undefined) continue;
-    const id = nextUnit.key[1];
-    if (findBundledOfficialPlugin(id) === undefined) continue;
-    changedOfficialPlugins.set(id, object(nextUnit.value)['enabled'] !== false);
+    const unit = next.get(unitId) ?? before.get(unitId);
+    if (unit?.domain !== 'plugins') continue;
+    if (unit.key[0] === 'plugins' && unit.key[1] !== undefined) {
+      touchedPluginIds.add(unit.key[1]);
+    } else if (Buffer.isBuffer(unit.value)) {
+      const parts = unit.path.split('/');
+      if (parts[0] === 'plugins' && parts[1] !== undefined) touchedPluginIds.add(parts[1]);
+    }
   }
-  if (changedOfficialPlugins.size > 0) {
-    const result = await reconcileOfficialPlugins(live, changedOfficialPlugins);
+  const portablePluginCandidates: PortablePluginReconcileInput[] = [];
+  for (const id of touchedPluginIds) {
+    if (!isPortablePluginId(id)) continue;
+    const declUnitId = `plugins:plugins.${id.replaceAll('%', '%25').replaceAll('.', '%2E')}`;
+    const declUnit = next.get(declUnitId);
+    const bundledFiles = new Map<string, Buffer>();
+    const prefix = `plugins/${id}/`;
+    for (const unit of next.values()) {
+      if (unit.domain === 'plugins' && Buffer.isBuffer(unit.value) && unit.path.startsWith(prefix)) {
+        bundledFiles.set(unit.path.slice(prefix.length), unit.value);
+      }
+    }
+    if (declUnit === undefined && bundledFiles.size === 0) continue;
+    const decl = declUnit === undefined ? {} : object(declUnit.value);
+    const enabled = decl['enabled'] !== false;
+    const source = typeof decl['source'] === 'string' && decl['source'].trim().length > 0 ? decl['source'].trim() : undefined;
+    const sha256 = typeof decl['sha256'] === 'string' && decl['sha256'].trim().length > 0 ? decl['sha256'].trim().toLowerCase() : undefined;
+    portablePluginCandidates.push({
+      id,
+      enabled,
+      ...(bundledFiles.size > 0 ? { bundledFiles } : {}),
+      ...(source === undefined ? {} : { source }),
+      ...(sha256 === undefined ? {} : { sha256 }),
+    });
+  }
+  if (portablePluginCandidates.length > 0) {
+    const result = await reconcilePortablePlugins(live, portablePluginCandidates, home);
     if (pluginErrors !== undefined && result.errors.length > 0) {
       pluginErrors.push(...result.errors);
     }
@@ -1063,86 +1114,235 @@ function hasOfficialPluginProvenance(
   return false;
 }
 
+export interface PortablePluginReconcileInput {
+  readonly id: string;
+  readonly enabled: boolean;
+  readonly bundledFiles?: ReadonlyMap<string, Buffer>;
+  readonly source?: string;
+  readonly sha256?: string;
+}
+
+async function readPortablePluginFiles(managedDir: string, pluginId: string): Promise<Map<string, Buffer>> {
+  const collected = new Map<string, Buffer>();
+  const walk = async (directory: string, relPrefix: string): Promise<void> => {
+    for (const dirent of await readdir(directory, { withFileTypes: true })) {
+      if (dirent.isSymbolicLink() || dirent.name === '.git' || dirent.name === '.tmp' || dirent.name === 'node_modules') continue;
+      const rel = relPrefix ? `${relPrefix}/${dirent.name}` : dirent.name;
+      const portablePath = `plugins/${pluginId}/${rel}`;
+      const fullPath = join(directory, dirent.name);
+      if (dirent.isDirectory()) {
+        if (domainForFile(`${portablePath}/_`) !== 'plugins') continue;
+        await walk(fullPath, rel);
+      } else if (dirent.isFile() && domainForFile(portablePath) === 'plugins') {
+        collected.set(safePortablePath(portablePath), await readBounded(fullPath));
+      }
+    }
+  };
+  await walk(managedDir, '');
+  return collected;
+}
+
+/** Reconciles official catalog plugins, archive-bundled plugins, and pinned HTTPS zip plugins declared in portable spaces. */
+export async function reconcilePortablePlugins(
+  live: Pick<LiveServices, 'plugins' | 'log'>,
+  desiredPlugins: readonly PortablePluginReconcileInput[],
+  homeDir?: string,
+  urlSafetyOptions?: { readonly allowLoopback?: boolean },
+): Promise<OfficialPluginReconcileResult> {
+  const actionable = desiredPlugins.filter((item) => {
+    if (!isPortablePluginId(item.id)) return false;
+    if (findBundledOfficialPlugin(item.id) !== undefined) return true;
+    if (item.bundledFiles !== undefined && item.bundledFiles.size > 0) return true;
+    return item.source !== undefined && item.sha256 !== undefined && /^[0-9a-f]{64}$/i.test(item.sha256);
+  });
+  const reconciledIds: string[] = [];
+  const skippedIds: string[] = [];
+  const errors: OfficialPluginReconcileError[] = [];
+  if (actionable.length === 0) return { reconciledIds, skippedIds, errors };
+  let installedById: Map<string, Pick<PluginSummary, 'id' | 'enabled' | 'defaultEnabled' | 'state' | 'source' | 'originalSource' | 'zipSha256'> & { readonly inherited?: boolean }>;
+  try {
+    installedById = new Map((await live.plugins.listPlugins()).map((item) => [item.id, item]));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    live.log?.warn('portable space plugin list failed', { error: message });
+    for (const candidate of actionable) {
+      errors.push({ id: candidate.id, message });
+    }
+    return { reconciledIds, skippedIds, errors };
+  }
+  for (const candidate of actionable) {
+    const existing = installedById.get(candidate.id);
+    const official = findBundledOfficialPlugin(candidate.id);
+    if (official !== undefined) {
+      if (existing === undefined) {
+        if (!candidate.enabled) continue;
+        try {
+          const preview = typeof live.plugins.previewPlugin === 'function'
+            ? await live.plugins.previewPlugin({
+                source: official.source,
+                ...(official.sha256 === undefined ? {} : { sha256: official.sha256 }),
+              })
+            : undefined;
+          await live.plugins.installPlugin({
+            source: official.source,
+            ...(official.sha256 === undefined ? {} : { sha256: official.sha256 }),
+            ...(preview?.fingerprint === undefined ? {} : { fingerprint: preview.fingerprint }),
+            consent: true,
+            defaultEnabled: true,
+          });
+          reconciledIds.push(candidate.id);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          live.log?.warn('portable space official plugin install failed', { id: candidate.id, error: message });
+          errors.push({ id: candidate.id, message });
+        }
+        continue;
+      }
+      if (!hasOfficialPluginProvenance(existing, official)) {
+        live.log?.warn('portable space skipped non-official plugin sharing official id', {
+          id: candidate.id,
+          source: existing.source,
+        });
+        skippedIds.push(candidate.id);
+        continue;
+      }
+      if (existing.enabled !== candidate.enabled) {
+        try {
+          await live.plugins.setPluginEnabled({
+            id: candidate.id,
+            enabled: candidate.enabled,
+            defaultEnabled: candidate.enabled,
+          });
+          reconciledIds.push(candidate.id);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          live.log?.warn('portable space official plugin toggle failed', {
+            id: candidate.id,
+            enabled: candidate.enabled,
+            error: message,
+          });
+          errors.push({ id: candidate.id, message });
+        }
+      } else {
+        reconciledIds.push(candidate.id);
+      }
+      continue;
+    }
+
+    if (candidate.bundledFiles !== undefined && candidate.bundledFiles.size > 0) {
+      if (existing?.inherited === true) {
+        live.log?.warn('portable space skipped inherited plugin sharing bundled id', { id: candidate.id });
+        skippedIds.push(candidate.id);
+        continue;
+      }
+      try {
+        await scratch(async (stagingRoot) => {
+          const stagedDir = join(stagingRoot, candidate.id);
+          await mkdir(stagedDir, { recursive: true });
+          for (const [relPath, bytes] of candidate.bundledFiles!) {
+            const dest = await checkedPath(stagedDir, relPath);
+            await writeFileAtomic(dest, bytes);
+          }
+          const stagedFingerprint = await fingerprintDirectory(stagedDir);
+          let unchangedOnDisk = false;
+          if (existing !== undefined && existing.state === 'ok' && homeDir !== undefined) {
+            const managedDir = join(homeDir, 'plugins', 'managed', candidate.id);
+            const stat = await missing(lstat(managedDir));
+            if (stat?.isDirectory()) {
+              const existingFp = await fingerprintDirectory(managedDir).catch(() => undefined);
+              unchangedOnDisk = existingFp === stagedFingerprint;
+            }
+          }
+          if (!unchangedOnDisk) {
+            const preview = typeof live.plugins.previewPlugin === 'function'
+              ? await live.plugins.previewPlugin({ source: stagedDir })
+              : undefined;
+            await live.plugins.installPlugin({
+              source: stagedDir,
+              ...(preview?.fingerprint === undefined ? {} : { fingerprint: preview.fingerprint }),
+              consent: true,
+              defaultEnabled: candidate.enabled,
+            });
+          }
+          if (!candidate.enabled || (existing !== undefined && (existing.enabled !== candidate.enabled || existing.defaultEnabled !== candidate.enabled))) {
+            await live.plugins.setPluginEnabled({
+              id: candidate.id,
+              enabled: candidate.enabled,
+              defaultEnabled: candidate.enabled,
+            });
+          }
+        });
+        reconciledIds.push(candidate.id);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        live.log?.warn('portable space bundled plugin install failed', { id: candidate.id, error: message });
+        errors.push({ id: candidate.id, message });
+      }
+      continue;
+    }
+
+    if (candidate.source !== undefined && candidate.sha256 !== undefined) {
+      const normalizedSha = candidate.sha256.toLowerCase();
+      if (existing?.inherited === true || existing?.source === 'local-path') {
+        live.log?.warn('portable space skipped local or inherited plugin sharing zip-url id', {
+          id: candidate.id,
+          source: existing.source,
+        });
+        skippedIds.push(candidate.id);
+        continue;
+      }
+      try {
+        await assertSafeSubscriptionUrl(candidate.source, urlSafetyOptions);
+        const parsed = new URL(candidate.source);
+        if ((parsed.protocol !== 'https:' && !(urlSafetyOptions?.allowLoopback === true && parsed.protocol === 'http:')) || !/\.zip$/i.test(parsed.pathname)) {
+          throw new Error(`Pinned portable plugin URL must be an HTTPS .zip archive: ${candidate.source}`);
+        }
+        const alreadyInstalledSameSha =
+          existing !== undefined
+          && existing.state === 'ok'
+          && existing.zipSha256?.toLowerCase() === normalizedSha;
+        if (existing === undefined && !candidate.enabled) {
+          continue;
+        }
+        if (!alreadyInstalledSameSha) {
+          const preview = typeof live.plugins.previewPlugin === 'function'
+            ? await live.plugins.previewPlugin({ source: candidate.source, sha256: normalizedSha })
+            : undefined;
+          await live.plugins.installPlugin({
+            source: candidate.source,
+            sha256: normalizedSha,
+            ...(preview?.fingerprint === undefined ? {} : { fingerprint: preview.fingerprint }),
+            consent: true,
+            defaultEnabled: candidate.enabled,
+          });
+        }
+        if (!candidate.enabled || (existing !== undefined && (existing.enabled !== candidate.enabled || existing.defaultEnabled !== candidate.enabled))) {
+          await live.plugins.setPluginEnabled({
+            id: candidate.id,
+            enabled: candidate.enabled,
+            defaultEnabled: candidate.enabled,
+          });
+        }
+        reconciledIds.push(candidate.id);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        live.log?.warn('portable space pinned zip plugin install failed', { id: candidate.id, error: message });
+        errors.push({ id: candidate.id, message });
+      }
+    }
+  }
+  return { reconciledIds, skippedIds, errors };
+}
+
 /** Reconciles compiled-in official plugins declared in portable spaces without trusting remote sources or failing offline syncs. */
 export async function reconcileOfficialPlugins(
   live: Pick<LiveServices, 'plugins' | 'log'>,
   desiredPlugins: ReadonlyMap<string, boolean>,
 ): Promise<OfficialPluginReconcileResult> {
-  const candidates: { readonly id: string; readonly enabled: boolean; readonly official: OfficialCatalogPlugin }[] = [];
+  const inputs: PortablePluginReconcileInput[] = [];
   for (const [id, enabled] of desiredPlugins) {
-    const official = findBundledOfficialPlugin(id);
-    if (official === undefined) continue;
-    candidates.push({ id, enabled, official });
+    if (findBundledOfficialPlugin(id) === undefined) continue;
+    inputs.push({ id, enabled });
   }
-  const reconciledIds: string[] = [];
-  const skippedIds: string[] = [];
-  const errors: OfficialPluginReconcileError[] = [];
-  if (candidates.length === 0) return { reconciledIds, skippedIds, errors };
-  let installedById: Map<string, Pick<PluginSummary, 'id' | 'enabled' | 'source' | 'originalSource' | 'zipSha256'> & { readonly inherited?: boolean }>;
-  try {
-    installedById = new Map((await live.plugins.listPlugins()).map((item) => [item.id, item]));
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    live.log?.warn('portable space official plugin list failed', { error: message });
-    for (const candidate of candidates) {
-      errors.push({ id: candidate.id, message });
-    }
-    return { reconciledIds, skippedIds, errors };
-  }
-  for (const candidate of candidates) {
-    const existing = installedById.get(candidate.id);
-    if (existing === undefined) {
-      if (!candidate.enabled) continue;
-      try {
-        const preview = typeof live.plugins.previewPlugin === 'function'
-          ? await live.plugins.previewPlugin({
-              source: candidate.official.source,
-              ...(candidate.official.sha256 === undefined ? {} : { sha256: candidate.official.sha256 }),
-            })
-          : undefined;
-        await live.plugins.installPlugin({
-          source: candidate.official.source,
-          ...(candidate.official.sha256 === undefined ? {} : { sha256: candidate.official.sha256 }),
-          ...(preview?.fingerprint === undefined ? {} : { fingerprint: preview.fingerprint }),
-          consent: true,
-          defaultEnabled: true,
-        });
-        reconciledIds.push(candidate.id);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        live.log?.warn('portable space official plugin install failed', { id: candidate.id, error: message });
-        errors.push({ id: candidate.id, message });
-      }
-      continue;
-    }
-    if (!hasOfficialPluginProvenance(existing, candidate.official)) {
-      live.log?.warn('portable space skipped non-official plugin sharing official id', {
-        id: candidate.id,
-        source: existing.source,
-      });
-      skippedIds.push(candidate.id);
-      continue;
-    }
-    if (existing.enabled !== candidate.enabled) {
-      try {
-        await live.plugins.setPluginEnabled({
-          id: candidate.id,
-          enabled: candidate.enabled,
-          defaultEnabled: candidate.enabled,
-        });
-        reconciledIds.push(candidate.id);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        live.log?.warn('portable space official plugin toggle failed', {
-          id: candidate.id,
-          enabled: candidate.enabled,
-          error: message,
-        });
-        errors.push({ id: candidate.id, message });
-      }
-    } else {
-      reconciledIds.push(candidate.id);
-    }
-  }
-  return { reconciledIds, skippedIds, errors };
+  return reconcilePortablePlugins(live, inputs);
 }

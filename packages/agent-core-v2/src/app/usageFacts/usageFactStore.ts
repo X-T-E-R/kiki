@@ -62,6 +62,18 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
   private readonly privateSessions = new Map<string, Promise<string | undefined>>();
   private readonly privacyCache = new Map<string, { fingerprint: string; epoch: number; private: boolean; agentIds: ReadonlySet<string> }>();
   private readonly privacyFlights = new Map<string, { fingerprint: string; epoch: number; result: Promise<boolean | undefined> }>();
+  private lastReadOnlyProjectionLogAt = 0;
+  private logPendingProjection(error: unknown): void {
+    const code = error !== null && typeof error === 'object' ? (error as { code?: unknown }).code : undefined;
+    if (code === 'usage.read_only') {
+      const now = Date.now();
+      if (now - this.lastReadOnlyProjectionLogAt < 60_000) return;
+      this.lastReadOnlyProjectionLogAt = now;
+      this.log.debug('Usage projection pending in follower process; canonical source remains recoverable');
+      return;
+    }
+    this.log.warn('Usage projection pending; canonical source remains recoverable', error);
+  }
   constructor(
     @IAppendLogStore private readonly logs: IAppendLogStore,
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
@@ -88,11 +100,11 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
       },
       commit: (position, value) => {
         void this.exclusive(position.scope, () => this.commitWritten(position, value.facts, value.valid)).catch((error: unknown) => {
-          this.log.warn('Usage projection pending; canonical source remains recoverable', error);
+          this.logPendingProjection(error);
         });
         return Promise.resolve();
       },
-      onError: (error) => { this.log.warn('Usage projection pending; canonical source remains recoverable', error); },
+      onError: (error) => { this.logPendingProjection(error); },
     }));
   }
   override async dispose(): Promise<void> {

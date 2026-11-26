@@ -69,14 +69,8 @@ function projectAntigravityQuotaMeter(window: AntigravityQuotaWindow, checkedAt:
   };
 }
 
-function isOfficialTavilyBaseUrl(baseUrl: string | undefined): boolean {
-  const trimmed = baseUrl?.trim();
-  if (!trimmed) return true;
-  try {
-    return new URL(trimmed).hostname.toLowerCase() === 'api.tavily.com';
-  } catch {
-    return false;
-  }
+function isRawGatewaySearchBaseUrl(baseUrl: string | undefined): boolean {
+  return /^https?:\/\/[^/]+\/raw\/\d+(?:\/|$)/.test(baseUrl?.trim() ?? '');
 }
 
 export function createProviderQuotaService(core: Scope, fetchImpl: typeof fetch = fetch): ProviderQuotaService {
@@ -179,8 +173,12 @@ export function createProviderQuotaService(core: Scope, fetchImpl: typeof fetch 
     });
     const instances = await nbSearch.quotaSources();
     for (const instance of instances) {
+      const isRawGateway = isRawGatewaySearchBaseUrl(instance.base_url);
+      const isOfficialTavily = instance.provider_id === 'tavily'
+        && (!instance.base_url || /^https:\/\/(?:www\.)?api\.tavily\.com(?:\/|$)/i.test(instance.base_url.trim()));
       const supported = instance.balance_supported ?? (
-        (instance.provider_id === 'tavily' && isOfficialTavilyBaseUrl(instance.base_url))
+        isRawGateway
+        || isOfficialTavily
         || instance.provider_id === 'firecrawl'
         || instance.provider_id === 'zhihu'
       );
@@ -197,12 +195,15 @@ export function createProviderQuotaService(core: Scope, fetchImpl: typeof fetch 
         source: {
           label: !supported
             ? '暂无官方额度接口'
-            : instance.provider_id === 'zhihu'
-              ? 'zhihu 官方每日额度（nb-search）'
-              : `${instance.provider_id} 官方 credits（nb-search）`,
+            : isRawGateway
+              ? `${instance.provider_id} 网关凭据池额度`
+              : instance.provider_id === 'zhihu'
+                ? 'zhihu 官方每日额度（nb-search）'
+                : `${instance.provider_id} 官方 credits（nb-search）`,
         },
         fetch: async () => {
           const usage = await nbSearch.keyUsage(instance.id, true);
+          if (!usage.balance_supported) return [];
           if (usage.keys.length === 0 || usage.keys.every((entry) => entry.state === 'invalid')) throw new QuotaFailure('auth_required');
           return usage.keys.flatMap((entry): ProviderQuotaMeter[] => {
             const data = entry.usage;
@@ -217,12 +218,13 @@ export function createProviderQuotaService(core: Scope, fetchImpl: typeof fetch 
             if (data?.meters?.length) {
               return data.meters.map((meter): ProviderQuotaMeter => {
                 const label = meter.label ?? meter.id;
+                const isExhaustedPercent = meter.id.endsWith('-exhausted') && meter.limit === 100 && meter.remaining === 0;
                 return {
                   ...common,
                   id: `${keyId}-${meter.id}`,
                   label: usage.keys.length > 1 ? `${keyLabel} · ${label}` : label,
-                  unit: meter.unit === 'requests' ? 'count' : 'credits',
-                  unit_label: meter.unit === 'requests' ? '次' : 'credits',
+                  unit: isExhaustedPercent ? 'percent' : meter.unit === 'requests' ? 'count' : 'credits',
+                  unit_label: isExhaustedPercent ? '%' : meter.unit === 'requests' ? '次' : 'credits',
                   used: meter.used,
                   limit: meter.limit,
                   remaining: meter.remaining,

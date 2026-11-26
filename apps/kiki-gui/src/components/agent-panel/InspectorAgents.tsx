@@ -187,12 +187,14 @@ function shortModel(model: string | undefined): string | undefined {
   return model.split('/').pop();
 }
 
-/** "3m", "1h 4m": elapsed for a running row, coarse on purpose. */
+/** "12s", "3m", "1h 4m": live elapsed for a running row. */
 function coarseElapsed(since: string | undefined, now: number): string | undefined {
   if (since === undefined) return undefined;
   const start = Date.parse(since);
-  if (!Number.isFinite(start) || now - start < 60_000) return undefined;
-  const minutes = Math.floor((now - start) / 60_000);
+  if (!Number.isFinite(start) || start > now + 5_000) return undefined;
+  const elapsedMs = Math.max(0, now - start);
+  if (elapsedMs < 60_000) return `${Math.max(1, Math.floor(elapsedMs / 1_000))}s`;
+  const minutes = Math.floor(elapsedMs / 60_000);
   return minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
@@ -502,7 +504,7 @@ export const AgentRoster = memo(function AgentRoster({
   useEffect(() => {
     if (activeFilter !== filter) setFilter('all');
   }, [activeFilter, filter]);
-  const now = useMinuteClock(model.counts.running > 0);
+  const now = useRunningClock(model.counts.running);
   const toggle = useCallback((agentId: string) => {
     setExpanded((previous) => {
       const next = new Set(previous);
@@ -660,17 +662,31 @@ export const AgentRoster = memo(function AgentRoster({
   );
 });
 
-/** Wall clock at minute granularity: only ticks while running agents exist and the document is visible. */
-function useMinuteClock(enabled: boolean): number {
+/** Wall clock at second granularity: only ticks while running agents exist and the document is visible. */
+function useRunningClock(runningCount: number): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (!enabled) return;
+    if (runningCount <= 0) return;
     setNow(Date.now());
-    const timer = window.setInterval(() => {
+    const tick = () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
       setNow(Date.now());
-    }, 30_000);
-    return () => { window.clearInterval(timer); };
-  }, [enabled]);
+    };
+    const timer = window.setInterval(tick, 1_000);
+    const onVisibility = () => {
+      if (typeof document === 'undefined' || document.visibilityState !== 'hidden') {
+        setNow(Date.now());
+      }
+    };
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', onVisibility);
+    }
+    return () => {
+      window.clearInterval(timer);
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onVisibility);
+      }
+    };
+  }, [runningCount]);
   return now;
 }

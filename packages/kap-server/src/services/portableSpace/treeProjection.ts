@@ -144,9 +144,19 @@ export function mcpProjection(raw: Data): { config: Data; credentials: Data; exc
   return { config, credentials, excluded };
 }
 
+const RESERVED_PORTABLE_PLUGIN_DIRS = new Set(['managed', 'sources', 'rollback', 'data']);
+
+export function isPortablePluginId(id: string): boolean {
+  return /^[a-z0-9][a-z0-9_-]{0,63}$/.test(id) && !RESERVED_PORTABLE_PLUGIN_DIRS.has(id);
+}
+
+export function hasBundledPluginManifest(id: string, paths: ReadonlySet<string>): boolean {
+  return paths.has(`plugins/${id}/kimi.plugin.json`) || paths.has(`plugins/${id}/package.json`);
+}
+
 export function domainForFile(path: string): PortableSpaceDomain | undefined {
   const parts = safePortablePath(path).split('/');
-  if (parts.some((part) => /^(?:\.git|\.ssh|\.gnupg|node_modules|credentials|config\.local\.toml|\.env(?:\..*)?|secrets?|\.secrets?|.*\.(?:pem|key|pfx|sqlite(?:3)?(?:-wal|-shm)?|lock))$/i.test(part))) return;
+  if (parts.some((part) => /^(?:\.git|\.tmp|\.ssh|\.gnupg|node_modules|credentials|config\.local\.toml|\.env(?:\..*)?|secrets?|\.secrets?|.*\.(?:pem|key|pfx|sqlite(?:3)?(?:-wal|-shm)?|lock))$/i.test(part))) return;
   if (parts.length === 1) {
     if (['AGENTS.md', 'SYSTEM.md'].includes(path)) return 'instructions';
     if (path === 'space-preferences.json') return 'appearance';
@@ -156,6 +166,7 @@ export function domainForFile(path: string): PortableSpaceDomain | undefined {
     case 'prompt': case 'prompts': case 'cognition': return 'instructions';
     case 'themes': return 'appearance';
     case 'agents': return parts[1]?.toLowerCase() === 'builtin' ? undefined : 'agents';
+    case 'plugins': return parts.length >= 3 && parts[1] !== undefined && isPortablePluginId(parts[1]) ? 'plugins' : undefined;
     case 'recipes': case 'personas': case 'skills': case 'memories': case 'sessions': return parts[0];
   }
 }
@@ -211,6 +222,31 @@ export function toUnitsWithExcluded(
       putUnit(units, domain, [section, key], entry);
     }
   }
+  const bundledPluginPathsById = new Map<string, Set<string>>();
+  for (const path of files.keys()) {
+    if (domainForFile(path) !== 'plugins') continue;
+    const pluginId = safePortablePath(path).split('/')[1];
+    if (pluginId === undefined) continue;
+    let group = bundledPluginPathsById.get(pluginId);
+    if (group === undefined) {
+      group = new Set<string>();
+      bundledPluginPathsById.set(pluginId, group);
+    }
+    group.add(safePortablePath(path));
+  }
+  const validBundledPluginIds = new Set<string>();
+  for (const [pluginId, group] of bundledPluginPathsById) {
+    if (hasBundledPluginManifest(pluginId, group)) {
+      validBundledPluginIds.add(pluginId);
+    } else {
+      excluded.push({
+        id: `plugins:plugins.${pluginId.replaceAll('%', '%25').replaceAll('.', '%2E')}`.slice(0, 512),
+        domain: 'plugins',
+        path: `plugins/${pluginId}`.slice(0, 512),
+        reason: `Bundled plugin "${pluginId}" is missing required kimi.plugin.json or package.json`,
+      });
+    }
+  }
   for (const [path, bytes] of files) {
     if (path === RECIPE_INSTALLATIONS) {
       for (const [id, entry] of Object.entries(readRecipeInstallations(bytes))) {
@@ -219,7 +255,21 @@ export function toUnitsWithExcluded(
       continue;
     }
     const domain = domainForFile(path);
+    if (domain === 'plugins') {
+      const canonical = safePortablePath(path);
+      const pluginId = canonical.split('/')[1];
+      if (pluginId !== undefined && validBundledPluginIds.has(pluginId)) {
+        putUnit(units, 'plugins', [canonical], bytes, canonical);
+      }
+      continue;
+    }
     if (domain) putUnit(units, domain, [path], bytes, path);
+  }
+  for (const pluginId of validBundledPluginIds) {
+    const declarationId = `plugins:plugins.${pluginId.replaceAll('%', '%25').replaceAll('.', '%2E')}`;
+    if (!units.has(declarationId)) {
+      putUnit(units, 'plugins', ['plugins', pluginId], { id: pluginId, enabled: true });
+    }
   }
   return { units, excluded };
 }

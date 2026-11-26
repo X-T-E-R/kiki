@@ -22,19 +22,8 @@ import { nbSearchConfigIssues, nbSearchConfigRevision, resolveNbSearchCapturedCo
 import { resolve, relative, isAbsolute, sep } from 'node:path';
 import { INbSearchService, type NbSearchCapabilities, type NbSearchReadiness, type NbSearchTestStatus } from './nbSearch';
 import { INbSearchSourceStore, type NbSearchSource } from './sourceStore';
+import { fetchRawGatewayKeyUsage, isNbSearchBalanceSupported, parseRawGatewayRoute } from './rawGatewayQuota';
 import { describeCapabilities, formatManagedCredentialMismatchHint } from './toolDescriptions';
-
-function isNbSearchBalanceSupported(providerId: string, baseUrl: string | undefined): boolean {
-  if (providerId === 'firecrawl' || providerId === 'zhihu') return true;
-  if (providerId !== 'tavily') return false;
-  const trimmed = baseUrl?.trim();
-  if (!trimmed) return true;
-  try {
-    return new URL(trimmed).hostname.toLowerCase() === 'api.tavily.com';
-  } catch {
-    return false;
-  }
-}
 
 export class NbSearchService implements INbSearchService {
   declare readonly _serviceBrand: undefined;
@@ -163,15 +152,20 @@ export class NbSearchService implements INbSearchService {
     return this.sources.withSource(reuse, config, (source) => {
       if (source.status.availability === 'unavailable') return [];
       const effective = capturedSource(source, config).config;
+      const localInstances = source.config?.provider_instances ?? {};
+      const kikiInstances = config?.provider_instances ?? {};
       return Object.entries(effective.provider_instances).map(([id, instance]) => {
         const slot = instance.credential_slot_id === undefined ? undefined : effective.credential_slots[instance.credential_slot_id];
+        const rawKeys = slot === undefined ? [] : (source.env[slot.env] ?? '').split(',').map((key) => key.trim()).filter((key) => key !== '');
+        const hasCredential = slot === undefined || rawKeys.length > 0;
+        const explicitlyConfigured = Object.hasOwn(localInstances, id) || Object.hasOwn(kikiInstances, id) || source.resolved !== undefined;
         return {
           id,
           provider_id: instance.provider_id,
-          enabled: instance.enabled,
+          enabled: instance.enabled && (explicitlyConfigured || hasCredential),
           revision: stableFingerprint([instance, slot === undefined ? null : source.env[slot.env] ?? null]),
           ...(instance.base_url !== undefined ? { base_url: instance.base_url } : {}),
-          balance_supported: isNbSearchBalanceSupported(instance.provider_id, instance.base_url),
+          balance_supported: isNbSearchBalanceSupported(instance.provider_id, instance.base_url, rawKeys),
         };
       });
     });
@@ -189,13 +183,15 @@ export class NbSearchService implements INbSearchService {
       const balanceSupported = isNbSearchBalanceSupported(instance.provider_id, instance.base_url);
       if (!instance.enabled) return { provider_instance_id: instanceId, provider_id: instance.provider_id, balance_supported: balanceSupported, keys: [] };
       const slot = instance.credential_slot_id === undefined ? undefined : effective.credential_slots[instance.credential_slot_id];
-      const count = slot === undefined ? 0 : (source.env[slot.env] ?? '').split(',').filter((key) => key.trim() !== '').length;
-      if (!balanceSupported && instance.provider_id === 'tavily') {
-        return nbSearchKeyUsageViewSchema.parse({
-          provider_instance_id: instanceId,
-          provider_id: instance.provider_id,
-          balance_supported: false,
-          keys: Array.from({ length: count }, (_, index) => ({ key_index: index + 1, state: 'unknown' })),
+      const rawKeys = slot === undefined ? [] : (source.env[slot.env] ?? '').split(',').map((key) => key.trim()).filter((key) => key !== '');
+      const count = rawKeys.length;
+      const rawGatewayRoute = parseRawGatewayRoute(instance.base_url);
+      if (rawGatewayRoute !== undefined) {
+        return fetchRawGatewayKeyUsage({
+          instanceId,
+          providerId: instance.provider_id,
+          route: rawGatewayRoute,
+          keys: rawKeys,
         });
       }
       const runtime = await this.#sharedRuntime(source, config, this.#generation);

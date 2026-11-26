@@ -39,7 +39,7 @@ import {
   providerStreamErrorDetails,
   throwIfAbortError,
 } from '#/kosong/contract/errors';
-import { Error2 } from '#/_base/errors/errors';
+import { attachErrorDetails, Error2 } from '#/_base/errors/errors';
 import { RequestIdentityErrors } from '#/kosong/requestIdentity/errors';
 import type {
   ContentPart,
@@ -644,10 +644,29 @@ export function convertAnthropicError(
   convertErrorHook?: (error: unknown) => ChatProviderError | undefined,
 ): ChatProviderError {
   throwIfAbortError(error);
-  if (isAmbiguousRequestDelivery(error)) return ambiguousRequestDelivery(error);
+  if (isAmbiguousRequestDelivery(error)) {
+    if (error instanceof ChatProviderError) {
+      if (error.cause !== undefined && !(error.cause instanceof ChatProviderError)) {
+        const converted = convertAnthropicSdkError(error.cause, convertErrorHook);
+        if (error.details !== undefined) {
+          attachErrorDetails(converted, { ...error.details, ...converted.details });
+        }
+        return ambiguousRequestDelivery(converted);
+      }
+      return ambiguousRequestDelivery(error);
+    }
+    return ambiguousRequestDelivery(convertAnthropicSdkError(error, convertErrorHook));
+  }
   if (error instanceof ChatProviderError) {
     return error;
   }
+  return convertAnthropicSdkError(error, convertErrorHook);
+}
+
+function convertAnthropicSdkError(
+  error: unknown,
+  convertErrorHook?: (error: unknown) => ChatProviderError | undefined,
+): ChatProviderError {
   const hooked = convertErrorHook?.(error);
   if (hooked !== undefined) {
     return error instanceof AnthropicAPIError ? noteExplicitUpstreamRetryDenial(hooked, error.error, error.headers) : hooked;

@@ -1,12 +1,31 @@
 export const ARGON_MODEL_ALIAS = 'axon-message/gemini-4-argon';
 
-const TARGET_MODEL_ALIASES = new Set(['axon-message/gemini-4-carbon', ARGON_MODEL_ALIAS]);
+const TARGET_MODEL_ALIASES = new Set([
+  'axon-message/gemini-4-carbon',
+  ARGON_MODEL_ALIAS,
+  'axon-message/gemini-4-neon',
+  'axon-message/gemini-4-hydrogen',
+  'gemini-4-carbon',
+  'gemini-4-argon',
+  'gemini-4-neon',
+  'gemini-4-hydrogen',
+]);
 const MISSING_TERMINAL_MESSAGE_RE = /^(?:Anthropic error:\s*)?antigravity_missing_terminal\s*:/;
 const nativeProviderErrorCodes = new Set([
   'antigravity_missing_terminal',
   'antigravity_empty_response',
   'gateway_stream_terminal_error',
 ]);
+
+function isDisallowedUpstreamFailure(event) {
+  const details = event.error_details;
+  const status = details?.statusCode ?? details?.upstreamStatus;
+  if (typeof status === 'number' && status >= 400 && status < 500) return true;
+  if (event.upstream_error_code != null && event.upstream_error_code !== 'gateway_stream_terminal_error') {
+    return true;
+  }
+  return false;
+}
 
 export function recoveryFor(event) {
   if (event.hook_event_name !== 'StopFailure' || event.recoverable !== true || event.recovery_attempts !== 0) return undefined;
@@ -16,9 +35,17 @@ export function recoveryFor(event) {
     typeof event.error_message === 'string' &&
     MISSING_TERMINAL_MESSAGE_RE.test(event.error_message)
   );
+  const exhaustedConnectionDrop =
+    !isDisallowedUpstreamFailure(event) &&
+    event.error_details?.retry_exhausted === true &&
+    (
+      event.error_code === 'provider.connection_error' ||
+      event.error_code === 'provider.timeout' ||
+      (event.error_code === 'provider.api_error' && event.error_details?.request_delivery === 'ambiguous')
+    );
   const argonFailure = TARGET_MODEL_ALIASES.has(event.model_alias) && (
     event.upstream_error_code === 'gateway_stream_terminal_error' ||
-    (event.error_code === 'provider.connection_error' && event.error_details?.retry_exhausted === true)
+    exhaustedConnectionDrop
   );
   if (!missingTerminal && !argonFailure) return undefined;
   const recovery = event.has_partial_output === true

@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import type { ProviderQuotaMeter } from '@kiki/protocol';
 import { parseManagedUsagePayload, openaiCodexAccountId } from '@kiki/oauth';
 
@@ -66,25 +67,129 @@ function parseDurationToken(raw: string | undefined): number | undefined {
 function inferWindowDurationSeconds(key: string | undefined, label: string | undefined): number | undefined {
   return parseDurationToken(key) ?? parseDurationToken(label);
 }
-export function selectQuotaAdapter(baseUrl: string | undefined, oauth: boolean): QuotaAdapter | undefined {
+const GATEWAY_UNSUPPORTED_TTL_MS = 10 * 60_000;
+const unsupportedGatewayOrigins = new Map<string, number>();
+
+export function markGatewayQuotaUnsupported(origin: string, now = Date.now()): void {
+  unsupportedGatewayOrigins.set(origin.toLowerCase(), now + GATEWAY_UNSUPPORTED_TTL_MS);
+}
+
+export function isGatewayQuotaUnsupported(origin: string, now = Date.now()): boolean {
+  const key = origin.toLowerCase();
+  const expiresAt = unsupportedGatewayOrigins.get(key);
+  if (expiresAt === undefined) return false;
+  if (now >= expiresAt) {
+    unsupportedGatewayOrigins.delete(key);
+    return false;
+  }
+  return true;
+}
+
+export function clearGatewayQuotaUnsupportedCache(): void {
+  unsupportedGatewayOrigins.clear();
+}
+
+const OFFICIAL_VENDOR_HOSTS = [
+  'api.kimi.com',
+  'chatgpt.com',
+  'api.anthropic.com',
+  'api.deepseek.com',
+  'api.minimax.io',
+  'api.minimaxi.com',
+  'open.bigmodel.cn',
+  'api.z.ai',
+  'openrouter.ai',
+  'api.stepfun.com',
+  'api.siliconflow.cn',
+  'api.siliconflow.com',
+  'api.novita.ai',
+  'api.openai.com',
+] as const;
+
+const FIRST_PARTY_NO_API_KEY_QUOTA_HOSTS = new Set([
+  'api.openai.com',
+  'chatgpt.com',
+  'api.anthropic.com',
+  'claude.ai',
+  'generativelanguage.googleapis.com',
+  'aiplatform.googleapis.com',
+  'cloudcode-pa.googleapis.com',
+  'api.kimi.com',
+  'api.moonshot.cn',
+  'api.moonshot.ai',
+  'api.mistral.ai',
+  'api.x.ai',
+  'api.groq.com',
+  'api.cohere.com',
+  'api.together.xyz',
+  'api.fireworks.ai',
+  'api.perplexity.ai',
+  'models.inference.ai.azure.com',
+  'dashscope.aliyuncs.com',
+]);
+
+function isLocalOrPrivateHost(rawHost: string): boolean {
+  const host = rawHost.startsWith('[') && rawHost.endsWith(']') ? rawHost.slice(1, -1) : rawHost;
+  const lower = host.toLowerCase();
+  if (lower === 'localhost' || lower.endsWith('.localhost')) return true;
+  const ipKind = isIP(lower);
+  if (ipKind === 4) {
+    const parts = lower.split('.').map(Number);
+    const a = parts[0] ?? 0;
+    const b = parts[1] ?? 0;
+    return a === 127 || a === 10 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+  }
+  if (ipKind === 6) {
+    return lower === '::1' || lower === '::' || lower.startsWith('fc') || lower.startsWith('fd') || lower.startsWith('fe80:');
+  }
+  return false;
+}
+
+function resolveGatewayUsageUrl(url: URL): string {
+  const pathname = url.pathname.replace(/\/+$/u, '');
+  if (pathname === '') return `${url.origin}/v1/usage`;
+  if (pathname.endsWith('/usage')) return `${url.origin}${pathname}`;
+  if (pathname.endsWith('/v1')) return `${url.origin}${pathname}/usage`;
+  return `${url.origin}/v1/usage`;
+}
+
+export function gatewayQuotaCacheKey(adapter: Pick<QuotaAdapter, 'url' | 'secondaryUrl'>): string {
+  return (adapter.secondaryUrl ?? adapter.url).toLowerCase();
+}
+
+export function selectQuotaAdapter(baseUrl: string | undefined, oauth: boolean, now = Date.now()): QuotaAdapter | undefined {
   if (!baseUrl) return undefined;
   let url: URL;
   try { url = new URL(baseUrl); } catch { return undefined; }
-  if (url.protocol !== 'https:' || url.username || url.password || url.port || url.search || url.hash) return undefined;
+  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) return undefined;
   const host = url.hostname.toLowerCase();
-  if (host === 'api.kimi.com' && /^\/coding\/v1\/?$/.test(url.pathname)) return { id: 'kimi', label: 'Kimi Code 官方用量', url: 'https://api.kimi.com/coding/v1/usages', oauth };
-  if (oauth && host === 'chatgpt.com' && url.pathname.startsWith('/backend-api/codex')) return { id: 'codex', label: 'ChatGPT / Codex 官方额度', url: 'https://chatgpt.com/backend-api/wham/usage', oauth: true };
-  if (oauth && host === 'api.anthropic.com') return { id: 'claude', label: 'Claude 官方套餐用量', url: 'https://api.anthropic.com/api/oauth/usage', oauth: true };
+  if (isLocalOrPrivateHost(host)) return undefined;
+  if (!url.port) {
+    if (host === 'api.kimi.com' && /^\/coding\/v1\/?$/.test(url.pathname)) return { id: 'kimi', label: 'Kimi Code 官方用量', url: 'https://api.kimi.com/coding/v1/usages', oauth };
+    if (oauth && host === 'chatgpt.com' && url.pathname.startsWith('/backend-api/codex')) return { id: 'codex', label: 'ChatGPT / Codex 官方额度', url: 'https://chatgpt.com/backend-api/wham/usage', oauth: true };
+    if (oauth && host === 'api.anthropic.com') return { id: 'claude', label: 'Claude 官方套餐用量', url: 'https://api.anthropic.com/api/oauth/usage', oauth: true };
+    if (oauth) return undefined;
+    if (host === 'api.deepseek.com') return { id: 'deepseek', label: 'DeepSeek 官方余额', url: 'https://api.deepseek.com/user/balance', oauth: false };
+    if (host === 'api.minimax.io' || host === 'api.minimaxi.com') return { id: 'minimax', label: 'MiniMax Coding Plan 官方用量', url: `https://${host}/v1/api/openplatform/coding_plan/remains`, oauth: false };
+    if (host === 'open.bigmodel.cn' || host === 'api.z.ai') return { id: 'zai', label: host === 'open.bigmodel.cn' ? 'BigModel 官方套餐用量' : 'Z.ai 官方套餐用量', url: `https://${host}/api/monitor/usage/quota/limit`, oauth: false };
+    if (host === 'openrouter.ai') return { id: 'openrouter', label: 'OpenRouter 官方额度', url: 'https://openrouter.ai/api/v1/credits', secondaryUrl: 'https://openrouter.ai/api/v1/key', oauth: false };
+    if (host === 'api.stepfun.com') return { id: 'stepfun', label: 'StepFun 官方额度', url: 'https://api.stepfun.com/v1/accounts', secondaryUrl: 'https://api.stepfun.com/step_plan/v1/usage', oauth: false };
+    if (host === 'api.siliconflow.cn' || host === 'api.siliconflow.com') return { id: host.endsWith('.cn') ? 'siliconflow-cn' : 'siliconflow-global', label: 'SiliconFlow 官方余额', url: `https://${host}/v1/user/info`, oauth: false };
+    if (host === 'api.novita.ai') return { id: 'novita', label: 'Novita AI 官方余额', url: 'https://api.novita.ai/v3/user/balance', oauth: false };
+  }
   if (oauth) return undefined;
-  if (host === 'api.deepseek.com') return { id: 'deepseek', label: 'DeepSeek 官方余额', url: 'https://api.deepseek.com/user/balance', oauth: false };
-  if (host === 'api.minimax.io' || host === 'api.minimaxi.com') return { id: 'minimax', label: 'MiniMax Coding Plan 官方用量', url: `https://${host}/v1/api/openplatform/coding_plan/remains`, oauth: false };
-  if (host === 'open.bigmodel.cn' || host === 'api.z.ai') return { id: 'zai', label: host === 'open.bigmodel.cn' ? 'BigModel 官方套餐用量' : 'Z.ai 官方套餐用量', url: `https://${host}/api/monitor/usage/quota/limit`, oauth: false };
-  if (host === 'openrouter.ai') return { id: 'openrouter', label: 'OpenRouter 官方额度', url: 'https://openrouter.ai/api/v1/credits', secondaryUrl: 'https://openrouter.ai/api/v1/key', oauth: false };
-  if (host === 'api.stepfun.com') return { id: 'stepfun', label: 'StepFun 官方额度', url: 'https://api.stepfun.com/v1/accounts', secondaryUrl: 'https://api.stepfun.com/step_plan/v1/usage', oauth: false };
-  if (host === 'api.siliconflow.cn' || host === 'api.siliconflow.com') return { id: host.endsWith('.cn') ? 'siliconflow-cn' : 'siliconflow-global', label: 'SiliconFlow 官方余额', url: `https://${host}/v1/user/info`, oauth: false };
-  if (host === 'api.novita.ai') return { id: 'novita', label: 'Novita AI 官方余额', url: 'https://api.novita.ai/v3/user/balance', oauth: false };
-  if (host === 'api.zjuam.art') return { id: 'kiki-quota', label: 'AxonHub 订阅额度', url: 'https://api.zjuam.art/v1/kiki/quota', oauth: false };
-  return undefined;
+  if (OFFICIAL_VENDOR_HOSTS.some((vendor) => host === vendor || host.startsWith(`${vendor}.`))) return undefined;
+  if (FIRST_PARTY_NO_API_KEY_QUOTA_HOSTS.has(host)) return undefined;
+  const primaryUrl = `${url.origin}/v1/kiki/quota`;
+  const secondaryUrl = resolveGatewayUsageUrl(url);
+  if (isGatewayQuotaUnsupported(secondaryUrl.toLowerCase(), now)) return undefined;
+  return {
+    id: 'kiki-quota',
+    label: '网关订阅与凭据额度',
+    url: primaryUrl,
+    secondaryUrl,
+    oauth: false,
+  };
 }
 export function quotaHeaders(adapter: QuotaAdapter, token: string): Record<string, string> {
   const headers: Record<string, string> = { Authorization: adapter.id === 'zai' ? token : `Bearer ${token}`, Accept: 'application/json' };
@@ -106,7 +211,12 @@ export function parseQuota(adapter: QuotaAdapterId, payload: unknown, now: numbe
     : adapter === 'zai' ? Array.isArray(record(body['data'])['limits'])
     : adapter === 'openrouter' ? body['data'] !== undefined || body['credits'] !== undefined || body['key'] !== undefined
     : adapter === 'stepfun' ? body['balance'] !== undefined || isStepPlanPayload(body)
-    : adapter === 'kiki-quota' ? body['object'] === 'kiki.key_quota' || Array.isArray(body['pool_quotas'])
+    : adapter === 'kiki-quota' ? (
+        body['object'] === 'kiki.key_quota'
+        || Array.isArray(body['pool_quotas'])
+        || (body['object'] === 'list' && (body['exposed'] === true || (Array.isArray(body['data']) && body['summary'] !== undefined)))
+        || (body['unit'] !== undefined && ((body['daily'] !== null && typeof body['daily'] === 'object') || (body['weekly'] !== null && typeof body['weekly'] === 'object')))
+      )
     : adapter === 'novita' ? body['availableBalance'] !== undefined : body['data'] !== undefined;
   if (!shape) throw new Error('invalid_response');
   const meters: (ProviderQuotaMeter | undefined)[] = [];
@@ -345,6 +455,126 @@ export function parseQuota(adapter: QuotaAdapterId, payload: unknown, now: numbe
         limit: null,
         remaining: null,
       });
+    }
+    if (body['unit'] !== undefined && ((body['daily'] !== null && typeof body['daily'] === 'object') || (body['weekly'] !== null && typeof body['weekly'] === 'object'))) {
+      const rawUnit = text(body['unit']);
+      const upperUnit = rawUnit?.toUpperCase();
+      const isFiat = upperUnit === 'USD' || upperUnit === 'CNY' || upperUnit === 'EUR';
+      const isPercent = upperUnit === 'PERCENT' || upperUnit === '%';
+      const isCount = upperUnit === 'TOKENS' || upperUnit === 'REQUESTS';
+      const meterUnit: ProviderQuotaMeter['unit'] = isFiat ? 'money' : isPercent ? 'percent' : isCount ? 'count' : 'credits';
+      const meterUnitLabel = isFiat ? upperUnit! : isPercent ? '%' : (rawUnit ?? 'credits');
+      const windowDefs: ReadonlyArray<readonly [string, string, string, number]> = [
+        ['daily', '今日用量', '24h', 86400],
+        ['weekly', '本周用量', '7d', 604800],
+      ];
+      for (const [key, label, shortLabel, durationSeconds] of windowDefs) {
+        const rawWin = body[key];
+        if (rawWin === null || typeof rawWin !== 'object' || Array.isArray(rawWin)) continue;
+        const win = record(rawWin);
+        const total = num(win['total'] ?? win['limit']);
+        const used = num(win['used']);
+        const remDirect = num(win['remaining']);
+        const remaining = remDirect ?? (total !== null && used !== null ? Math.max(0, Math.round((total - used) * 1e6) / 1e6) : null);
+        if (used === null && total === null && remaining === null) continue;
+        const resetAt = date(win['resetsAt'] ?? win['resetAt'] ?? win['reset_at']);
+        meters.push({
+          id: uniqueId(`usage-${key}`, key),
+          label,
+          unit: meterUnit,
+          unit_label: meterUnitLabel,
+          ...(isFiat ? { currency: upperUnit } : {}),
+          scope: 'key',
+          used,
+          limit: total,
+          remaining,
+          window: {
+            label: shortLabel,
+            duration_seconds: durationSeconds,
+            ...(resetAt !== undefined ? { reset_at: resetAt, reset_timezone: 'UTC' } : {}),
+          },
+        });
+      }
+    }
+    if (body['object'] === 'list' && Array.isArray(body['data'])) {
+      const dataAsOf = date(body['generated_at']);
+      if (body['exposed'] === true && array(body['data']).length === 0) {
+        meters.push({
+          id: uniqueId('gateway-exhausted', 'pool'),
+          label: '渠道池额度（已耗尽）',
+          unit: 'percent',
+          unit_label: '%',
+          scope: 'account',
+          used: 100,
+          limit: 100,
+          remaining: 0,
+          ...(dataAsOf !== undefined ? { data_as_of: dataAsOf } : {}),
+        });
+      }
+      const listSummary = record(body['summary']);
+      const totalKeys = num(listSummary['total_keys']);
+      const availableKeys = num(listSummary['available_keys']) ?? num(listSummary['active_keys']);
+      let emittedBalanceMeters = 0;
+      for (const [channelIndex, rawChannel] of array(body['data']).entries()) {
+        const channel = record(rawChannel);
+        const channelId = num(channel['channel_id']) ?? channelIndex + 1;
+        const channelName = text(channel['channel_name']) ?? `Channel ${channelId}`;
+        const qSummary = record(channel['quota_summary']);
+        const totalRem = num(qSummary['total_remaining']);
+        const totalUsed = num(qSummary['total_used']);
+        const totalLim = num(qSummary['total_limit']);
+        if (totalRem === null && totalUsed === null && totalLim === null) continue;
+        emittedBalanceMeters += 1;
+        const rawCurrency = text(qSummary['currency'])?.toUpperCase();
+        const isFiat = rawCurrency === 'USD' || rawCurrency === 'CNY' || rawCurrency === 'EUR';
+        const isPercent = rawCurrency === 'PERCENT' || rawCurrency === '%';
+        meters.push({
+          id: uniqueId(`channel-${channelId}-quota`, String(channelIndex)),
+          label: channelName,
+          unit: isFiat ? 'money' : isPercent ? 'percent' : 'credits',
+          unit_label: isFiat ? rawCurrency : isPercent ? '%' : (rawCurrency ?? 'credits').toLowerCase(),
+          ...(isFiat ? { currency: rawCurrency } : {}),
+          scope: 'account',
+          used: totalUsed,
+          limit: totalLim,
+          remaining: totalRem,
+          ...(dataAsOf !== undefined ? { data_as_of: dataAsOf } : {}),
+        });
+      }
+      if (totalKeys !== null && availableKeys !== null && totalKeys > 0) {
+        meters.push({
+          id: uniqueId('gateway-available-keys', 'pool'),
+          label: '可用上游凭据池',
+          unit: 'count',
+          unit_label: '把',
+          scope: 'account',
+          used: Math.max(0, totalKeys - availableKeys),
+          limit: totalKeys,
+          remaining: availableKeys,
+          ...(dataAsOf !== undefined ? { data_as_of: dataAsOf } : {}),
+        });
+      } else if (emittedBalanceMeters === 0) {
+        for (const [channelIndex, rawChannel] of array(body['data']).slice(0, 6).entries()) {
+          const channel = record(rawChannel);
+          const channelId = num(channel['channel_id']) ?? channelIndex + 1;
+          const channelName = text(channel['channel_name']) ?? `Channel ${channelId}`;
+          const counts = record(channel['key_counts']);
+          const chTotal = num(counts['total']);
+          const chActive = num(counts['active']);
+          if (chTotal === null || chActive === null || chTotal <= 0) continue;
+          meters.push({
+            id: uniqueId(`channel-${channelId}-keys`, String(channelIndex)),
+            label: `${channelName} · 可用 Key`,
+            unit: 'count',
+            unit_label: '把',
+            scope: 'account',
+            used: Math.max(0, chTotal - chActive),
+            limit: chTotal,
+            remaining: chActive,
+            ...(dataAsOf !== undefined ? { data_as_of: dataAsOf } : {}),
+          });
+        }
+      }
     }
   }
   return meters.filter((meter): meter is ProviderQuotaMeter => meter !== undefined);
