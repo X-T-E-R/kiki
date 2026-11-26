@@ -152,6 +152,26 @@ export class AgentTaskPersistence {
     return (await this.findTask(taskId))?.info;
   }
 
+  async taskStatRevision(taskId: string): Promise<string | undefined> {
+    validateTaskId(taskId);
+    const statFn = this.bytes.stat?.bind(this.bytes);
+    if (statFn === undefined) return undefined;
+    const key = `${taskId}${JSON_SUFFIX}`;
+    const format = (stat: Awaited<ReturnType<typeof statFn>>): string =>
+      stat === undefined ? '-' : `${stat.size}:${stat.identity ?? ''}:${stat.revision ?? ''}`;
+    const primary = this.primaryRoot();
+    const primaryJson = await statFn(this.tasksScope(primary), key).catch(() => undefined);
+    if (primaryJson !== undefined) {
+      const primaryOut = await statFn(this.taskOutputScope(taskId, primary), OUTPUT_LOG_KEY).catch(() => undefined);
+      return `p|${format(primaryJson)}#${format(primaryOut)}`;
+    }
+    if (this.fallbackRoot === undefined) return undefined;
+    const fallbackJson = await statFn(this.tasksScope(this.fallbackRoot), key).catch(() => undefined);
+    if (fallbackJson === undefined) return undefined;
+    const fallbackOut = await statFn(this.taskOutputScope(taskId, this.fallbackRoot), OUTPUT_LOG_KEY).catch(() => undefined);
+    return `f|${format(fallbackJson)}#${format(fallbackOut)}`;
+  }
+
   private async findTask(taskId: string): Promise<{ info: PersistedTask; root: AgentTaskPersistenceRoot } | undefined> {
     validateTaskId(taskId);
     const key = `${taskId}${JSON_SUFFIX}`;

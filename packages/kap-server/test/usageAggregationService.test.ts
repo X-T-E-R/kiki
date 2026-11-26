@@ -2664,7 +2664,7 @@ describe('SQLite Usage history source lifecycle', () => {
       expect(next.reliability.complete).toBe(true);
       expect(next.summary.tokens.output).toBe(4);
       expect(listRecent).not.toHaveBeenCalled();
-      expect([...f.agentLists.keys()]).toEqual(['sessions/w/s1/agents']);
+      expect([...f.agentLists.keys()]).toEqual([]);
       expect([...f.sourceProbes.keys()]).toEqual([sub1]);
     } finally {
       f.service.dispose();
@@ -2705,6 +2705,74 @@ describe('SQLite Usage history source lifecycle', () => {
         changes.fire(`w\0s-${String(i).padStart(4, '0')}`);
       }
       expect(performance.now() - invalidationStart).toBeLessThan(100);
+    } finally {
+      f.service.dispose();
+      changes.dispose();
+    }
+  });
+
+  it('invalidates only the mutated agent in readSessionAccounting across 500 subagents and picks up newly added subagents', async () => {
+    const changes = new Emitter<UsageSourceChange>();
+    const s1 = summary('s-scale', 'w');
+    const agentIds = ['main', ...Array.from({ length: 499 }, (_, index) => `agent-${index + 1}`)];
+    const wires: Record<string, readonly WireRecord[]> = {};
+    for (let index = 0; index < agentIds.length; index += 1) {
+      wires[`sessions/w/s-scale/agents/${agentIds[index]}`] = [usageRecord(10 + index, 1)];
+    }
+    const f = fixture(
+      [s1],
+      wires,
+      Date.now,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { ready: true, onDidChange: changes.event },
+    );
+    f.setAgentIds(agentIds);
+    try {
+      const baseline = await f.service.readSessionAccounting('w', 's-scale');
+      expect(baseline.complete).toBe(true);
+      expect(baseline.tokens.output).toBe(500);
+
+      const hotScope = 'sessions/w/s-scale/agents/agent-499';
+      let records: WireRecord[] = [usageRecord(509, 1)];
+      f.agentLists.clear();
+      f.sourceProbes.clear();
+      f.reads.clear();
+
+      const started = performance.now();
+      for (let step = 1; step <= 5; step += 1) {
+        records = [...records, usageRecord(1000 + step, step + 1)];
+        f.setWire(hotScope, records);
+        changes.fire({ kind: 'agent', sessionKey: 'w\0s-scale', agentId: 'agent-499' });
+        const updated = await f.service.readSessionAccounting('w', 's-scale');
+        expect(updated.complete).toBe(true);
+        expect(updated.tokens.output).toBe(500 + step);
+      }
+      const fiveUpdatesMs = performance.now() - started;
+
+      expect(fiveUpdatesMs).toBeLessThan(500);
+      expect([...f.agentLists.keys()]).toEqual([]);
+      expect([...f.sourceProbes.keys()]).toEqual([hotScope]);
+      expect([...f.reads.keys()]).toEqual([hotScope]);
+
+      const addedScope = 'sessions/w/s-scale/agents/agent-500';
+      f.setAgentIds([...agentIds, 'agent-500']);
+      f.setWire(addedScope, [usageRecord(2000, 1), usageRecord(2001, 2)]);
+      f.agentLists.clear();
+      f.sourceProbes.clear();
+      f.reads.clear();
+      changes.fire({ kind: 'agent', sessionKey: 'w\0s-scale', agentId: 'agent-500' });
+
+      const afterAdd = await f.service.readSessionAccounting('w', 's-scale');
+      expect(afterAdd.complete).toBe(true);
+      expect(afterAdd.tokens.output).toBe(507);
+      expect([...f.agentLists.keys()]).toEqual([]);
+      expect([...f.sourceProbes.keys()]).toEqual([addedScope]);
+      expect([...f.reads.keys()]).toEqual([addedScope]);
     } finally {
       f.service.dispose();
       changes.dispose();

@@ -809,6 +809,89 @@ describe('server /api/sessions/query', () => {
     }
   });
 
+  it('caps cold git wait and serves stale git status immediately while revalidating in background', async () => {
+    await server?.close();
+    const slowSummaries: SessionSummary[] = [
+      {
+        id: 'sess-slow-git',
+        workspaceId: 'ws-slow-git',
+        cwd: '/repo/slow-swr',
+        createdAt: 1_000,
+        updatedAt: 5_000,
+        archived: false,
+      },
+    ];
+    let branchName = 'feature/initial';
+    let gate = Promise.withResolvers<void>();
+    let gitCalls = 0;
+    const slowGitStub: IGitService = {
+      _serviceBrand: undefined,
+      status: async (): Promise<FsGitStatusResponse> => {
+        gitCalls += 1;
+        await gate.promise;
+        return {
+          branch: branchName,
+          ahead: 0,
+          behind: 0,
+          entries: {},
+          additions: 0,
+          deletions: 0,
+          pullRequest: null,
+        };
+      },
+      diff: async () => {
+        throw new Error2(ErrorCodes.FS_GIT_UNAVAILABLE, 'unused');
+      },
+      findWorkTree: async () => null,
+    };
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      seeds: [
+        [ISessionIndex, stubSessionIndex(slowSummaries)],
+        [IGitService, slowGitStub],
+      ],
+    });
+    base = `http://127.0.0.1:${server.port}`;
+
+    const coldStart = performance.now();
+    const cold = await getData('?include=git&page_size=20');
+    const coldElapsed = performance.now() - coldStart;
+    expect(coldElapsed).toBeLessThan(700);
+    expect(cold.items[0]?.git).toEqual({ branch: null, pull_request: null });
+    expect(gitCalls).toBe(1);
+
+    gate.resolve();
+    await vi.waitFor(async () => {
+      const warmed = await getData('?include=git&page_size=20');
+      expect(warmed.items[0]?.git?.branch).toBe('feature/initial');
+    });
+    expect(gitCalls).toBe(1);
+
+    branchName = 'feature/revalidated';
+    gate = Promise.withResolvers<void>();
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 90_000);
+    try {
+      const swrStart = performance.now();
+      const stale = await getData('?include=git&page_size=20');
+      const swrElapsed = performance.now() - swrStart;
+      expect(swrElapsed).toBeLessThan(150);
+      expect(stale.items[0]?.git?.branch).toBe('feature/initial');
+      expect(gitCalls).toBe(2);
+
+      gate.resolve();
+      await vi.waitFor(async () => {
+        const refreshed = await getData('?include=git&page_size=20');
+        expect(refreshed.items[0]?.git?.branch).toBe('feature/revalidated');
+      });
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
   it('answers 401 with the shared envelope on both session list paths', async () => {
     for (const path of ['/api/sessions', '/api/sessions/query']) {
       const res = await fetch(`${base}${path}`);

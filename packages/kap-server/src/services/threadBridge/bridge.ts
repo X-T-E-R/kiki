@@ -75,12 +75,35 @@ function denied(reason: string): never { throw new AdmissionError(403, reason); 
 const authenticatedBridgeRequests = new WeakMap<FastifyRequest, BridgeGrant>();
 const peerRequestBridgeGrants = new WeakMap<FastifyRequest, string>();
 const SAME_OPERATIONS = (a: readonly BridgeOperation[], b: readonly BridgeOperation[]): boolean => a.length === b.length && a.every((op, index) => op === b[index]);
+const REMOTE_TOOLS_LIST_TIMEOUT_MS = 2_000;
+const REMOTE_TOOLS_LIST_FAILURE_COOLDOWN_MS = 15_000;
+
+function awaitWithSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (signal === undefined) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+  const { promise: raced, resolve, reject } = Promise.withResolvers<T>();
+  const onAbort = () => reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+  signal.addEventListener('abort', onAbort, { once: true });
+  promise.then(
+    (value) => {
+      signal.removeEventListener('abort', onAbort);
+      resolve(value);
+    },
+    (error) => {
+      signal.removeEventListener('abort', onAbort);
+      reject(error);
+    },
+  );
+  return raced;
+}
 
 export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolConnector {
   private state: State = { inbound: [], outbound: [], outbox: [], nextSeq: 1 };
   private readonly path: string;
   private tail: Promise<unknown> = Promise.resolve();
   private readonly flights = new Map<string, Promise<void>>();
+  private readonly toolListInFlight = new Map<string, Promise<RemoteBorrowedSpaceCatalog | undefined>>();
+  private readonly toolListFailedUntil = new Map<string, number>();
   private readonly incoming = new Map<string, Set<AbortController>>();
   private readonly outgoing = new Map<string, Set<AbortController>>();
   private retryFlight?: Promise<void>;
@@ -112,6 +135,7 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
       .join('|');
   }
   private notifyRemoteTools(): void {
+    this.toolListFailedUntil.clear();
     try {
       remoteSpaceToolCapability(this.core.accessor.get(IRemoteSpaceToolBridgeService)).notifyChanged();
     } catch {}
@@ -143,6 +167,8 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
     this.lifetime.abort(); if (this.timer !== undefined) clearInterval(this.timer);
     this.connectionSubscription?.dispose();
     this.connectionSubscription = undefined;
+    this.toolListInFlight.clear();
+    this.toolListFailedUntil.clear();
     for (const controllers of this.incoming.values()) for (const controller of controllers) controller.abort();
     await Promise.allSettled([...this.flights.values(), this.retryFlight]); await this.tail;
     spaceThreadCapability(this.threads)[SPACE_THREAD_ROUTER](undefined);
@@ -899,24 +925,49 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
       const scopeKey = `${candidate.connectionId}|${candidate.grant.target.homeId}|${candidate.grant.target.hostId}|${candidate.grant.targetScope.workspaceId}`;
       if (!byScope.has(scopeKey)) byScope.set(scopeKey, candidate);
     }
-    const catalogs = await Promise.all([...byScope.values()].map(async (link): Promise<RemoteBorrowedSpaceCatalog | undefined> => {
+    const catalogs = await Promise.all([...byScope.entries()].map(async ([scopeKey, link]): Promise<RemoteBorrowedSpaceCatalog | undefined> => {
+      const flightKey = `${scopeKey}|${link.grant.id}|${link.grant.revision}`;
+      const failedUntil = this.toolListFailedUntil.get(flightKey);
+      if (failedUntil !== undefined) {
+        if (failedUntil > Date.now()) return undefined;
+        this.toolListFailedUntil.delete(flightKey);
+      }
+      let flight = this.toolListInFlight.get(flightKey);
+      if (flight === undefined) {
+        flight = (async (): Promise<RemoteBorrowedSpaceCatalog | undefined> => {
+          try {
+            const verified = this.verifyLinkIdentity(link);
+            const record = this.connections.get(verified.connectionId);
+            const raw = await this.remote<BridgeToolsListResult>(verified, 'tools_list', {
+              bridgeId: verified.grant.id,
+              revision: verified.grant.revision,
+              source: this.source(input.caller),
+              workspaceId: verified.grant.targetScope.workspaceId === '*' ? undefined : verified.grant.targetScope.workspaceId,
+            }, this.lifetime.signal);
+            const parsed = bridgeToolsListResultSchema.parse(raw);
+            this.toolListFailedUntil.delete(flightKey);
+            return {
+              bridgeId: verified.grant.id,
+              connectionId: verified.connectionId,
+              spaceLabel: parsed.spaceLabel || record.label,
+              platform: parsed.platform,
+              tools: parsed.tools,
+            };
+          } catch {
+            if (!this.lifetime.signal.aborted) {
+              this.toolListFailedUntil.set(flightKey, Date.now() + REMOTE_TOOLS_LIST_FAILURE_COOLDOWN_MS);
+            }
+            return undefined;
+          } finally {
+            if (this.toolListInFlight.get(flightKey) === flight) {
+              this.toolListInFlight.delete(flightKey);
+            }
+          }
+        })();
+        this.toolListInFlight.set(flightKey, flight);
+      }
       try {
-        const verified = this.verifyLinkIdentity(link);
-        const record = this.connections.get(verified.connectionId);
-        const raw = await this.remote<BridgeToolsListResult>(verified, 'tools_list', {
-          bridgeId: verified.grant.id,
-          revision: verified.grant.revision,
-          source: this.source(input.caller),
-          workspaceId: verified.grant.targetScope.workspaceId === '*' ? undefined : verified.grant.targetScope.workspaceId,
-        }, input.signal);
-        const parsed = bridgeToolsListResultSchema.parse(raw);
-        return {
-          bridgeId: verified.grant.id,
-          connectionId: verified.connectionId,
-          spaceLabel: parsed.spaceLabel || record.label,
-          platform: parsed.platform,
-          tools: parsed.tools,
-        };
+        return await awaitWithSignal(flight, input.signal);
       } catch (error) {
         if (input.signal?.aborted) throw error;
         return undefined;
@@ -1275,7 +1326,8 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
     if (!sameIdentity(descriptor.target, link.grant.target)) denied('bridge_identity_mismatch');
     const controller = new AbortController();
     const waitMs = operation === 'wait' ? bridgeWaitSchema.parse(body).timeoutMs ?? 30000 : operation === 'tools_call' ? 120000 : 0;
-    const lease = this.connections.lease(link.connectionId, AbortSignal.any([this.lifetime.signal, controller.signal, parent ?? this.lifetime.signal, AbortSignal.timeout(Math.max(15000, waitMs + 5000))]), 'bridge');
+    const timeoutMs = operation === 'tools_list' ? REMOTE_TOOLS_LIST_TIMEOUT_MS : Math.max(15000, waitMs + 5000);
+    const lease = this.connections.lease(link.connectionId, AbortSignal.any([this.lifetime.signal, controller.signal, parent ?? this.lifetime.signal, AbortSignal.timeout(timeoutMs)]), 'bridge');
     const controllers = this.outgoing.get(link.grant.id) ?? new Set<AbortController>(); controllers.add(controller); this.outgoing.set(link.grant.id, controllers);
     try {
       const { credential } = await this.connections.secrets.read<{ credential: string }>({ connectionId: link.grant.id, purpose: 'bridge' });

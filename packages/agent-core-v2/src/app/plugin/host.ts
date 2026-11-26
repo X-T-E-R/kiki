@@ -34,7 +34,8 @@ export const PLUGIN_RPC_VERSION = 1;
 const IDLE_MS = 90_000;
 const HANDSHAKE_MS = 15_000;
 const INTERRUPT_EXIT_GRACE_MS = 200;
-const SHUTDOWN_EXIT_GRACE_MS = 2_000;
+const SHUTDOWN_LIFECYCLE_TIMEOUT_MS = 1_500;
+const SHUTDOWN_EXIT_GRACE_MS = 500;
 const TASKKILL_GRACE_MS = 2_000;
 
 function killWindowsProcessTree(pid: number): Promise<void> {
@@ -1029,14 +1030,18 @@ export class PluginHost {
 
   private async shutdownChild(): Promise<void> {
     if (this.child !== undefined && (this.lifecycle?.resident || this.harnessAccountSources.length > 0)) {
-      try { await this.lifecycleRequest('shutdown', {}); await this.waitForExit(SHUTDOWN_EXIT_GRACE_MS); } catch {}
+      try {
+        await this.lifecycleRequest('shutdown', {}, SHUTDOWN_LIFECYCLE_TIMEOUT_MS);
+        if (this.child?.exitCode === null) await this.waitForExit(SHUTDOWN_EXIT_GRACE_MS);
+      } catch {}
     }
     const pid = this.child?.pid;
     if (process.platform === 'win32' && pid !== undefined && pid > 0 && this.child?.exitCode === null) {
       await killWindowsProcessTree(pid);
     }
+    const stillRunning = this.child !== undefined && this.child.exitCode === null;
     this.stop();
-    await this.waitForExit(SHUTDOWN_EXIT_GRACE_MS);
+    if (stillRunning) await this.waitForExit(SHUTDOWN_EXIT_GRACE_MS);
   }
 
   private waitForExit(timeoutMs: number): Promise<void> {

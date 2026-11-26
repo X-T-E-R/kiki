@@ -152,6 +152,7 @@ interface UsageInventory {
   readonly dirtyKeys: readonly string[];
   readonly prepared: Map<string, { agents: readonly string[]; version?: number }>;
   readonly heads: Map<string, Awaited<ReturnType<IUsageReadModel['source']>>>;
+  needsFullCatalogSync: boolean;
   page: readonly SessionSummary[];
   nextSession: number;
   before?: string;
@@ -267,8 +268,13 @@ export class UsageAggregationService {
     this.sourceSubscription = sourceChanges?.onDidChange((change) => {
       if (typeof change === 'object' && (change.kind === 'retained' || change.kind === 'operation')) {
         if (change.kind === 'operation') {
-          if (change.sessionKey === undefined) this.operationRevision++;
-          else this.sessionVersions.set(change.sessionKey, (this.sessionVersions.get(change.sessionKey) ?? 0) + 1);
+          if (change.sessionKey === undefined) {
+            this.operationRevision++;
+          } else {
+            this.sessionVersions.set(change.sessionKey, (this.sessionVersions.get(change.sessionKey) ?? 0) + 1);
+            const saved = this.sessionAccounting.get(change.sessionKey);
+            if (saved !== undefined) saved.operationDirty = true;
+          }
         }
         this.retainedRevision++;
         this.modelReady = false;
@@ -281,17 +287,44 @@ export class UsageAggregationService {
         this.agentInventories.clear();
         this.sourceMetadata.clear();
         this.sourceKeysBySession.clear();
+        this.dirtyAgents.clear();
+        this.fullDirtySessions.clear();
         this.progressFullGeneration++;
         this.progressDirtySessions.clear();
+        this.progressDirtyAgents.clear();
+        this.progressFullDirtySessions.clear();
       } else if (typeof key === 'string') {
         this.dirtySessions.set(key, this.replayEpoch);
-        this.sessionVersions.set(key, (this.sessionVersions.get(key) ?? 0) + 1);
-        this.agentInventories.delete(key);
         if (typeof change === 'object' && change.kind === 'agent') {
+          this.invalidateSessionAccountingAgent(key, change.agentId);
+          this.ensureAgentInInventory(key, change.agentId);
           const sourceKey = `sessions/${key.replace('\0', '/')}/agents/${change.agentId}`;
           this.sourceMetadata.delete(sourceKey);
           this.sourceKeysBySession.get(key)?.delete(sourceKey);
+          if (!this.fullDirtySessions.has(key)) {
+            let bucket = this.dirtyAgents.get(key);
+            if (bucket === undefined) {
+              bucket = new Set();
+              this.dirtyAgents.set(key, bucket);
+            }
+            bucket.add(change.agentId);
+          }
+          if (!this.progressFullDirtySessions.has(key)) {
+            let bucket = this.progressDirtyAgents.get(key);
+            if (bucket === undefined) {
+              bucket = new Set();
+              this.progressDirtyAgents.set(key, bucket);
+            }
+            bucket.add(change.agentId);
+          }
         } else {
+          this.sessionVersions.set(key, (this.sessionVersions.get(key) ?? 0) + 1);
+          this.sessionResetEpochs.set(key, (this.sessionResetEpochs.get(key) ?? 0) + 1);
+          this.agentInventories.delete(key);
+          this.fullDirtySessions.add(key);
+          this.dirtyAgents.delete(key);
+          this.progressFullDirtySessions.add(key);
+          this.progressDirtyAgents.delete(key);
           const tracked = this.sourceKeysBySession.get(key);
           if (tracked !== undefined) {
             for (const source of tracked) this.sourceMetadata.delete(source);
@@ -325,21 +358,60 @@ export class UsageAggregationService {
   }
 
   private readonly sessionVersions = new Map<string, number>();
+  private readonly sessionResetEpochs = new Map<string, number>();
   private readonly sessionAccounting = new Map<string, {
-    version: string; agents?: readonly string[]; rows: Record<string, AgentUsageProjection>; revisions: Map<string, string>;
+    version: string;
+    resetEpoch: string;
+    agents?: readonly string[];
+    rows: Record<string, AgentUsageProjection>;
+    revisions: Map<string, string>;
+    invalidatedDuringFlight: Set<string>;
     operation?: Awaited<ReturnType<IRetainedUsageService['readOperationSummary']>>;
     operationVersion?: number;
-    snapshot?: UsageAccountingSnapshot; snapshotVersion?: string; pricingReady: boolean; flight?: Promise<UsageAccountingSnapshot>;
+    operationDirty: boolean;
+    snapshot?: UsageAccountingSnapshot;
+    snapshotVersion?: string;
+    pricingReady: boolean;
+    flight?: Promise<UsageAccountingSnapshot>;
   }>();
 
   private sessionVersion(key: string): string { return `${this.inventoryRevision}:${this.sessionVersions.get(key) ?? 0}`; }
+
+  private sessionResetEpoch(key: string): string { return `${this.inventoryRevision}:${this.sessionResetEpochs.get(key) ?? 0}`; }
+
+  private invalidateSessionAccountingAgent(key: string, agentId: string): void {
+    this.sessionVersions.set(key, (this.sessionVersions.get(key) ?? 0) + 1);
+    const saved = this.sessionAccounting.get(key);
+    if (saved === undefined) return;
+    delete saved.rows[agentId];
+    saved.revisions.delete(agentId);
+    if (saved.flight !== undefined) saved.invalidatedDuringFlight.add(agentId);
+    if (saved.agents !== undefined && !saved.agents.includes(agentId)) {
+      saved.agents = [...saved.agents, agentId];
+    }
+  }
+
+  private reconcileSessionAccountingAgents(key: string, agents: readonly string[]): void {
+    const saved = this.sessionAccounting.get(key);
+    if (saved?.agents === undefined || sameAgentList(saved.agents, agents)) return;
+    const nextSet = new Set(agents);
+    for (const existing of saved.agents) {
+      if (!nextSet.has(existing)) {
+        delete saved.rows[existing];
+        saved.revisions.delete(existing);
+        if (saved.flight !== undefined) saved.invalidatedDuringFlight.add(existing);
+      }
+    }
+    saved.agents = agents;
+    this.sessionVersions.set(key, (this.sessionVersions.get(key) ?? 0) + 1);
+  }
 
   readSessionAccountingSnapshot(workspaceId: string, sessionId: string, fallback?: UsageAccountingSnapshot): UsageAccountingSnapshot {
     const key = `${workspaceId}\0${sessionId}`;
     const saved = this.sessionAccounting.get(key);
     const snapshot = saved?.snapshot;
     if (saved === undefined || snapshot === undefined) return { ...(fallback ?? { version: 2, subject: { session_id: sessionId, scope: 'session' }, covered_at: 0, complete: false, tokens: { input_other: 0, output: 0, input_cache_read: 0, input_cache_creation: 0 }, tokens_unknown: false, cost_usd_estimated: 0, cost_unknown: true }), freshness: fallback === undefined ? 'unverified' : 'stale' };
-    const freshness = saved.snapshotVersion === this.sessionVersion(key) && saved.operationVersion === this.operationRevision && !this.core.accessor.get(IRetainedUsageService).operationWritesPending && this.now() - snapshot.covered_at < SOURCE_RECHECK_MS ? 'current' : 'stale';
+    const freshness = saved.snapshotVersion === this.sessionVersion(key) && saved.operationVersion === this.operationRevision && !saved.operationDirty && !this.core.accessor.get(IRetainedUsageService).operationWritesPending && this.now() - snapshot.covered_at < SOURCE_RECHECK_MS ? 'current' : 'stale';
     return { ...snapshot, freshness };
   }
 
@@ -353,11 +425,31 @@ export class UsageAggregationService {
     let saved = this.sessionAccounting.get(key);
     if (saved?.flight !== undefined) return waitForSource(saved.flight, signal);
     const version = this.sessionVersion(key);
-    if (saved === undefined || saved.version !== version || saved.snapshot !== undefined && this.now() - saved.snapshot.covered_at >= SOURCE_RECHECK_MS) {
-      saved = { version, rows: {}, revisions: new Map(), pricingReady: false, snapshot: saved?.snapshot };
+    const resetEpoch = this.sessionResetEpoch(key);
+    const expired = saved?.snapshot !== undefined && this.now() - saved.snapshot.covered_at >= SOURCE_RECHECK_MS;
+    if (saved === undefined || saved.resetEpoch !== resetEpoch) {
+      saved = {
+        version,
+        resetEpoch,
+        rows: {},
+        revisions: new Map(),
+        invalidatedDuringFlight: new Set(),
+        operationDirty: true,
+        pricingReady: false,
+        snapshot: saved?.snapshot,
+      };
       this.sessionAccounting.set(key, saved);
+    } else if (expired) {
+      saved.version = version;
+      saved.agents = undefined;
+      saved.rows = {};
+      saved.revisions = new Map();
+      saved.invalidatedDuringFlight.clear();
+      saved.operationDirty = true;
+    } else if (saved.version !== version) {
+      saved.version = version;
     }
-    if (saved.snapshot?.complete && saved.snapshotVersion === version && saved.operationVersion === this.operationRevision && !this.core.accessor.get(IRetainedUsageService).operationWritesPending) {
+    if (saved.snapshot?.complete && saved.snapshotVersion === version && saved.operationVersion === this.operationRevision && !saved.operationDirty && !this.core.accessor.get(IRetainedUsageService).operationWritesPending) {
       saved.snapshot = { ...saved.snapshot, ...this.sessionAccountingTotals(Object.values(saved.rows), saved.pricingReady, saved.operation?.totals) };
       return this.readSessionAccountingSnapshot(workspaceId, sessionId);
     }
@@ -369,26 +461,49 @@ export class UsageAggregationService {
       timer.unref();
       const readSignal = AbortSignal.any([this.modelController.signal, deadline.signal]);
       const pricing = this.core.accessor.get(IModelPricingService);
-      const preparation = pricing.ready.then(() => { state.pricingReady = true; });
+      const preparation = state.pricingReady ? Promise.resolve() : pricing.ready.then(() => { state.pricingReady = true; });
       void preparation.catch(() => undefined);
+      state.invalidatedDuringFlight.clear();
       try {
         const scope = sessionScopeOf(workspacePersistenceScope('sessions', workspaceId), sessionId);
         state.agents ??= await waitForSource(this.core.accessor.get(IFileSystemStorageService).list(`${scope}/agents`), readSignal);
         const pending = state.agents.filter((agent) => !state.rows[agent]?.complete).slice(0, this.limits.sourceScanLimit);
         const factBudget = { remainingRecords: this.limits.usageFactBudget };
-        await waitForSource(this.readAgentUsageSources(workspaceId, sessionId, pending, { signal: readSignal, factSignal: readSignal, summaryOnly: true, deadlineAt, factBudget, recoveryBudget: { remainingRecords: Math.min(100_000, this.limits.wireRecordBudget), remainingBytes: 128 * 1024 * 1024 } }, state.rows, state.revisions), readSignal);
-        const operationVersion = this.operationRevision;
-        state.operation = await waitForSource(this.core.accessor.get(IRetainedUsageService).readOperationSummary(workspaceId, sessionId, { deadlineAt, recordLimit: factBudget.remainingRecords, signal: readSignal }), readSignal);
-        state.operationVersion = operationVersion;
+        if (pending.length > 1) {
+          await waitForSource(this.readVerifiedAgentSummaries(workspaceId, sessionId, pending, readSignal, state.rows, undefined, state.revisions), readSignal);
+        }
+        const remaining = pending.length > 1 ? pending.filter((agent) => !state.rows[agent]?.complete) : pending;
+        if (remaining.length > 0) {
+          await waitForSource(this.readAgentUsageSources(workspaceId, sessionId, remaining, { signal: readSignal, factSignal: readSignal, summaryOnly: true, deadlineAt, factBudget, recoveryBudget: { remainingRecords: Math.min(100_000, this.limits.wireRecordBudget), remainingBytes: 128 * 1024 * 1024 } }, state.rows, state.revisions), readSignal);
+        }
+        const retained = this.core.accessor.get(IRetainedUsageService);
+        if (state.operation === undefined || state.operationDirty || state.operationVersion !== this.operationRevision || state.operation.complete !== true || retained.operationWritesPending) {
+          const operationVersion = this.operationRevision;
+          state.operationDirty = false;
+          try {
+            state.operation = await waitForSource(retained.readOperationSummary(workspaceId, sessionId, { deadlineAt, recordLimit: factBudget.remainingRecords, signal: readSignal }), readSignal);
+            state.operationVersion = operationVersion;
+          } catch (error) {
+            state.operationDirty = true;
+            throw error;
+          }
+        }
         await waitForSource(preparation, readSignal);
       } catch (error) {
         this.modelController.signal.throwIfAborted();
         if (!deadline.signal.aborted) throw error;
       } finally { clearTimeout(timer); }
+      if (state.invalidatedDuringFlight.size > 0) {
+        for (const agentId of state.invalidatedDuringFlight) {
+          delete state.rows[agentId];
+          state.revisions.delete(agentId);
+        }
+        state.invalidatedDuringFlight.clear();
+      }
       const agents = state.agents ?? [];
       const revisions = agents.map((agent) => state.revisions.get(agent) ?? `${agent}:unread`);
       if (state.operation?.revision !== undefined) revisions.push(`operation:${state.operation.revision}`);
-      state.snapshot = { version: 2, subject: { session_id: sessionId, scope: 'session' }, source_revision: revisions.join('|'), covered_at: this.now(), complete: state.agents !== undefined && agents.every((agent) => state.rows[agent]?.complete) && state.operation?.complete === true && state.operationVersion === this.operationRevision && state.version === this.sessionVersion(key), ...this.sessionAccountingTotals(Object.values(state.rows), state.pricingReady, state.operation?.totals) };
+      state.snapshot = { version: 2, subject: { session_id: sessionId, scope: 'session' }, source_revision: revisions.join('|'), covered_at: this.now(), complete: state.agents !== undefined && agents.every((agent) => state.rows[agent]?.complete) && state.operation?.complete === true && state.operationVersion === this.operationRevision && !state.operationDirty && state.version === this.sessionVersion(key), ...this.sessionAccountingTotals(Object.values(state.rows), state.pricingReady, state.operation?.totals) };
       state.snapshotVersion = state.version;
       return this.readSessionAccountingSnapshot(workspaceId, sessionId);
     })().finally(() => { state.flight = undefined; });
@@ -469,6 +584,7 @@ export class UsageAggregationService {
     signal: AbortSignal,
     rows: Record<string, AgentUsageProjection>,
     onComplete?: AgentUsageReadOptions['onCompleteSummary'],
+    revisions?: Map<string, string>,
   ): Promise<void> {
     const facts = this.core.accessor.get(IUsageFactStore);
     const storage = this.core.accessor.get(IFileSystemStorageService);
@@ -499,6 +615,7 @@ export class UsageAggregationService {
         signal.throwIfAborted();
         const row = { records: [], totals: snapshot.totals, complete: true };
         rows[agentId] = row;
+        revisions?.set(agentId, `${agentId}:${head.revision}:${checkpoint.generation}:${checkpoint.offset}`);
         onComplete?.(agentId, row);
       }));
     }
@@ -817,6 +934,8 @@ export class UsageAggregationService {
   private inventoryRevision = 0;
   private verifiedInventoryRevision = -1;
   private readonly dirtySessions = new Map<string, number>();
+  private readonly dirtyAgents = new Map<string, Set<string>>();
+  private readonly fullDirtySessions = new Set<string>();
   private knownSessions = new Map<string, SessionSummary>();
   private knownSources = new Map<string, { source: string; workspaceId: string; sessionId: string }>();
   private knownSourcesBySession = new Map<string, Set<string>>();
@@ -831,9 +950,19 @@ export class UsageAggregationService {
   private progressFullGeneration = 1;
   private progressCompletedGeneration = 0;
   private readonly progressDirtySessions = new Set<string>();
+  private readonly progressDirtyAgents = new Map<string, Set<string>>();
+  private readonly progressFullDirtySessions = new Set<string>();
   private progressRowsBySession = new Map<string, readonly { summary: SessionSummary; metadata: UsageSourceMetadata; journalSize: number }[]>();
   private progressRows: readonly { summary: SessionSummary; metadata: UsageSourceMetadata; journalSize: number }[] = [];
   private retainedProgress: readonly { source: string; size: number; readBytes: number; complete: boolean }[] = [];
+
+  private ensureAgentInInventory(key: string, agentId: string): void {
+    const existing = this.agentInventories.get(key);
+    if (existing === undefined) return;
+    const updated = existing.then((agents) => (agents.includes(agentId) ? agents : [...agents, agentId]));
+    this.agentInventories.set(key, updated);
+    void updated.catch(() => { if (this.agentInventories.get(key) === updated) this.agentInventories.delete(key); });
+  }
 
   private agentsOf(summary: SessionSummary): Promise<readonly string[]> {
     const key = sessionKey(summary);
@@ -878,15 +1007,20 @@ export class UsageAggregationService {
     const signal = this.modelController.signal;
     const fullScan = this.progressCompletedGeneration !== generation || !this.sourceChanges?.ready;
     const dirtySnapshot = [...this.progressDirtySessions];
+    const progressFullSnapshot = new Set(this.progressFullDirtySessions);
+    const progressDirtyAgentSnapshot = new Map<string, readonly string[]>();
+    for (const key of dirtySnapshot) {
+      const agents = this.progressDirtyAgents.get(key);
+      if (agents !== undefined && agents.size > 0) progressDirtyAgentSnapshot.set(key, [...agents]);
+    }
     const versions = new Map(this.sessionVersions);
     const unchanged = (key: string): boolean => versions.get(key) === this.sessionVersions.get(key);
     const work = (async () => {
       const index = this.core.accessor.get(ISessionIndex), model = this.core.accessor.get(IUsageReadModel), facts = this.core.accessor.get(IUsageFactStore);
-      const collectSessionRows = async (summary: SessionSummary): Promise<{ summary: SessionSummary; metadata: UsageSourceMetadata; journalSize: number }[]> => {
+      const collectAgentRows = async (summary: SessionSummary, agents: readonly string[]): Promise<{ summary: SessionSummary; metadata: UsageSourceMetadata; journalSize: number }[]> => {
         if (summary.private === true) return [];
         const key = sessionKey(summary);
         const session = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), summary.id);
-        const agents = await waitForSource(this.agentsOf(summary), signal);
         const sessionRows: { summary: SessionSummary; metadata: UsageSourceMetadata; journalSize: number }[] = [];
         for (let offset = 0; offset < agents.length; offset += 32) {
           sessionRows.push(...await Promise.all(agents.slice(offset, offset + 32).map(async (agentId) => {
@@ -897,6 +1031,11 @@ export class UsageAggregationService {
           await yieldToEventLoop(undefined, { signal });
         }
         return sessionRows;
+      };
+      const collectSessionRows = async (summary: SessionSummary): Promise<{ summary: SessionSummary; metadata: UsageSourceMetadata; journalSize: number }[]> => {
+        if (summary.private === true) return [];
+        const agents = await waitForSource(this.agentsOf(summary), signal);
+        return collectAgentRows(summary, agents);
       };
       if (fullScan) {
         const bySession = new Map<string, readonly { summary: SessionSummary; metadata: UsageSourceMetadata; journalSize: number }[]>();
@@ -929,8 +1068,11 @@ export class UsageAggregationService {
         }
         if (generation === this.progressFullGeneration) {
           for (const key of this.progressDirtySessions) {
-            if (unchanged(key)) this.progressDirtySessions.delete(key);
-            else {
+            if (unchanged(key)) {
+              this.progressDirtySessions.delete(key);
+              this.progressDirtyAgents.delete(key);
+              this.progressFullDirtySessions.delete(key);
+            } else {
               const prior = this.progressRowsBySession.get(key);
               if (prior === undefined) bySession.delete(key);
               else bySession.set(key, prior);
@@ -950,10 +1092,37 @@ export class UsageAggregationService {
         const workspaceId = sep >= 0 ? key.slice(0, sep) : undefined;
         const sessionId = sep >= 0 ? key.slice(sep + 1) : key;
         const summary = await waitForSource(index.get(sessionId, workspaceId), signal);
-        const sessionRows = summary === undefined || !unchanged(key) ? [] : await collectSessionRows(summary);
-        if (summary === undefined || summary.private === true) nextBySession.delete(key);
-        else nextBySession.set(key, sessionRows);
-        for (const row of sessionRows) refreshedSources.push(row.metadata);
+        if (summary === undefined || summary.private === true) {
+          nextBySession.delete(key);
+          continue;
+        }
+        if (!unchanged(key)) {
+          nextBySession.set(key, []);
+          continue;
+        }
+        const priorRows = this.progressRowsBySession.get(key);
+        const partialAgents = !progressFullSnapshot.has(key) && priorRows !== undefined ? progressDirtyAgentSnapshot.get(key) : undefined;
+        if (partialAgents !== undefined && partialAgents.length > 0) {
+          const updatedRows = await collectAgentRows(summary, partialAgents);
+          const byAgent = new Map(updatedRows.map((row) => [row.metadata.agentId, row]));
+          const merged: { summary: SessionSummary; metadata: UsageSourceMetadata; journalSize: number }[] = [];
+          for (const row of priorRows!) {
+            const replacement = byAgent.get(row.metadata.agentId);
+            if (replacement !== undefined) {
+              merged.push(replacement);
+              byAgent.delete(row.metadata.agentId);
+            } else {
+              merged.push(row);
+            }
+          }
+          for (const added of byAgent.values()) merged.push(added);
+          nextBySession.set(key, merged);
+          for (const row of updatedRows) refreshedSources.push(row.metadata);
+        } else {
+          const sessionRows = await collectSessionRows(summary);
+          nextBySession.set(key, sessionRows);
+          for (const row of sessionRows) refreshedSources.push(row.metadata);
+        }
       }
       this.retainedProgress = await this.core.accessor.get(IRetainedUsageService).readModelImportProgress?.(signal) ?? [];
       if (refreshedSources.length > 0) {
@@ -968,8 +1137,11 @@ export class UsageAggregationService {
       }
       if (generation === this.progressFullGeneration) {
         for (const key of dirtySnapshot) {
-          if (unchanged(key)) this.progressDirtySessions.delete(key);
-          else {
+          if (unchanged(key)) {
+            this.progressDirtySessions.delete(key);
+            this.progressDirtyAgents.delete(key);
+            this.progressFullDirtySessions.delete(key);
+          } else {
             const prior = this.progressRowsBySession.get(key);
             if (prior === undefined) nextBySession.delete(key);
             else nextBySession.set(key, prior);
@@ -1025,7 +1197,16 @@ export class UsageAggregationService {
         const verifyAll = full || this.verifiedInventoryRevision !== this.inventoryRevision || !this.sourceChanges?.ready || this.now() - this.modelVerifiedAt >= SOURCE_RECHECK_MS || rangeStart < this.modelRangeStart;
         const heads = new Map(verifyAll ? (await waitForSource(model.sources(signal), signal)).map((row) => [row.source, row.head]) : []);
         if (verifyAll) {
-          if (full || this.verifiedInventoryRevision >= 0 && (!this.sourceChanges?.ready || this.now() - this.modelVerifiedAt >= SOURCE_RECHECK_MS)) { this.agentInventories.clear(); this.sourceMetadata.clear(); this.sourceKeysBySession.clear(); this.progressFullGeneration++; this.progressDirtySessions.clear(); this.progressInventoryReady = false; }
+          if (full || this.verifiedInventoryRevision >= 0 && (!this.sourceChanges?.ready || this.now() - this.modelVerifiedAt >= SOURCE_RECHECK_MS)) {
+            this.agentInventories.clear();
+            this.sourceMetadata.clear();
+            this.sourceKeysBySession.clear();
+            this.progressFullGeneration++;
+            this.progressDirtySessions.clear();
+            this.progressDirtyAgents.clear();
+            this.progressFullDirtySessions.clear();
+            this.progressInventoryReady = false;
+          }
           this.modelExcludedSources.clear();
           this.modelRangeStart = rangeStart;
         }
@@ -1039,6 +1220,7 @@ export class UsageAggregationService {
           dirtyKeys: [...this.dirtySessions.keys()],
           prepared: new Map(),
           heads,
+          needsFullCatalogSync: verifyAll,
           page: [],
           nextSession: 0,
           exhausted: false,
@@ -1130,9 +1312,14 @@ export class UsageAggregationService {
           const version = dirtyKey === undefined ? undefined : this.dirtySessions.get(dirtyKey);
           const summary = inventory.full ? inventory.page[inventory.nextSession] : await waitForSource(index.get(dirtyKey!.split('\0')[1]!), signal);
           if (summary === undefined) {
+            inventory.needsFullCatalogSync = true;
             inventory.summaries.delete(dirtyKey!);
             deleteSessionInventorySources(inventory, dirtyKey!);
-            if (this.dirtySessions.get(dirtyKey!) === version) this.dirtySessions.delete(dirtyKey!);
+            if (this.dirtySessions.get(dirtyKey!) === version) {
+              this.dirtySessions.delete(dirtyKey!);
+              this.dirtyAgents.delete(dirtyKey!);
+              this.fullDirtySessions.delete(dirtyKey!);
+            }
             inventory.nextSession++;
             scannedSessions++;
             continue;
@@ -1141,24 +1328,50 @@ export class UsageAggregationService {
           const prepared = inventory.prepared.get(key);
           const observedVersion = inventory.full ? prepared === undefined ? this.dirtySessions.get(key) : prepared.version : version;
           const session = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), summary.id);
-          const agents = summary.private === true ? [] : prepared?.agents ?? await waitForSource(this.agentsOf(summary), signal);
-          const accountedAgents = this.sessionAccounting.get(key)?.agents;
-          if (accountedAgents !== undefined && !sameAgentList(accountedAgents, agents)) this.sessionVersions.set(key, (this.sessionVersions.get(key) ?? 0) + 1);
-          const sources = agents.map((agentId) => ({ source: agentScopeOf(session, agentId), workspaceId: summary.workspaceId, sessionId: summary.id }));
-          inventory.current = { summary, version: observedVersion, agents, sources, nextAgent: 0 };
-          inventory.summaries.set(key, summary);
-          replaceSessionInventorySources(inventory, key, sources);
-          if (prepared === undefined) {
-            const catalogBatchLimit = resolveCatalogBatchSources();
-            if (sources.length <= catalogBatchLimit) {
-              await waitForSource(model.catalog([{ ...summary, deleted: false }], sources), signal);
-            } else {
-              for (let start = 0; start < sources.length; start += catalogBatchLimit) {
-                if (start > 0) await yieldToEventLoop(undefined, { signal });
-                await waitForSource(
-                  model.catalog(start === 0 ? [{ ...summary, deleted: false }] : [], sources.slice(start, start + catalogBatchLimit)),
-                  signal,
-                );
+          const partialDirtyAgents = !inventory.full && summary.private !== true && !this.fullDirtySessions.has(key) && inventory.summaries.has(key) && inventory.sourcesBySession.has(key)
+            ? this.dirtyAgents.get(key)
+            : undefined;
+          if (partialDirtyAgents !== undefined && partialDirtyAgents.size > 0) {
+            const agents = [...partialDirtyAgents];
+            const sources = agents.map((agentId) => ({ source: agentScopeOf(session, agentId), workspaceId: summary.workspaceId, sessionId: summary.id }));
+            const newSources: { source: string; workspaceId: string; sessionId: string }[] = [];
+            let bucket = inventory.sourcesBySession.get(key);
+            if (bucket === undefined) {
+              bucket = new Set();
+              inventory.sourcesBySession.set(key, bucket);
+            }
+            for (const entry of sources) {
+              if (!inventory.sources.has(entry.source)) {
+                inventory.sources.set(entry.source, entry);
+                bucket.add(entry.source);
+                newSources.push(entry);
+              }
+            }
+            inventory.summaries.set(key, summary);
+            if (newSources.length > 0) {
+              await waitForSource(model.catalog([{ ...summary, deleted: false }], newSources), signal);
+            }
+            inventory.current = { summary, version: observedVersion, agents, sources, nextAgent: 0 };
+          } else {
+            if (!inventory.full) inventory.needsFullCatalogSync = true;
+            const agents = summary.private === true ? [] : prepared?.agents ?? await waitForSource(this.agentsOf(summary), signal);
+            this.reconcileSessionAccountingAgents(key, agents);
+            const sources = agents.map((agentId) => ({ source: agentScopeOf(session, agentId), workspaceId: summary.workspaceId, sessionId: summary.id }));
+            inventory.current = { summary, version: observedVersion, agents, sources, nextAgent: 0 };
+            inventory.summaries.set(key, summary);
+            replaceSessionInventorySources(inventory, key, sources);
+            if (prepared === undefined) {
+              const catalogBatchLimit = resolveCatalogBatchSources();
+              if (sources.length <= catalogBatchLimit) {
+                await waitForSource(model.catalog([{ ...summary, deleted: false }], sources), signal);
+              } else {
+                for (let start = 0; start < sources.length; start += catalogBatchLimit) {
+                  if (start > 0) await yieldToEventLoop(undefined, { signal });
+                  await waitForSource(
+                    model.catalog(start === 0 ? [{ ...summary, deleted: false }] : [], sources.slice(start, start + catalogBatchLimit)),
+                    signal,
+                  );
+                }
               }
             }
           }
@@ -1181,7 +1394,7 @@ export class UsageAggregationService {
           const excluded = !full && source.mtimeMs >= 1_000_000_000_000 && source.mtimeMs < inventory.startAt;
           if (!source.aligned && excluded) this.modelExcludedSources.add(source.source);
           else {
-            if (!source.aligned && this.sessionAccounting.has(currentKey)) this.sessionVersions.set(currentKey, (this.sessionVersions.get(currentKey) ?? 0) + 1);
+            if (!source.aligned && this.sessionAccounting.has(currentKey)) this.invalidateSessionAccountingAgent(currentKey, source.agentId);
             this.modelExcludedSources.delete(source.source);
             if (!source.aligned) {
               this.markPreparationRecovery();
@@ -1199,14 +1412,20 @@ export class UsageAggregationService {
           batchProcessed++;
         }
         const key = currentKey;
-        if (this.dirtySessions.get(key) === current.version) this.dirtySessions.delete(key);
+        if (this.dirtySessions.get(key) === current.version) {
+          this.dirtySessions.delete(key);
+          this.dirtyAgents.delete(key);
+          this.fullDirtySessions.delete(key);
+        }
         inventory.current = undefined;
         inventory.nextSession++;
         scannedSessions++;
         if (full) { fullScannedSessions.add(key); this.rescan = { ...this.rescan, scanned_sessions: fullScannedSessions.size }; }
         await yieldToEventLoop(undefined, { signal });
       }
-      await model.catalog([...inventory.summaries.values()].map((summary) => ({ ...summary, deleted: false })), [...inventory.sources.values()], true);
+      if (inventory.full || inventory.needsFullCatalogSync) {
+        await model.catalog([...inventory.summaries.values()].map((summary) => ({ ...summary, deleted: false })), [...inventory.sources.values()], true);
+      }
       this.knownSessions = inventory.summaries;
       this.knownSources = inventory.sources;
       this.knownSourcesBySession = inventory.sourcesBySession;

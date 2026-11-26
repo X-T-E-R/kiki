@@ -1129,6 +1129,36 @@ describe('SessionLifecycleService unload', () => {
     await fx.service.dispose();
   });
 
+  it('bounds a stalled replay checkpoint on exit while still draining agents and releasing the session', async () => {
+    let checkpointSignal: AbortSignal | undefined;
+    const checkpoint = vi.fn((signal?: AbortSignal) => {
+      checkpointSignal = signal;
+      return new Promise<boolean>(() => {});
+    });
+    const remove = vi.fn(async () => {});
+    const agentAccessor = Object.assign(accessor([
+      [IAgentPromptService, { preservePendingForClose: () => {} }],
+      [IEventDispatcher, { saveReplayCheckpoint: checkpoint }],
+    ]), { remove });
+    const fx = fixture(undefined, agentAccessor);
+    const release = vi.fn(async () => {});
+    const internals = fx.service as unknown as { sessionLocks: Map<string, { release(): Promise<void> }> };
+    internals.sessionLocks.set('session-1', { release });
+    try {
+      const started = performance.now();
+      await expect(fx.service.close('session-1')).resolves.toBeUndefined();
+      const elapsedMs = performance.now() - started;
+      expect(elapsedMs).toBeLessThan(1_500);
+      expect(checkpoint).toHaveBeenCalledOnce();
+      expect(checkpointSignal?.aborted).toBe(true);
+      expect(remove).toHaveBeenCalledOnce();
+      expect(fx.dispose).toHaveBeenCalledOnce();
+      expect(release).toHaveBeenCalledOnce();
+    } finally {
+      await fx.service.dispose();
+    }
+  });
+
   it('retains the session and writer lock on canonical failure and closes after recovery', async () => {
     const durableFailure = new Error2(ErrorCodes.STORAGE_DISK_FULL, 'no space left on device');
     const remove = vi.fn<() => Promise<void>>().mockRejectedValueOnce(durableFailure).mockResolvedValue(undefined);

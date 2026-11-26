@@ -322,6 +322,13 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private pausedRequiredAgentsSync: Promise<void> | undefined;
   private exitSuppressionArmed = false;
   private readonly persistence: AgentTaskPersistence;
+  private readonly verifiedSnapshotCache = new Map<string, {
+    readonly revision: string;
+    readonly receiptKey: string;
+    readonly status: AgentTaskInfo['status'];
+  }>();
+  private static readonly MAX_VERIFIED_SNAPSHOT_CACHE = 4_096;
+  private static readonly VERIFIED_SNAPSHOT_CACHE_MIN_AGE_MS = 2_000;
   private notificationRestoreQueue: Promise<void> = Promise.resolve();
   private mediaRecovery?: (info: MediaTaskInfo) => Promise<AgentTask | undefined>;
   private static readonly RESTORE_RETRY_DELAYS_MS = [100, 500, 2_000] as const;
@@ -989,12 +996,36 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   async getTaskSnapshot(taskId: string): Promise<AgentTaskInfo | undefined> {
     const info = this.getTask(taskId);
     if (info?.receiptVerification !== 'verified' || !isAgentTaskTerminal(info.status)) return info;
+    const receiptKey = JSON.stringify(info.receipt);
+    const cacheable = info.endedAt !== null && Date.now() - info.endedAt >= AgentTaskService.VERIFIED_SNAPSHOT_CACHE_MIN_AGE_MS;
+    const revision = cacheable ? await this.persistence.taskStatRevision(taskId).catch(() => undefined) : undefined;
+    if (revision !== undefined) {
+      const cached = this.verifiedSnapshotCache.get(taskId);
+      if (cached !== undefined && cached.revision === revision && cached.receiptKey === receiptKey && cached.status === info.status) {
+        this.verifiedSnapshotCache.delete(taskId);
+        this.verifiedSnapshotCache.set(taskId, cached);
+        return info;
+      }
+    }
     try {
       const persisted = await this.persistence.readTask(taskId);
       if (persisted?.taskId === info.taskId && persisted.status === info.status &&
           persisted.receiptVerification === 'verified' &&
-          JSON.stringify(persisted.receipt) === JSON.stringify(info.receipt)) return info;
+          JSON.stringify(persisted.receipt) === receiptKey) {
+        if (revision !== undefined) {
+          const postRevision = await this.persistence.taskStatRevision(taskId).catch(() => undefined);
+          if (postRevision === revision) {
+            if (this.verifiedSnapshotCache.size >= AgentTaskService.MAX_VERIFIED_SNAPSHOT_CACHE) {
+              const oldest = this.verifiedSnapshotCache.keys().next().value;
+              if (oldest !== undefined) this.verifiedSnapshotCache.delete(oldest);
+            }
+            this.verifiedSnapshotCache.set(taskId, { revision, receiptKey, status: info.status });
+          }
+        }
+        return info;
+      }
     } catch {}
+    this.verifiedSnapshotCache.delete(taskId);
     return { ...info, receipt: undefined, receiptVerification: 'invalid' };
   }
 

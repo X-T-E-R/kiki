@@ -139,6 +139,28 @@ import { PLUGIN_SKILL_SOURCE_ID } from '#/app/skillCatalog/skillSource';
 import { IPluginService } from '#/app/plugin/plugin';
 
 import { agentScopeOf, sessionDirOf, sessionScopeOf } from './internal/addressing';
+
+const REPLAY_CHECKPOINT_CONCURRENCY = 8;
+const EXIT_REPLAY_CHECKPOINT_TIMEOUT_MS = 500;
+
+function raceBooleanWithSignal(promise: Promise<boolean>, signal?: AbortSignal): Promise<boolean> {
+  if (signal === undefined) return promise;
+  if (signal.aborted) return Promise.resolve(false);
+  return new Promise<boolean>((resolve, reject) => {
+    const onAbort = () => resolve(false);
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
 import { SessionArchived } from './sessionLifecycleEvents';
 import {
   assertForkTurnIndex,
@@ -863,37 +885,57 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
   private async saveReplayCheckpoints(
     sessionId: string,
     handle: ISessionScopeHandle,
+    signal?: AbortSignal,
   ): Promise<boolean> {
+    if (signal?.aborted) return false;
     const current = this.sessions.get(sessionId);
     if (current !== handle) return false;
     const ongoing = this.checkpointSaves.get(sessionId);
-    if (ongoing !== undefined) return ongoing;
-    const save = this.writeReplayCheckpoints(sessionId, handle);
+    if (ongoing !== undefined) return raceBooleanWithSignal(ongoing, signal);
+    const save = this.writeReplayCheckpoints(sessionId, handle, signal);
     this.checkpointSaves.set(sessionId, save);
     try {
-      return await save;
+      return await raceBooleanWithSignal(save, signal);
     } finally {
       if (this.checkpointSaves.get(sessionId) === save) this.checkpointSaves.delete(sessionId);
     }
   }
 
-  private async writeReplayCheckpoints(sessionId: string, handle: ISessionScopeHandle): Promise<boolean> {
+  private async writeReplayCheckpoints(
+    sessionId: string,
+    handle: ISessionScopeHandle,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const agents = handle.accessor.get(IAgentLifecycleService).list();
+    if (agents.length === 0) return true;
     let saved = true;
-    for (const agent of handle.accessor.get(IAgentLifecycleService).list()) {
-      try {
-        const dispatcher = agent.accessor.get(IEventDispatcher);
-        if (dispatcher.saveReplayCheckpoint !== undefined && !(await dispatcher.saveReplayCheckpoint())) {
-          saved = false;
+    let cursor = 0;
+    const workers = Array.from(
+      { length: Math.min(REPLAY_CHECKPOINT_CONCURRENCY, agents.length) },
+      async () => {
+        while (cursor < agents.length) {
+          if (signal?.aborted) {
+            saved = false;
+            return;
+          }
+          const agent = agents[cursor++]!;
+          try {
+            const dispatcher = agent.accessor.get(IEventDispatcher);
+            if (dispatcher.saveReplayCheckpoint !== undefined && !(await dispatcher.saveReplayCheckpoint(signal))) {
+              saved = false;
+            }
+          } catch (error) {
+            saved = false;
+            this.log.warn('agent replay checkpoint failed; keeping canonical journal', {
+              sessionId,
+              agentId: agent.id,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
         }
-      } catch (error) {
-        saved = false;
-        this.log.warn('agent replay checkpoint failed; keeping canonical journal', {
-          sessionId,
-          agentId: agent.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
+      },
+    );
+    await Promise.all(workers);
     return saved;
   }
 
@@ -934,7 +976,11 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       await collect('replay_checkpoints', async () => {
         const activity = handle.accessor.get(ISessionActivityView).state();
         if (activity.busy || activity.pendingInteraction !== 'none') return;
-        const saved = await this.saveReplayCheckpoints(sessionId, handle);
+        const saved = await this.saveReplayCheckpoints(
+          sessionId,
+          handle,
+          AbortSignal.timeout(EXIT_REPLAY_CHECKPOINT_TIMEOUT_MS),
+        );
         if (!saved) this.log.warn('session replay checkpoint was not saved during close', { sessionId });
       }, 'cleanup');
       await collect('checkpoint_scheduling', () => this.disposeCheckpointScheduling(sessionId), 'cleanup');

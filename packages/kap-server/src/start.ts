@@ -400,25 +400,42 @@ export interface ServerSessionCleanupInput {
   readonly removeWorktree: (worktreeId: string) => Promise<void>;
 }
 
+const SERVER_SESSION_CLEANUP_CONCURRENCY = 8;
+
 export async function cleanupServerSessions(
   input: ServerSessionCleanupInput,
 ): Promise<readonly ServerCleanupFailure[]> {
+  const sessions = [...input.listSessions()];
+  if (sessions.length === 0) return [];
+  const perSessionFailures = Array.from<ServerCleanupFailure[] | undefined>({ length: sessions.length });
+  let cursor = 0;
+  const workers = Array.from(
+    { length: Math.min(SERVER_SESSION_CLEANUP_CONCURRENCY, sessions.length) },
+    async () => {
+      while (cursor < sessions.length) {
+        const index = cursor++;
+        const session = sessions[index]!;
+        let worktreeId: string | undefined;
+        try {
+          if (input.isEphemeral(session.id)) worktreeId = await input.readWorktreeId(session.id);
+          await input.closeSession(session.id);
+        } catch (error) {
+          perSessionFailures[index] = [{ error, durable: isServerPersistenceFailure(error) }];
+          continue;
+        }
+        if (worktreeId === undefined) continue;
+        try {
+          await input.removeWorktree(worktreeId);
+        } catch (error) {
+          perSessionFailures[index] = [{ error, durable: isServerPersistenceFailure(error) }];
+        }
+      }
+    },
+  );
+  await Promise.all(workers);
   const failures: ServerCleanupFailure[] = [];
-  for (const session of input.listSessions()) {
-    let worktreeId: string | undefined;
-    try {
-      if (input.isEphemeral(session.id)) worktreeId = await input.readWorktreeId(session.id);
-      await input.closeSession(session.id);
-    } catch (error) {
-      failures.push({ error, durable: isServerPersistenceFailure(error) });
-      continue;
-    }
-    if (worktreeId === undefined) continue;
-    try {
-      await input.removeWorktree(worktreeId);
-    } catch (error) {
-      failures.push({ error, durable: isServerPersistenceFailure(error) });
-    }
+  for (const list of perSessionFailures) {
+    if (list !== undefined) failures.push(...list);
   }
   return failures;
 }
@@ -1033,8 +1050,8 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       { run: () => locator?.close() },
       { run: () => drainSessionMetadataWrites(), durable: true },
       { run: () => core.accessor.get(ISessionIndexMirror).drain(), durable: true },
-      { run: () => withBoundedShutdownStep(() => core.accessor.get(IMcpOAuthService).shutdown(), resolveDesktopStepBudgetMs(800)) },
-      { run: () => withBoundedShutdownStep(() => core.accessor.get(IPluginHostService).stopAll(), resolveDesktopStepBudgetMs(1_000)) },
+      { run: async () => { await withBoundedShutdownStep(() => core.accessor.get(IMcpOAuthService).shutdown(), resolveDesktopStepBudgetMs(800)); } },
+      { run: async () => { await withBoundedShutdownStep(() => core.accessor.get(IPluginHostService).stopAll(), resolveDesktopStepBudgetMs(1_000)); } },
       { run: () => fsWatchBridge.dispose() },
     );
     steps.push({

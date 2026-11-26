@@ -509,12 +509,29 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     return !this.disposed && generation === this.checkpointGeneration;
   }
 
-  async saveReplayCheckpoint(): Promise<boolean> {
+  async saveReplayCheckpoint(signal?: AbortSignal): Promise<boolean> {
+    if (signal?.aborted) return this.skipReplayCheckpoint('aborted');
     const ongoing = this.checkpointSave;
-    if (ongoing !== undefined) return ongoing;
+    if (ongoing !== undefined) {
+      if (signal === undefined) return ongoing;
+      return new Promise<boolean>((resolve, reject) => {
+        const onAbort = () => resolve(false);
+        signal.addEventListener('abort', onAbort, { once: true });
+        ongoing.then(
+          (value) => {
+            signal.removeEventListener('abort', onAbort);
+            resolve(value);
+          },
+          (error) => {
+            signal.removeEventListener('abort', onAbort);
+            reject(error);
+          },
+        );
+      });
+    }
     const generation = this.checkpointGeneration;
     const startedAppendedBytes = this.wire.appendedByteCount?.();
-    const save = this.writeReplayCheckpoint(generation);
+    const save = this.writeReplayCheckpoint(generation, signal);
     this.checkpointSave = save;
     try {
       const saved = await save;
@@ -547,7 +564,8 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     return false;
   }
 
-  private checkpointStable(generation: number, revision = this.liveRevision): boolean {
+  private checkpointStable(generation: number, revision = this.liveRevision, signal?: AbortSignal): boolean {
+    if (signal?.aborted) return this.skipReplayCheckpoint('aborted');
     if (!this.isCheckpointGenerationCurrent(generation)) return this.skipReplayCheckpoint('disposed');
     if (this.deferredObservable.size > 0) return this.skipReplayCheckpoint('pending_events');
     if (revision !== this.liveRevision) return this.skipReplayCheckpoint('state_changed');
@@ -572,11 +590,11 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     });
   }
 
-  private async writeReplayCheckpoint(generation: number): Promise<boolean> {
+  private async writeReplayCheckpoint(generation: number, signal?: AbortSignal): Promise<boolean> {
     this.checkpointSkipReason = undefined;
     const checkpointScope = this.checkpointScope();
     const docs = this.docs.current;
-    if (!this.checkpointStable(generation)) return false;
+    if (!this.checkpointStable(generation, this.liveRevision, signal)) return false;
     if (docs === undefined || checkpointScope === undefined || this.wire.journalIdentity === undefined) {
       return this.skipReplayCheckpoint('unavailable');
     }
@@ -586,11 +604,11 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         .filter((key) => key.replayable.durable)
         .toSorted((left, right) => left.name.localeCompare(right.name));
       await this.wire.flush();
-      if (!this.checkpointStable(generation)) return false;
+      if (!this.checkpointStable(generation, this.liveRevision, signal)) return false;
       const revision = this.liveRevision;
       phase = 'journal_identity';
       const wire = await this.wire.journalIdentity();
-      if (!this.checkpointStable(generation, revision)) return false;
+      if (!this.checkpointStable(generation, revision, signal)) return false;
       const saved = this.savedCheckpoint;
       if (saved?.revision === revision && saved.wire.size === wire.size &&
         saved.wire.mtimeMs === wire.mtimeMs && saved.wire.headHash === wire.headHash &&
@@ -604,7 +622,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       if (digestAvailable && digest === undefined) {
         return this.skipReplayCheckpoint('journal_changed');
       }
-      if (!this.checkpointStable(generation, revision)) return false;
+      if (!this.checkpointStable(generation, revision, signal)) return false;
       phase = 'encode';
       const offloadTransform: PartsTransformer = (parts) =>
         this.blobService.offloadParts(parts as readonly ContentPart[]) as Promise<readonly unknown[]>;
@@ -616,7 +634,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         const value = dehydrateState === undefined
           ? rawValue
           : await dehydrateState(rawValue, offloadTransform);
-        if (!this.checkpointStable(generation, revision)) return false;
+        if (!this.checkpointStable(generation, revision, signal)) return false;
         serializedStates.push({
           name: key.name,
           value,
@@ -628,7 +646,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       const payload: ReplayCheckpointPayload = { states: serializedStates };
       const pluginInterpretation = this.checkpointPluginInterpretation();
       const graph = await encodeReplayCheckpointGraphAsync(payload);
-      if (!this.checkpointStable(generation, revision)) return false;
+      if (!this.checkpointStable(generation, revision, signal)) return false;
       const coveredAppendedBytes = this.wire.appendedByteCount?.() ?? this.growthCheckpointBaseline;
       const envelope: ReplayCheckpointEnvelope = {
         format: 1,

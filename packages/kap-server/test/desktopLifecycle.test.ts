@@ -90,6 +90,39 @@ describe('server cleanup collection', () => {
 
     expect(selectServerCleanupError(failures)).toBe(persistenceFailure);
   });
+
+  it('closes independent sessions concurrently while preserving per-session worktree ordering and failure order', async () => {
+    const sessions = Array.from({ length: 8 }, (_, index) => ({ id: `sess-${index}` }));
+    const removed: string[] = [];
+    let active = 0;
+    let peak = 0;
+    const failError = new Error('close sess-3 failed');
+    const started = performance.now();
+    const failures = await cleanupServerSessions({
+      listSessions: () => sessions,
+      isEphemeral: () => true,
+      readWorktreeId: async (sessionId) => `wt-${sessionId}`,
+      closeSession: async (sessionId) => {
+        active += 1;
+        peak = Math.max(peak, active);
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 60));
+          if (sessionId === 'sess-3') throw failError;
+        } finally {
+          active -= 1;
+        }
+      },
+      removeWorktree: async (worktreeId) => { removed.push(worktreeId); },
+    });
+    const elapsedMs = performance.now() - started;
+
+    expect(peak).toBeGreaterThanOrEqual(4);
+    expect(elapsedMs).toBeLessThan(300);
+    expect(removed).not.toContain('wt-sess-3');
+    expect(removed).toHaveLength(7);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.error).toBe(failError);
+  });
 });
 
 describe('desktop-managed shared lifecycle', () => {
@@ -429,7 +462,7 @@ describe('desktop-managed shared lifecycle', () => {
         });
         rawWs!.once('connect', () => {
           rawWs!.write(
-            `GET /api/ws?token=${encodeURIComponent(server!.authToken ?? '')} HTTP/1.1\r\n` +
+            `GET /api/ws?token=${encodeURIComponent(server!.localOwnerToken)} HTTP/1.1\r\n` +
             `Host: 127.0.0.1:${server!.port}\r\n` +
             'Upgrade: websocket\r\n' +
             'Connection: Upgrade\r\n' +

@@ -1210,5 +1210,39 @@ describe('PluginHostService extension port bridge', () => {
       await harness.dispose();
     }
   }, 15_000);
+
+  it('bounds hung resident plugin shutdown instead of waiting 15 seconds', async () => {
+    const harness = await createExtensionBridgeHarness();
+    try {
+      await harness.hosts.ready;
+      const source = join(harness.root, 'hung-shutdown-plugin');
+      await mkdir(source, { recursive: true });
+      await writeFile(join(source, 'entry.mjs'), `
+        export async function activate() {}
+        export async function shutdown() {
+          await new Promise(() => {});
+        }
+      `);
+      await writeFile(join(source, 'kimi.plugin.json'), JSON.stringify({
+        name: 'hung-shutdown-plugin',
+        version: '1.0.0',
+        'x-kiki': {
+          engines: { kiki: '^0.4.3' },
+          entry: './entry.mjs',
+          activation: 'app',
+        },
+      }));
+      const plan = await harness.plugins.previewPlugin({ source });
+      await harness.plugins.installPlugin({ source, fingerprint: plan.fingerprint, consent: true, defaultEnabled: false });
+      await harness.usage.set({ workspaceId: 'ws-hung', pluginId: 'hung-shutdown-plugin', override: 'on' });
+
+      const started = performance.now();
+      await harness.hosts.stopAll();
+      const elapsedMs = performance.now() - started;
+      expect(elapsedMs).toBeLessThan(6_000);
+    } finally {
+      await harness.dispose();
+    }
+  }, 15_000);
 });
 

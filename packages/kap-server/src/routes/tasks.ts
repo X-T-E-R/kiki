@@ -133,8 +133,8 @@ export function registerTasksRoutes(app: TasksRouteHost, core: Scope): void {
       const matching = query.status === undefined ? all : all.filter((task) => task.status === query.status);
       const page = matching.slice(offset, offset + pageSize);
       const has_more = matching.length > offset + pageSize;
-      const fresh = await Promise.all(page.map(async (info) =>
-        (await resolved.tasks?.getTaskSnapshot(info.taskId)) ?? info));
+      const fresh = await mapBounded(page, LIVE_TASK_SNAPSHOT_CONCURRENCY, async (info) =>
+        (await resolved.tasks?.getTaskSnapshot(info.taskId)) ?? info);
       reply.send(okEnvelope({
         items: fresh.map((info) => toWireTask(session_id, info)),
         has_more,
@@ -278,14 +278,53 @@ export function registerTasksRoutes(app: TasksRouteHost, core: Scope): void {
 
 const VALID_TASK_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*-[0-9a-z]{8}$/;
 const PERSISTED_TASK_READ_CONCURRENCY = 16;
+const LIVE_TASK_SNAPSHOT_CONCURRENCY = 16;
 const MAX_CACHED_PERSISTED_TASKS = 4096;
+const MAX_CACHED_PERSISTED_TASK_METADATA = 16384;
+const PERSISTED_METADATA_CACHE_MIN_AGE_MS = 2_000;
+const PERSISTED_METADATA_CACHE_TTL_MS = 60_000;
+const TERMINAL_AGENT_TASK_STATUSES = new Set<AgentTaskInfo['status']>([
+  'completed',
+  'failed',
+  'killed',
+  'timed_out',
+  'lost',
+]);
+
+async function mapBounded<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  mapper: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = Array.from<R>({ length: items.length });
+  if (items.length === 0) return results;
+  let cursor = 0;
+  let completed = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor++;
+      results[index] = await mapper(items[index]!, index);
+      completed++;
+      if (completed % 64 === 0) await yieldToEventLoop();
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
 
 interface CachedPersistedTaskEntry {
   readonly revision: string;
   readonly task: AgentTaskInfo | undefined;
 }
 
+interface CachedPersistedTaskMetadataEntry {
+  readonly dirRevision: string;
+  readonly cachedAt: number;
+  readonly task: AgentTaskInfo | undefined;
+}
+
 const persistedTaskCaches = new WeakMap<Scope, Map<string, CachedPersistedTaskEntry>>();
+const persistedTaskMetadataCaches = new WeakMap<Scope, Map<string, CachedPersistedTaskMetadataEntry>>();
 
 function getPersistedTaskCache(core: Scope): Map<string, CachedPersistedTaskEntry> {
   let cache = persistedTaskCaches.get(core);
@@ -296,8 +335,22 @@ function getPersistedTaskCache(core: Scope): Map<string, CachedPersistedTaskEntr
   return cache;
 }
 
+function getPersistedTaskMetadataCache(core: Scope): Map<string, CachedPersistedTaskMetadataEntry> {
+  let cache = persistedTaskMetadataCaches.get(core);
+  if (cache === undefined) {
+    cache = new Map();
+    persistedTaskMetadataCaches.set(core, cache);
+  }
+  return cache;
+}
+
+function formatStatToken(stat: { readonly size: number; readonly identity?: string; readonly revision?: string } | undefined): string {
+  return stat === undefined ? '-' : `${stat.size}:${stat.identity ?? ''}:${stat.revision ?? ''}`;
+}
+
 class PersistedTasksReader {
   private readonly cache: Map<string, CachedPersistedTaskEntry>;
+  private readonly metadataCache: Map<string, CachedPersistedTaskMetadataEntry>;
   private readonly cacheScopePrefix: string;
 
   constructor(
@@ -309,32 +362,32 @@ class PersistedTasksReader {
     private readonly ownerId: string,
   ) {
     this.cache = getPersistedTaskCache(core);
+    this.metadataCache = getPersistedTaskMetadataCache(core);
     this.cacheScopePrefix = `${this.scopes.join('|')}::${this.ownerId}::`;
+  }
+
+  private async tasksDirRevision(): Promise<string | undefined> {
+    const statFn = this.storage.stat?.bind(this.storage);
+    if (statFn === undefined) return undefined;
+    const stats = await Promise.all(
+      this.scopes.map((scope) => statFn(`${scope}/tasks`, '').catch(() => undefined)),
+    );
+    if (stats.every((stat) => stat === undefined)) return undefined;
+    return stats.map((stat) => formatStatToken(stat)).join(';');
   }
 
   private async taskRevision(taskId: string): Promise<string | undefined> {
     const statFn = this.storage.stat?.bind(this.storage);
     if (statFn === undefined) return undefined;
     const key = `${taskId}.json`;
-    const parts: string[] = [];
-    let anyFound = false;
-    await Promise.all(
-      this.scopes.map(async (scope, idx) => {
-        const [jsonStat, outStat] = await Promise.all([
-          statFn(`${scope}/tasks`, key).catch(() => undefined),
-          statFn(`${scope}/tasks/${taskId}`, 'output.log').catch(() => undefined),
-        ]);
-        if (jsonStat !== undefined) anyFound = true;
-        const jsonTok = jsonStat === undefined
-          ? '-'
-          : `${jsonStat.size}:${jsonStat.identity ?? ''}:${jsonStat.revision ?? ''}`;
-        const outTok = outStat === undefined
-          ? '-'
-          : `${outStat.size}:${outStat.identity ?? ''}:${outStat.revision ?? ''}`;
-        parts[idx] = `${jsonTok}#${outTok}`;
-      }),
-    );
-    return anyFound ? parts.join(';') : undefined;
+    for (let idx = 0; idx < this.scopes.length; idx++) {
+      const scope = this.scopes[idx]!;
+      const jsonStat = await statFn(`${scope}/tasks`, key).catch(() => undefined);
+      if (jsonStat === undefined) continue;
+      const outStat = await statFn(`${scope}/tasks/${taskId}`, 'output.log').catch(() => undefined);
+      return `${idx}|${formatStatToken(jsonStat)}#${formatStatToken(outStat)}`;
+    }
+    return undefined;
   }
 
   async read(taskId: string): Promise<AgentTaskInfo | undefined> {
@@ -344,11 +397,17 @@ class PersistedTasksReader {
     if (revision !== undefined) {
       const cached = this.cache.get(cacheKey);
       if (cached !== undefined && cached.revision === revision) {
+        this.cache.delete(cacheKey);
+        this.cache.set(cacheKey, cached);
         return cached.task;
       }
     }
     const raw = await this.persistence.readTask(taskId);
     const task = raw?.ownerAgentId !== undefined && raw.ownerAgentId !== this.ownerId ? undefined : raw;
+    const cachedMeta = this.metadataCache.get(cacheKey);
+    if (cachedMeta !== undefined && cachedMeta.task?.status !== task?.status) {
+      this.metadataCache.delete(cacheKey);
+    }
     if (revision !== undefined) {
       const postRevision = await this.taskRevision(taskId);
       if (postRevision === revision) {
@@ -360,14 +419,44 @@ class PersistedTasksReader {
       }
     } else {
       this.cache.delete(cacheKey);
+      this.metadataCache.delete(cacheKey);
     }
     return task;
   }
 
-  private async readMetadata(taskId: string): Promise<AgentTaskInfo | undefined> {
+  private async readMetadata(taskId: string, dirRevision?: string): Promise<AgentTaskInfo | undefined> {
     if (!VALID_TASK_ID.test(taskId)) return undefined;
+    const cacheKey = `${this.cacheScopePrefix}${taskId}`;
+    const now = Date.now();
+    if (dirRevision !== undefined) {
+      const cached = this.metadataCache.get(cacheKey);
+      if (
+        cached !== undefined &&
+        cached.dirRevision === dirRevision &&
+        now - cached.cachedAt < PERSISTED_METADATA_CACHE_TTL_MS
+      ) {
+        this.metadataCache.delete(cacheKey);
+        this.metadataCache.set(cacheKey, cached);
+        return cached.task;
+      }
+    }
     const raw = await this.persistence.readTaskMetadata(taskId);
-    return raw?.ownerAgentId !== undefined && raw.ownerAgentId !== this.ownerId ? undefined : raw;
+    const task = raw?.ownerAgentId !== undefined && raw.ownerAgentId !== this.ownerId ? undefined : raw;
+    if (dirRevision !== undefined) {
+      const cacheable = task === undefined || (
+        TERMINAL_AGENT_TASK_STATUSES.has(task.status) &&
+        task.endedAt !== null &&
+        now - task.endedAt >= PERSISTED_METADATA_CACHE_MIN_AGE_MS
+      );
+      if (cacheable) {
+        if (this.metadataCache.size >= MAX_CACHED_PERSISTED_TASK_METADATA) {
+          const oldest = this.metadataCache.keys().next().value;
+          if (oldest !== undefined) this.metadataCache.delete(oldest);
+        }
+        this.metadataCache.set(cacheKey, { dirRevision, cachedAt: now, task });
+      }
+    }
+    return task;
   }
 
   async list(
@@ -376,7 +465,10 @@ class PersistedTasksReader {
     status?: TaskStatus,
   ): Promise<{ readonly items: readonly AgentTaskInfo[]; readonly hasMore: boolean; readonly nextOffset: number }> {
     const ids = new Set<string>();
-    const lists = await Promise.all(this.scopes.map((scope) => this.docs.list(`${scope}/tasks`)));
+    const [lists, dirRevision] = await Promise.all([
+      Promise.all(this.scopes.map((scope) => this.docs.list(`${scope}/tasks`))),
+      status === undefined ? Promise.resolve(undefined) : this.tasksDirRevision(),
+    ]);
     for (const keys of lists) {
       for (const key of keys) {
         if (key.endsWith('.json') && VALID_TASK_ID.test(key.slice(0, -5))) ids.add(key.slice(0, -5));
@@ -386,23 +478,9 @@ class PersistedTasksReader {
     if (status === undefined) {
       const end = Math.min(ordered.length, offset + limit);
       const pageIds = ordered.slice(offset, end);
-      const resolved = Array.from<AgentTaskInfo | undefined>({ length: pageIds.length });
-      let cursor = 0;
-      let completed = 0;
-      const workers = Array.from(
-        { length: Math.min(PERSISTED_TASK_READ_CONCURRENCY, pageIds.length) },
-        async () => {
-          while (cursor < pageIds.length) {
-            const index = cursor++;
-            try {
-              resolved[index] = await this.read(pageIds[index]!);
-            } catch {}
-            completed++;
-            if (completed % 64 === 0) await yieldToEventLoop();
-          }
-        },
-      );
-      await Promise.all(workers);
+      const resolved = await mapBounded(pageIds, PERSISTED_TASK_READ_CONCURRENCY, async (id) => {
+        try { return await this.read(id); } catch { return undefined; }
+      });
       const items = resolved.filter((task): task is AgentTaskInfo => task !== undefined);
       return { items, hasMore: end < ordered.length, nextOffset: end };
     }
@@ -412,7 +490,7 @@ class PersistedTasksReader {
     for (let batchStart = 0; batchStart < ordered.length && matchedIds.length < needed; batchStart += PERSISTED_TASK_READ_CONCURRENCY) {
       const batch = ordered.slice(batchStart, batchStart + PERSISTED_TASK_READ_CONCURRENCY);
       const resolved = await Promise.all(batch.map(async (id) => {
-        try { return await this.readMetadata(id); } catch { return undefined; }
+        try { return await this.readMetadata(id, dirRevision); } catch { return undefined; }
       }));
       for (const task of resolved) {
         if (task !== undefined && mapStatus(task.status) === status) {
@@ -424,20 +502,9 @@ class PersistedTasksReader {
       if (batches % 4 === 0) await yieldToEventLoop();
     }
     const pageIds = matchedIds.slice(offset, offset + limit);
-    const verified = Array.from<AgentTaskInfo | undefined>({ length: pageIds.length });
-    let cursor = 0;
-    const workers = Array.from(
-      { length: Math.min(PERSISTED_TASK_READ_CONCURRENCY, pageIds.length) },
-      async () => {
-        while (cursor < pageIds.length) {
-          const index = cursor++;
-          try {
-            verified[index] = await this.read(pageIds[index]!);
-          } catch {}
-        }
-      },
-    );
-    await Promise.all(workers);
+    const verified = await mapBounded(pageIds, PERSISTED_TASK_READ_CONCURRENCY, async (id) => {
+      try { return await this.read(id); } catch { return undefined; }
+    });
     const items = verified.filter((task): task is AgentTaskInfo => task !== undefined);
     const hasMore = matchedIds.length > offset + limit;
     return { items, hasMore, nextOffset: offset + limit };

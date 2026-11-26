@@ -22,7 +22,12 @@ import {
   type Scope,
 } from '@kiki/agent-core-v2';
 import { IAgentRemoteToolService } from '@kiki/agent-core-v2/agent/remoteTools/agentRemoteToolService';
-import { IRemoteSpaceToolBridgeService } from '@kiki/agent-core-v2/app/remoteTools/remoteSpaceToolBridge';
+import {
+  IRemoteSpaceToolBridgeService,
+  REMOTE_SPACE_TOOL_ROUTER,
+  remoteSpaceToolCapability,
+  type RemoteBorrowedSpaceCatalog,
+} from '@kiki/agent-core-v2/app/remoteTools/remoteSpaceToolBridge';
 import { parseDaemonFileUrl } from '@kiki/agent-core-v2/agent/media/mediaRef';
 import { createKlient } from '@kiki/klient/http';
 import { formatPairingUri } from '@kiki/protocol';
@@ -541,4 +546,64 @@ describe('space bridge zero-workspace pairing, telemetry, and remote tool federa
     await fresh;
     expect(listCalls).toBe(2);
   });
+
+  it('does not stall main_agent_create when remote tool discovery hangs and still registers tools once discovery finishes', async () => {
+    const root = await mkdtemp(resolve(process.env['TMPDIR'] ?? join(process.cwd(), '.tmp'), 'kiki-remote-create-'));
+    roots.push(root);
+    const server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: join(root, 'home'),
+      logLevel: 'silent',
+    });
+    servers.push(server);
+
+    let resolveDiscovery: ((catalogs: readonly RemoteBorrowedSpaceCatalog[]) => void) | undefined;
+    const bridge = server.core.accessor.get(IRemoteSpaceToolBridgeService);
+    remoteSpaceToolCapability(bridge)[REMOTE_SPACE_TOOL_ROUTER]({
+      listBorrowedTools: () => new Promise<readonly RemoteBorrowedSpaceCatalog[]>((resolve) => {
+        resolveDiscovery = resolve;
+      }),
+      callBorrowedTool: async () => ({ output: 'ok' }),
+    });
+
+    try {
+      const created = await authedFetch(server, `http://127.0.0.1:${server.port}`, '/api/sessions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ metadata: { cwd: root } }),
+      });
+      const sessionId = ((await created.json()) as { data: { id: string } }).data.id;
+      const session = server.core.accessor.get(ISessionManager).get(sessionId)!;
+
+      const started = performance.now();
+      const main = await ensureMainAgent(session);
+      const elapsedMs = performance.now() - started;
+      expect(elapsedMs).toBeLessThan(1_200);
+
+      resolveDiscovery?.([
+        {
+          bridgeId: 'b-late',
+          connectionId: 'c-late',
+          spaceLabel: 'Late Lab',
+          platform: 'linux',
+          tools: [
+            {
+              remoteName: 'mcp:late:ping',
+              kind: 'mcp',
+              serverName: 'late',
+              toolName: 'ping',
+              description: 'Late ping tool.',
+            },
+          ],
+        },
+      ]);
+      await main.accessor.get(IAgentRemoteToolService).ready();
+      const tool = main.accessor.get(IAgentToolRegistryService).resolve('mcp__remote_late_lab__late_ping');
+      expect(tool).toBeDefined();
+    } finally {
+      resolveDiscovery?.([]);
+    }
+  }, 30_000);
 });

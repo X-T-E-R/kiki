@@ -82,7 +82,25 @@ import {
 import { resolveDelegationPosition } from '#/agent/profile/delegationContext';
 
 const DEFAULT_AGENT_EXIT_DRAIN_TIMEOUT_MS = 2_500;
+const AGENT_REMOTE_TOOLS_CREATE_WAIT_MS = 250;
+const EXIT_REPLAY_CHECKPOINT_TIMEOUT_MS = 500;
 let agentExitDrainTimeoutMs = DEFAULT_AGENT_EXIT_DRAIN_TIMEOUT_MS;
+
+async function waitBriefly(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  void promise.catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise.then(() => true),
+      new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
 
 /** Overrides the agent exit-drain timeout in tests and returns the previous value. */
 export function setAgentExitDrainTimeoutForTesting(timeoutMs: number): number {
@@ -495,16 +513,26 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       if (opts.restoreBinding !== undefined) {
         await this.validateRestoredBinding(handle, opts.restoreBinding, restoreFellBack);
       }
+      let pendingRemoteToolsReady: Promise<void> | undefined;
       const profile = handle.accessor.get(IAgentProfileService).data();
       if ((profile.executorId ?? 'native') === 'native' && profile.boundProfile?.promptContextPending !== true) {
         if (this.inFlightLifecycleOps > 1) await this.yieldIfTurnBudgetExceeded();
         handle.accessor.get(IAgentMediaToolsRegistrar).refresh();
         await phase('agent_tools', () => handle.accessor.get(IAgentToolActivationService).activate());
         await phase('agent_plugin_tools', () => handle.accessor.get(IAgentPluginToolService).ready());
-        await phase('agent_remote_tools', () => handle.accessor.get(IAgentRemoteToolService).ready());
+        const remoteToolsReady = handle.accessor.get(IAgentRemoteToolService).ready();
+        const remoteSettled = await phase('agent_remote_tools', () => waitBriefly(remoteToolsReady, AGENT_REMOTE_TOOLS_CREATE_WAIT_MS));
+        if (!remoteSettled) pendingRemoteToolsReady = remoteToolsReady;
       }
       if (priorAgentMeta !== undefined || opts.restoreBinding !== undefined) {
-        await handle.accessor.get(IAgentProfileService).warnRestoredUnavailableTools();
+        if (pendingRemoteToolsReady === undefined) {
+          await handle.accessor.get(IAgentProfileService).warnRestoredUnavailableTools();
+        } else {
+          void pendingRemoteToolsReady.then(async () => {
+            if (this.slots.get(agentId) !== slot || slot.generation !== generation || slot.removing !== undefined) return;
+            await handle.accessor.get(IAgentProfileService).warnRestoredUnavailableTools();
+          }).catch(() => undefined);
+        }
       }
       const delegationPosition = resolveDelegationPosition(agentId, opts.delegator, opts.labels);
       this.assertCreateStillCurrent(agentId, slot, generation);
@@ -1030,7 +1058,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         failures.push({ error, domain: 'cleanup' });
       }
       const parked = mode === 'preserve-pending' && loop?.preservePausedForExit?.() === true;
-      if (execution !== undefined && !parked) await collect(() => execution!.cancel(reason), 'cleanup');
+      if (execution !== undefined && !parked) await collectBounded('execution_cancel', () => execution!.cancel(reason), 'cleanup');
       if (loop !== undefined && !parked) {
         let pendingTurnIds: readonly number[] = [];
         try {
@@ -1038,8 +1066,8 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         } catch (error) {
           failures.push({ error, domain: 'cleanup' });
         }
-        for (const turnId of pendingTurnIds) await collect(() => loop!.cancel(turnId, reason), 'cleanup');
-        await collect(() => loop!.cancel(undefined, reason), 'cleanup');
+        for (const turnId of pendingTurnIds) await collectBounded('loop_cancel', () => loop!.cancel(turnId, reason), 'cleanup');
+        await collectBounded('loop_cancel', () => loop!.cancel(undefined, reason), 'cleanup');
       }
       try {
         promptDrain = handle.accessor.get(IAgentPromptService).drain(reason, mode);
@@ -1077,7 +1105,17 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         try {
           const dispatcher = handle.accessor.get(IEventDispatcher);
           if (dispatcher.saveReplayCheckpoint === undefined) return;
-          if (await dispatcher.saveReplayCheckpoint() !== true) {
+          const checkpointSignal = AbortSignal.timeout(EXIT_REPLAY_CHECKPOINT_TIMEOUT_MS);
+          const savePromise = dispatcher.saveReplayCheckpoint(checkpointSignal);
+          const finished = await waitBriefly(savePromise, EXIT_REPLAY_CHECKPOINT_TIMEOUT_MS);
+          if (!finished) {
+            this.log.warn('agent replay checkpoint timed out before removal', {
+              agentId,
+              timeoutMs: EXIT_REPLAY_CHECKPOINT_TIMEOUT_MS,
+            });
+            return;
+          }
+          if (await savePromise !== true) {
             this.log.warn('agent replay checkpoint was not saved before removal', { agentId });
           }
         } catch (error) {

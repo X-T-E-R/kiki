@@ -682,4 +682,55 @@ describe('server-v2 /api/sessions/{sid}/tasks', () => {
     const cancelled = await postJson<null>('/api/sessions/nope/tasks/tid:cancel');
     expect(cancelled.body.code).toBe(40401);
   });
+
+  it('serves warm filtered persisted tasks across 950 settled tasks without re-reading every json file', async () => {
+    const id = await createSession();
+    const session = getLiveSessionById(server!.core.accessor, id)!;
+    const workspaceId = session.accessor.get(ISessionContext).workspaceId;
+    const scope = `sessions/${workspaceId}/${id}/agents/main/tasks`;
+    const docs = server!.core.accessor.get(IAtomicDocumentStore);
+    const settledAt = Date.now() - 10_000;
+    const batch: Promise<void>[] = [];
+    for (let i = 0; i < 950; i += 1) {
+      const hex = i.toString(16).padStart(8, '0');
+      const taskId = `proc-${hex}`;
+      batch.push(docs.set(scope, `${taskId}.json`, {
+        taskId,
+        kind: 'process',
+        ownerAgentId: 'main',
+        description: `settled task ${i}`,
+        status: i === 949 ? 'failed' : 'completed',
+        startedAt: settledAt - 100,
+        endedAt: settledAt,
+        command: `echo ${i}`,
+      }));
+      if (batch.length >= 64) {
+        await Promise.all(batch.splice(0));
+      }
+    }
+    if (batch.length > 0) await Promise.all(batch);
+    await server!.core.accessor.get(ISessionManager).close(id);
+
+    const cold = await getJson<ListWire>(`/api/sessions/${id}/tasks?status=running&page_size=20`);
+    expect(cold.body.code).toBe(0);
+    expect(cold.body.data.items).toEqual([]);
+
+    const getSpy = vi.spyOn(docs, 'get');
+    try {
+      const started = performance.now();
+      const warmRunning = await getJson<ListWire>(`/api/sessions/${id}/tasks?status=running&page_size=20`);
+      const warmElapsed = performance.now() - started;
+      expect(warmRunning.body.code).toBe(0);
+      expect(warmRunning.body.data.items).toEqual([]);
+      expect(warmElapsed).toBeLessThan(200);
+      expect(getSpy).not.toHaveBeenCalled();
+
+      const warmFailed = await getJson<ListWire>(`/api/sessions/${id}/tasks?status=failed&page_size=20`);
+      expect(warmFailed.body.code).toBe(0);
+      expect(warmFailed.body.data.items.map((item) => item.id)).toEqual(['proc-000003b5']);
+      expect(getSpy.mock.calls.length).toBeLessThanOrEqual(2);
+    } finally {
+      getSpy.mockRestore();
+    }
+  });
 });

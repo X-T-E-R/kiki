@@ -357,6 +357,7 @@ function decodePageToken(raw: string, fingerprint: string): readonly [number, st
 const GIT_DOMAIN_TTL_MS = 60_000;
 const GIT_DOMAIN_NEGATIVE_TTL_MS = 300_000;
 const GIT_DOMAIN_CONCURRENCY = 4;
+const GIT_DOMAIN_COLD_WAIT_MS = 250;
 
 const GIT_DOMAIN_UNAVAILABLE: V2GitDomain = { branch: null, pull_request: null };
 
@@ -368,45 +369,96 @@ function mapPullRequest(pr: FsPullRequest | null): V2GitDomain['pull_request'] {
 class GitDomainResolver {
   private readonly cache = new Map<string, { value: V2GitDomain; fetchedAt: number; ttlMs: number }>();
   private readonly flights = new Map<string, Promise<{ value: V2GitDomain; ttlMs: number }>>();
+  private readonly queue: Array<() => void> = [];
+  private activeWorkers = 0;
 
   constructor(private readonly core: Scope) {}
 
-  async resolveAll(cwds: ReadonlySet<string>): Promise<ReadonlyMap<string, V2GitDomain>> {
+  async resolveAll(
+    cwds: ReadonlySet<string>,
+    signal?: AbortSignal,
+  ): Promise<ReadonlyMap<string, V2GitDomain>> {
     const now = Date.now();
     const resolved = new Map<string, V2GitDomain>();
-    const misses: string[] = [];
+    const coldFlights: Array<{ readonly cwd: string; readonly flight: Promise<{ value: V2GitDomain; ttlMs: number }> }> = [];
     for (const cwd of cwds) {
       const hit = this.cache.get(cwd);
-      if (hit !== undefined && now - hit.fetchedAt < hit.ttlMs) {
+      if (hit !== undefined) {
         resolved.set(cwd, hit.value);
+        if (now - hit.fetchedAt >= hit.ttlMs) {
+          void this.fetchShared(cwd);
+        }
       } else {
-        misses.push(cwd);
+        coldFlights.push({ cwd, flight: this.fetchShared(cwd) });
       }
     }
-    const queue = [...misses];
-    const workers = Array.from({ length: Math.min(GIT_DOMAIN_CONCURRENCY, queue.length) }, async () => {
-      for (;;) {
-        const cwd = queue.shift();
-        if (cwd === undefined) return;
-        const entry = await this.fetchShared(cwd);
-        resolved.set(cwd, entry.value);
+    if (coldFlights.length === 0) return resolved;
+    let settled = false;
+    const allCold = Promise.all(coldFlights.map(async ({ cwd, flight }) => {
+      const entry = await flight;
+      if (!settled) resolved.set(cwd, entry.value);
+    }));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
+    const waitCap = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, GIT_DOMAIN_COLD_WAIT_MS);
+      timer.unref();
+      if (signal !== undefined) {
+        if (signal.aborted) {
+          resolve();
+          return;
+        }
+        onAbort = () => { resolve(); };
+        signal.addEventListener('abort', onAbort, { once: true });
       }
     });
-    await Promise.all(workers);
+    try {
+      await Promise.race([allCold, waitCap]);
+    } finally {
+      settled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      if (onAbort !== undefined) signal?.removeEventListener('abort', onAbort);
+    }
+    for (const { cwd } of coldFlights) {
+      if (!resolved.has(cwd)) resolved.set(cwd, GIT_DOMAIN_UNAVAILABLE);
+    }
     return resolved;
   }
 
   private fetchShared(cwd: string): Promise<{ value: V2GitDomain; ttlMs: number }> {
     const existing = this.flights.get(cwd);
     if (existing !== undefined) return existing;
-    const flight = this.fetch(cwd).then((entry) => {
-      this.cache.set(cwd, { ...entry, fetchedAt: Date.now() });
-      return entry;
-    }).finally(() => {
+    const { promise, resolve } = Promise.withResolvers<{ value: V2GitDomain; ttlMs: number }>();
+    const flight = promise.finally(() => {
       if (this.flights.get(cwd) === flight) this.flights.delete(cwd);
     });
     this.flights.set(cwd, flight);
+    const start = (): void => {
+      this.activeWorkers += 1;
+      void this.fetch(cwd)
+        .then((entry) => {
+          this.cache.set(cwd, { ...entry, fetchedAt: Date.now() });
+          resolve(entry);
+        })
+        .finally(() => {
+          this.activeWorkers -= 1;
+          this.drainQueue();
+        });
+    };
+    if (this.activeWorkers < GIT_DOMAIN_CONCURRENCY) {
+      start();
+    } else {
+      this.queue.push(start);
+    }
     return flight;
+  }
+
+  private drainQueue(): void {
+    while (this.activeWorkers < GIT_DOMAIN_CONCURRENCY) {
+      const next = this.queue.shift();
+      if (next === undefined) return;
+      next();
+    }
   }
 
   private async fetch(cwd: string): Promise<{ value: V2GitDomain; ttlMs: number }> {
@@ -609,7 +661,7 @@ export function registerV2SessionsRoutes(app: V2SessionsRouteHost, core: Scope):
           const cwd = cwdOf(summary);
           if (cwd !== null) cwds.add(cwd);
         }
-        gitByCwd = await gitResolver.resolveAll(cwds);
+        gitByCwd = await gitResolver.resolveAll(cwds, signal);
       }
 
       const items: V2SessionWire[] = window.map((summary) => {
