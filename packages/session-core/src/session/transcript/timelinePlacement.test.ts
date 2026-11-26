@@ -278,24 +278,24 @@ describe('0.6.1 injectionLabels (§4 bilingual lookup)', () => {
 
 describe('0.6.1 resolveModelDisplay (scoped catalog & disambiguation)', () => {
   const catalog: readonly CatalogModelLike[] = [
-    { id: 'axon-message/gemini-4-neon', remote_id: 'gemini-4-neon', provider_id: 'axon-message', display_name: 'Gemini 4 Neon', provider_display_name: 'Axon' },
-    { id: 'axon/gpt-6-luna', remote_id: 'gpt-6-luna', provider_id: 'axon', display_name: 'GPT-6 Luna', provider_display_name: 'Axon' },
-    { id: 'openai/gpt-6-luna', remote_id: 'gpt-6-luna', provider_id: 'openai', display_name: 'GPT-6 Luna', provider_display_name: 'OpenAI' },
+    { id: 'gateway/model-fast', remote_id: 'model-fast', provider_id: 'cloud-gateway', display_name: 'Model Fast', provider_display_name: 'Gateway' },
+    { id: 'gateway/model-lite', remote_id: 'model-lite', provider_id: 'gateway', display_name: 'Model Lite', provider_display_name: 'Gateway' },
+    { id: 'openai/model-lite', remote_id: 'model-lite', provider_id: 'openai', display_name: 'Model Lite', provider_display_name: 'OpenAI' },
     { id: 'custom/only-bare', remote_id: 'only-bare', provider_id: 'custom', display_name: 'Only Bare' },
   ];
 
   it('resolves exact matches, disambiguates colliding display names, rejects ambiguous bare aliases, and isolates external executors', () => {
-    const exact = resolveModelDisplay('axon-message/gemini-4-neon', { catalog, unknownLabel: 'Unknown model', scope: 's1' });
-    expect(exact).toEqual({ label: 'Gemini 4 Neon', known: true, rawId: 'axon-message/gemini-4-neon', providerLabel: undefined });
+    const exact = resolveModelDisplay('gateway/model-fast', { catalog, unknownLabel: 'Unknown model', scope: 's1' });
+    expect(exact).toEqual({ label: 'Model Fast', known: true, rawId: 'gateway/model-fast', providerLabel: undefined });
 
-    const colliding = resolveModelDisplay('openai/gpt-6-luna', { catalog, unknownLabel: 'Unknown model', scope: 's1' });
-    expect(colliding.label).toBe('GPT-6 Luna (OpenAI)');
+    const colliding = resolveModelDisplay('openai/model-lite', { catalog, unknownLabel: 'Unknown model', scope: 's1' });
+    expect(colliding.label).toBe('Model Lite (OpenAI)');
     expect(colliding.known).toBe(true);
 
     const uniqueBare = resolveModelDisplay('only-bare', { catalog, unknownLabel: 'Unknown model', scope: 's1' });
     expect(uniqueBare.label).toBe('Only Bare');
 
-    const ambiguousBare = resolveModelDisplay('gpt-6-luna', { catalog, unknownLabel: 'Unknown model', scope: 's1' });
+    const ambiguousBare = resolveModelDisplay('model-lite', { catalog, unknownLabel: 'Unknown model', scope: 's1' });
     expect(ambiguousBare.known).toBe(false);
     expect(ambiguousBare.ambiguous).toBe(true);
     expect(ambiguousBare.label).toBe('Unknown model');
@@ -304,7 +304,7 @@ describe('0.6.1 resolveModelDisplay (scoped catalog & disambiguation)', () => {
     expect(missing.label).toBe('模型名称未知');
     expect(missing.rawId).toBe('provider/unknown-99');
 
-    const externalIsolated = resolveModelDisplay('axon-message/gemini-4-neon', {
+    const externalIsolated = resolveModelDisplay('gateway/model-fast', {
       catalog,
       unknownLabel: 'Unknown model',
       externalExecutor: true,

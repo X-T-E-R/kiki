@@ -13,11 +13,11 @@
  *   3. `session_fixture_external_harness`: simulated Codex external harness
  *      (`codex-app-server`) with streamed tool groups, model/usage markers, and
  *      centered hairline turn-end rule.
- *   4. `session_fixture_persona_message`: Persona `妮娅` in `delivery: 'message'`
+ *   4. `session_fixture_persona_message`: Persona `Aria` in `delivery: 'message'`
  *      with `ActivitySummaryRow`, link card, tight user bubble gap, partial TTS
  *      quota note, and centered hairline turn-end rule.
  *   5. `session_fixture_sidebar_working` (`working` breathing dot + leftmost
- *      `ComposerWorkingLine` ahead of `dorm-3090 +2`) & `session_fixture_sidebar_needs_you`
+ *      `ComposerWorkingLine` ahead of `gpu-box +2`) & `session_fixture_sidebar_needs_you`
  *      (`needs_you` vermilion dot + `/usage` `需要处理` with execution pause control).
  *   6. Rich `/usage` (`实时` 2-col split + 4-col tabular concurrency) and
  *      `/usage?panel=quota` (`额度` plugin auto-select, expired plugin with cached
@@ -34,31 +34,31 @@ export const SID_WORKING = 'session_fixture_sidebar_working';
 export const SID_NEEDS_YOU = 'session_fixture_sidebar_needs_you';
 
 const WS_MAIN = 'wd_fixture_000000000000';
-const PERSONA_NIA = { id: 'nia', name: '妮娅' };
+const PERSONA_ARIA = { id: 'aria', name: 'Aria' };
 
-const CARBON = 'axon-message/gemini-4-carbon';
-const NEON = 'axon-message/gemini-4-neon';
-const LUNA = 'axon/gpt-6-luna';
-const DS_FLASH = 'axon-message/icu-volcengine/deepseek-v4.1-flash';
-const FABLE = 'magpie-cloud/devin/claude-fable-5-2';
-const SWE21 = 'magpie-cloud/devin/swe-2.1';
+const MODEL_PRO = 'gateway/model-pro';
+const MODEL_FAST = 'gateway/model-fast';
+const MODEL_LITE = 'gateway/model-lite';
+const MODEL_FLASH = 'gateway/model-flash';
+const MODEL_REVIEW = 'cloud-gateway/model-review';
+const MODEL_CODE = 'cloud-gateway/model-code';
 
 const startedAgo = (ms) => new Date(Date.now() - ms).toISOString();
 
 const models = [
-  { id: CARBON, provider_id: 'axon-message', remote_id: 'gemini-4-carbon', display_name: 'Gemini 4 Carbon · Anti', provider_display_name: 'Axon', max_context_size: 1_048_576 },
-  { id: NEON, provider_id: 'axon-message', remote_id: 'gemini-4-neon', display_name: 'Gemini 4 Neon', provider_display_name: 'Axon', max_context_size: 1_048_576 },
-  { id: LUNA, provider_id: 'axon', remote_id: 'gpt-6-luna', display_name: 'GPT-6 Luna (Fast)', provider_display_name: 'Axon', max_context_size: 400_000 },
-  { id: DS_FLASH, provider_id: 'axon-message', remote_id: 'deepseek-v4.1-flash', display_name: 'DeepSeek V4.1 Flash (CMD)', provider_display_name: 'Volcengine', max_context_size: 262_144 },
-  { id: FABLE, provider_id: 'magpie-cloud', remote_id: 'claude-fable-5-2', display_name: 'Claude Fable 5.2 (Magpie · Devin)', provider_display_name: 'Magpie', max_context_size: 200_000 },
-  { id: SWE21, provider_id: 'magpie-cloud', remote_id: 'swe-2.1', display_name: 'SWE-2.1 (Magpie · Devin)', provider_display_name: 'Magpie', max_context_size: 200_000 },
+  { id: MODEL_PRO, provider_id: 'gateway', remote_id: 'model-pro', display_name: 'Model Pro', provider_display_name: 'Gateway', max_context_size: 1_048_576 },
+  { id: MODEL_FAST, provider_id: 'gateway', remote_id: 'model-fast', display_name: 'Model Fast', provider_display_name: 'Gateway', max_context_size: 1_048_576 },
+  { id: MODEL_LITE, provider_id: 'gateway-lite', remote_id: 'model-lite', display_name: 'Model Lite (Fast)', provider_display_name: 'Gateway', max_context_size: 400_000 },
+  { id: MODEL_FLASH, provider_id: 'gateway', remote_id: 'model-flash', display_name: 'Model Flash', provider_display_name: 'Cloud', max_context_size: 262_144 },
+  { id: MODEL_REVIEW, provider_id: 'cloud-gateway', remote_id: 'model-review', display_name: 'Model Review', provider_display_name: 'Cloud Gateway', max_context_size: 200_000 },
+  { id: MODEL_CODE, provider_id: 'cloud-gateway', remote_id: 'model-code', display_name: 'Model Code', provider_display_name: 'Cloud Gateway', max_context_size: 200_000 },
   { id: 'gpt-5.5-codex', provider_id: 'openai', remote_id: 'gpt-5.5-codex', display_name: 'GPT-5.5 Codex', provider_display_name: 'OpenAI', max_context_size: 272_000 },
 ];
 
 const providers = [
-  { id: 'axon-message', name: 'Axon Hub', kind: 'openai-compatible', configured: true },
-  { id: 'axon', name: 'Axon Core', kind: 'openai-compatible', configured: true },
-  { id: 'magpie-cloud', name: 'Magpie Cloud', kind: 'openai-compatible', configured: true },
+  { id: 'gateway', name: 'Cloud Gateway', kind: 'openai-compatible', configured: true },
+  { id: 'gateway-lite', name: 'Gateway Core', kind: 'openai-compatible', configured: true },
+  { id: 'cloud-gateway', name: 'Partner Cloud', kind: 'openai-compatible', configured: true },
 ];
 
 const workspaces = [
@@ -68,15 +68,15 @@ const workspaces = [
 const personas = [
   {
     definition: {
-      id: PERSONA_NIA.id,
-      name: PERSONA_NIA.name,
+      id: PERSONA_ARIA.id,
+      name: PERSONA_ARIA.name,
       title: '主控搭档',
       job: '负责架构统筹、前端审美打磨与多线并行验收。',
-      modelAlias: CARBON,
+      modelAlias: MODEL_PRO,
       thinkingEffort: 'high',
       delivery: 'message',
       greeting: '在的，今天先收哪一条集成线？',
-      description: '你是妮娅，干脆通透，先亮结论与证据。',
+      description: '你是 Aria，干脆通透，先亮结论与证据。',
     },
   },
 ];
@@ -125,22 +125,22 @@ const pluginGuiSlots = [
 
 const ssh = {
   hosts: [
-    { id: 'dorm-3090', name: 'dorm-3090', hostname: '100.94.23.86', user: 'ubuntu', port: 22, roots: ['/srv/render'] },
-    { id: 'macbook-air', name: 'macbook-air', hostname: '100.69.108.120', user: 'dev', port: 22, roots: ['/Users/dev/work'] },
-    { id: 'wuhan-mac', name: 'wuhan-mac', hostname: '192.168.89.100', user: 'ops', port: 22, roots: ['/Users/example/stack'] },
+    { id: 'gpu-box', name: 'gpu-box', hostname: '198.51.100.10', user: 'ubuntu', port: 22, roots: ['/srv/render'] },
+    { id: 'laptop-mac', name: 'laptop-mac', hostname: '198.51.100.20', user: 'dev', port: 22, roots: ['/Users/dev/work'] },
+    { id: 'studio-mac', name: 'studio-mac', hostname: '192.0.2.30', user: 'ops', port: 22, roots: ['/Users/example/stack'] },
   ],
   session: {
-    [SID_COMPLEX]: ['dorm-3090', 'macbook-air', 'wuhan-mac'],
-    [SID_WORKING]: ['dorm-3090', 'macbook-air', 'wuhan-mac'],
+    [SID_COMPLEX]: ['gpu-box', 'laptop-mac', 'studio-mac'],
+    [SID_WORKING]: ['gpu-box', 'laptop-mac', 'studio-mac'],
   },
   status: {
-    'dorm-3090': 'connected',
-    'macbook-air': 'idle',
-    'wuhan-mac': 'idle',
+    'gpu-box': 'connected',
+    'laptop-mac': 'idle',
+    'studio-mac': 'idle',
   },
 };
 
-function sendReceipt({ id, senderName = PERSONA_NIA.name, sessionId = SID_COMPLEX, partialVoiceError } = {}) {
+function sendReceipt({ id, senderName = PERSONA_ARIA.name, sessionId = SID_COMPLEX, partialVoiceError } = {}) {
   const channels = partialVoiceError
     ? [
         {
@@ -158,7 +158,7 @@ function sendReceipt({ id, senderName = PERSONA_NIA.name, sessionId = SID_COMPLE
       delivery: 'delivered',
       channels,
       attachments: [],
-      sender: { persona_id: PERSONA_NIA.id, name: senderName, session_id: sessionId },
+      sender: { persona_id: PERSONA_ARIA.id, name: senderName, session_id: sessionId },
     },
     null,
     2,
@@ -174,7 +174,7 @@ const complexItems = [
     payload: {
       messageId: 'rem-1',
       turnId: 't1',
-      text: '<system-reminder>Host runtime snapshot rev 284. Working directory: E:/kiki-wt/wt-061-integration</system-reminder>',
+      text: '<system-reminder>Host runtime snapshot rev 284. Working directory: /workspace/kiki</system-reminder>',
       origin: { kind: 'injection', variant: 'runtime_snapshot' },
     },
   },
@@ -272,7 +272,7 @@ const complexItems = [
             frameId: 'asst-c-1',
             role: 'assistant',
             text: [
-              '**`release/kiki-0.6.1` 预集成树**（`E:/kiki-wt/wt-061-integration`）已完成首轮合流与跨切片联调：',
+              '**`release/kiki-0.6.1` 预集成树**（`/workspace/kiki`）已完成首轮合流与跨切片联调：',
               '',
               '- 顺手修掉 `instanceRegistry` 45s 心跳判活与离线重连指数退避。',
               '- 私密飞书表格副本已锁仅自己可看：https://example.com/sheets/Potus5tVDh1ORRtj9K0cO8aoneb',
@@ -327,7 +327,7 @@ const complexItems = [
               taskId: 'agent-task-bh-01',
               agentId: 'agent-bh-01',
               status: 'completed',
-              title: 'Fix Devin backend security & engine findings',
+              title: 'Fix backend security & engine findings',
               summary: 'Completed all assigned Kiki 0.6.1 backend security & engine checks.',
             },
           },
@@ -445,36 +445,36 @@ const complexItems = [
 
 const complexSubagents = [
   {
-    agent_id: 'agent-run-g4n',
+    agent_id: 'agent-run-fast',
     parent_agent_id: 'main',
-    name: 'g4n_vip0_ablation',
+    name: 'fast_ablation',
     profile: 'researcher',
-    description: 'G4N xhigh VIP0 backtest ablation',
-    model: NEON,
+    description: 'Model Fast xhigh backtest ablation',
+    model: MODEL_FAST,
     status: 'running',
     busy: true,
     created_at: startedAgo(14 * 60_000),
     updated_at: startedAgo(15_000),
   },
   {
-    agent_id: 'agent-run-astra',
+    agent_id: 'agent-run-think',
     parent_agent_id: 'main',
-    name: 'astra_council',
+    name: 'think_council',
     profile: 'think',
-    description: 'Astra xhigh stochastic 1000U council',
-    model: 'axon/gpt-6.2-astra',
+    description: 'Model Think xhigh stochastic council',
+    model: 'gateway/model-think',
     status: 'running',
     busy: true,
     created_at: startedAgo(14 * 60_000),
     updated_at: startedAgo(20_000),
   },
   {
-    agent_id: 'agent-run-fable',
+    agent_id: 'agent-run-review',
     parent_agent_id: 'main',
-    name: 'fable_council',
+    name: 'review_council',
     profile: 'reviewer',
-    description: 'Fable 5.2 xhigh 1000U council',
-    model: FABLE,
+    description: 'Model Review xhigh council',
+    model: MODEL_REVIEW,
     status: 'running',
     busy: true,
     created_at: startedAgo(34 * 60_000),
@@ -486,7 +486,7 @@ const complexSubagents = [
     name: 'wealth_audit_lead',
     profile: 'researcher',
     description: 'Render wealth audit & research visual brief',
-    model: CARBON,
+    model: MODEL_PRO,
     status: 'completed',
     busy: false,
     duration_ms: 1_470_000,
@@ -500,7 +500,7 @@ const complexSubagents = [
     name: 'wealth_worker_1',
     profile: 'worker',
     description: 'Verify factor IC decay table',
-    model: NEON,
+    model: MODEL_FAST,
     status: 'completed',
     busy: false,
     created_at: ts(88),
@@ -512,7 +512,7 @@ const complexSubagents = [
     name: 'wealth_worker_2',
     profile: 'worker',
     description: 'Render 2x wealth drawdown strip',
-    model: NEON,
+    model: MODEL_FAST,
     status: 'completed',
     busy: false,
     created_at: ts(86),
@@ -524,7 +524,7 @@ const complexSubagents = [
     name: 'wealth_worker_3',
     profile: 'explore',
     description: 'Locate turnover fee assumptions',
-    model: LUNA,
+    model: MODEL_LITE,
     status: 'completed',
     busy: false,
     created_at: ts(85),
@@ -547,8 +547,8 @@ const complexSubagents = [
     parent_agent_id: 'main',
     name: 'backend_hardening',
     profile: 'implementer',
-    description: 'Fix Devin backend security & engine findings',
-    model: CARBON,
+    description: 'Fix backend security & engine findings',
+    model: MODEL_PRO,
     status: 'completed',
     busy: false,
     duration_ms: 420_000,
@@ -562,7 +562,7 @@ const complexSubagents = [
     name: `settled_slice_${idx + 1}`,
     profile: idx % 2 === 0 ? 'implementer' : 'reviewer',
     description: `Settled 0.6.1 slice verification #${idx + 1}`,
-    model: idx % 2 === 0 ? NEON : SWE21,
+    model: idx % 2 === 0 ? MODEL_FAST : MODEL_CODE,
     status: 'completed',
     busy: false,
     duration_ms: 180_000 + idx * 15_000,
@@ -590,7 +590,7 @@ const failedTailItems = [
     prompt: '继续运行全量 @2x 回归矩阵并生成对比长图。',
     startedAt: ts(3),
     endedAt: ts(2),
-    error: 'Anthropic error: gateway_stream_terminal_error: No capacity available for model gemini-4-carbon on upstream pool (503)',
+    error: 'Upstream error: gateway_stream_terminal_error: No capacity available for model model-pro on upstream pool (503)',
     steps: [
       {
         kind: 'step',
@@ -771,7 +771,7 @@ const workingItems = [
     state: 'running',
     origin: { kind: 'user' },
     userMessageId: 'um_work_1',
-    prompt: '在 dorm-3090 上渲染 Blender × MMD 1440p 关键帧序列并实时回传耗时。',
+    prompt: '在 gpu-box 上渲染 Blender × MMD 1440p 关键帧序列并实时回传耗时。',
     startedAt: startedAgo(75_000),
     steps: [
       {
@@ -857,14 +857,14 @@ const requestGovernance = {
   active: 8,
   queued: 2,
   dimensions: [
-    { dimension: 'model', id: CARBON, ...reqCounts(4, 1) },
-    { dimension: 'model', id: LUNA, ...reqCounts(1, 0) },
-    { dimension: 'model', id: DS_FLASH, ...reqCounts(1, 0) },
-    { dimension: 'model', id: FABLE, ...reqCounts(1, 0) },
-    { dimension: 'model', id: SWE21, ...reqCounts(1, 1) },
-    { dimension: 'provider', id: 'axon-message', ...reqCounts(5, 1) },
-    { dimension: 'provider', id: 'axon', ...reqCounts(1, 0) },
-    { dimension: 'provider', id: 'magpie-cloud', ...reqCounts(2, 1) },
+    { dimension: 'model', id: MODEL_PRO, ...reqCounts(4, 1) },
+    { dimension: 'model', id: MODEL_LITE, ...reqCounts(1, 0) },
+    { dimension: 'model', id: MODEL_FLASH, ...reqCounts(1, 0) },
+    { dimension: 'model', id: MODEL_REVIEW, ...reqCounts(1, 0) },
+    { dimension: 'model', id: MODEL_CODE, ...reqCounts(1, 1) },
+    { dimension: 'provider', id: 'gateway', ...reqCounts(5, 1) },
+    { dimension: 'provider', id: 'gateway-lite', ...reqCounts(1, 0) },
+    { dimension: 'provider', id: 'cloud-gateway', ...reqCounts(2, 1) },
     { dimension: 'executor', id: 'native', ...reqCounts(8, 2) },
     { dimension: 'role', id: 'main', ...reqCounts(3, 0) },
     { dimension: 'role', id: 'subagent', ...reqCounts(5, 2) },
@@ -878,13 +878,13 @@ const requestGovernance = {
     {
       attemptId: 'wait-req-1',
       sessionId: SID_COMPLEX,
-      agentId: 'agent-run-g4n',
+      agentId: 'agent-run-fast',
       role: 'subagent',
       waitedMs: 9_200,
-      blockingRules: ['carbon-cap'],
+      blockingRules: ['model-pro-cap'],
       executorId: 'native',
       profileId: 'researcher',
-      modelId: CARBON,
+      modelId: MODEL_PRO,
     },
     {
       attemptId: 'wait-req-2',
@@ -895,23 +895,23 @@ const requestGovernance = {
       blockingRules: ['rule-9'],
       executorId: 'native',
       profileId: 'reviewer',
-      modelId: SWE21,
+      modelId: MODEL_CODE,
     },
   ],
   rules: [
     {
-      id: 'carbon-cap',
+      id: 'model-pro-cap',
       enabled: true,
       maxConcurrent: 6,
       subagentsOnly: false,
-      models: [CARBON],
+      models: [MODEL_PRO],
     },
     {
       id: 'rule-9',
       enabled: true,
       maxConcurrent: 16,
       subagentsOnly: false,
-      models: ['magpie-cloud/devin/swe-2', SWE21],
+      models: ['cloud-gateway/model-code-lite', MODEL_CODE],
     },
   ],
 };
@@ -926,25 +926,25 @@ const liveAgentGovernance = {
   ...agentCounts(3, 5, 1),
   dimensions: [
     { dimension: 'executor', id: 'native', ...agentCounts(3, 5, 1) },
-    { dimension: 'model', id: CARBON, ...agentCounts(1, 2, 1) },
-    { dimension: 'model', id: NEON, ...agentCounts(1, 1, 0) },
-    { dimension: 'model', id: LUNA, ...agentCounts(1, 0, 0) },
-    { dimension: 'model', id: FABLE, ...agentCounts(0, 1, 0) },
-    { dimension: 'model', id: SWE21, ...agentCounts(0, 1, 0) },
+    { dimension: 'model', id: MODEL_PRO, ...agentCounts(1, 2, 1) },
+    { dimension: 'model', id: MODEL_FAST, ...agentCounts(1, 1, 0) },
+    { dimension: 'model', id: MODEL_LITE, ...agentCounts(1, 0, 0) },
+    { dimension: 'model', id: MODEL_REVIEW, ...agentCounts(0, 1, 0) },
+    { dimension: 'model', id: MODEL_CODE, ...agentCounts(0, 1, 0) },
     { dimension: 'session', id: SID_WORKING, ...agentCounts(1, 2) },
     { dimension: 'session', id: SID_COMPLEX, ...agentCounts(0, 3, 1) },
     { dimension: 'session', id: SID_NEEDS_YOU, ...agentCounts(1, 0) },
     { dimension: 'session', id: SID_PERSONA, ...agentCounts(1, 0) },
   ],
   agents: [
-    { sessionId: SID_WORKING, agentId: 'main', role: 'main', phase: 'running', startedAt: startedAgo(77_000), executorId: 'native', profileId: 'agent', modelId: NEON },
-    { sessionId: SID_WORKING, agentId: 'w-sub-1', parentAgentId: 'main', role: 'subagent', phase: 'running', startedAt: startedAgo(52_000), executorId: 'native', profileId: 'worker', modelId: NEON },
-    { sessionId: SID_WORKING, agentId: 'w-sub-2', parentAgentId: 'main', role: 'subagent', phase: 'running', startedAt: startedAgo(41_000), executorId: 'native', profileId: 'explore', modelId: DS_FLASH },
-    { sessionId: SID_COMPLEX, agentId: 'agent-run-g4n', parentAgentId: 'main', role: 'subagent', phase: 'running', startedAt: startedAgo(197_000), executorId: 'native', profileId: 'researcher', modelId: CARBON },
-    { sessionId: SID_COMPLEX, agentId: 'agent-run-fable', parentAgentId: 'main', role: 'subagent', phase: 'running', startedAt: startedAgo(160_000), executorId: 'native', profileId: 'reviewer', modelId: FABLE },
-    { sessionId: SID_COMPLEX, agentId: 'agent-run-swe', parentAgentId: 'main', role: 'subagent', phase: 'running', startedAt: startedAgo(95_000), executorId: 'native', profileId: 'reviewer', modelId: SWE21 },
-    { sessionId: SID_NEEDS_YOU, agentId: 'main', role: 'main', phase: 'suspended', startedAt: startedAgo(188_000), executorId: 'native', profileId: 'agent', modelId: CARBON },
-    { sessionId: SID_PERSONA, agentId: 'main', role: 'main', phase: 'running', startedAt: startedAgo(140_000), executorId: 'native', profileId: 'agent', modelId: LUNA },
+    { sessionId: SID_WORKING, agentId: 'main', role: 'main', phase: 'running', startedAt: startedAgo(77_000), executorId: 'native', profileId: 'agent', modelId: MODEL_FAST },
+    { sessionId: SID_WORKING, agentId: 'w-sub-1', parentAgentId: 'main', role: 'subagent', phase: 'running', startedAt: startedAgo(52_000), executorId: 'native', profileId: 'worker', modelId: MODEL_FAST },
+    { sessionId: SID_WORKING, agentId: 'w-sub-2', parentAgentId: 'main', role: 'subagent', phase: 'running', startedAt: startedAgo(41_000), executorId: 'native', profileId: 'explore', modelId: MODEL_FLASH },
+    { sessionId: SID_COMPLEX, agentId: 'agent-run-fast', parentAgentId: 'main', role: 'subagent', phase: 'running', startedAt: startedAgo(197_000), executorId: 'native', profileId: 'researcher', modelId: MODEL_PRO },
+    { sessionId: SID_COMPLEX, agentId: 'agent-run-review', parentAgentId: 'main', role: 'subagent', phase: 'running', startedAt: startedAgo(160_000), executorId: 'native', profileId: 'reviewer', modelId: MODEL_REVIEW },
+    { sessionId: SID_COMPLEX, agentId: 'agent-run-code', parentAgentId: 'main', role: 'subagent', phase: 'running', startedAt: startedAgo(95_000), executorId: 'native', profileId: 'reviewer', modelId: MODEL_CODE },
+    { sessionId: SID_NEEDS_YOU, agentId: 'main', role: 'main', phase: 'suspended', startedAt: startedAgo(188_000), executorId: 'native', profileId: 'agent', modelId: MODEL_PRO },
+    { sessionId: SID_PERSONA, agentId: 'main', role: 'main', phase: 'running', startedAt: startedAgo(140_000), executorId: 'native', profileId: 'agent', modelId: MODEL_LITE },
   ],
   waiting: [],
   rules: [],
@@ -955,9 +955,9 @@ const providerQuotas = {
   generated_at: new Date().toISOString(),
   sources: [
     {
-      id: 'provider:axon-message',
-      provider_id: 'axon-message',
-      label: 'Axon Hub',
+      id: 'provider:gateway',
+      provider_id: 'gateway',
+      label: 'Cloud Gateway',
       kind: 'provider',
       enabled: true,
       supported: true,
@@ -967,11 +967,11 @@ const providerQuotas = {
       account_label: 'team-prod@example.test',
       checked_at: startedAgo(45_000),
       data_as_of: startedAgo(45_000),
-      source: { label: 'Axon Quota API' },
-      auth: { action: 'provider_settings', provider: 'axon-message' },
+      source: { label: 'Gateway Quota API' },
+      auth: { action: 'provider_settings', provider: 'gateway' },
       meters: [
         {
-          id: 'axon-5h',
+          id: 'gateway-5h',
           label: '5 小时请求窗口',
           scope: 'account',
           unit: 'percent',
@@ -1147,19 +1147,19 @@ const providerQuotas = {
 
 const harnessQuotaSources = [
   {
-    id: 'plugin:magpie-harness-quota/agy',
-    label: 'Magpie · Antigravity',
+    id: 'plugin:harness-quota/agy',
+    label: 'Quota · Antigravity',
     engineIds: ['antigravity-acp'],
     minRefreshIntervalMs: 300_000,
     readAt: startedAgo(12 * 60_000),
     readings: [
-      { accountId: 'studio-1@example.test', pool: 'Gemini Carbon', window: '5h', remaining: 84, unit: 'percent', resetAt: new Date(Date.now() + 2 * 3600_000).toISOString() },
-      { accountId: 'studio-2@example.test', pool: 'Gemini Carbon', window: '5h', remaining: 92, unit: 'percent', resetAt: new Date(Date.now() + 4 * 3600_000).toISOString() },
+      { accountId: 'studio-1@example.test', pool: 'Model Pro', window: '5h', remaining: 84, unit: 'percent', resetAt: new Date(Date.now() + 2 * 3600_000).toISOString() },
+      { accountId: 'studio-2@example.test', pool: 'Model Pro', window: '5h', remaining: 92, unit: 'percent', resetAt: new Date(Date.now() + 4 * 3600_000).toISOString() },
     ],
   },
   {
-    id: 'plugin:magpie-harness-quota/claude',
-    label: 'Magpie · Claude',
+    id: 'plugin:harness-quota/claude',
+    label: 'Quota · Claude',
     engineIds: ['claude-acp'],
     minRefreshIntervalMs: 300_000,
     readAt: startedAgo(40_000),
@@ -1169,8 +1169,8 @@ const harnessQuotaSources = [
     ],
   },
   {
-    id: 'plugin:magpie-harness-quota/codex',
-    label: 'Magpie · Codex',
+    id: 'plugin:harness-quota/codex',
+    label: 'Quota · Codex',
     engineIds: ['codex-app-server'],
     minRefreshIntervalMs: 300_000,
     readAt: startedAgo(35_000),
@@ -1179,8 +1179,8 @@ const harnessQuotaSources = [
     ],
   },
   {
-    id: 'plugin:magpie-harness-quota/grok',
-    label: 'Magpie · Grok',
+    id: 'plugin:harness-quota/grok',
+    label: 'Quota · Grok',
     engineIds: ['grok-acp'],
     minRefreshIntervalMs: 300_000,
     readAt: startedAgo(50_000),
@@ -1191,11 +1191,11 @@ const harnessQuotaSources = [
 ];
 
 const harnessQuotaReadResults = {
-  'plugin:magpie-harness-quota/agy': {
+  'plugin:harness-quota/agy': {
     readAt: new Date().toISOString(),
     readings: [
-      { accountId: 'studio-1@example.test', pool: 'Gemini Carbon', window: '5h', remaining: 86, unit: 'percent', resetAt: new Date(Date.now() + 2 * 3600_000).toISOString() },
-      { accountId: 'studio-2@example.test', pool: 'Gemini Carbon', window: '5h', remaining: 94, unit: 'percent', resetAt: new Date(Date.now() + 4 * 3600_000).toISOString() },
+      { accountId: 'studio-1@example.test', pool: 'Model Pro', window: '5h', remaining: 86, unit: 'percent', resetAt: new Date(Date.now() + 2 * 3600_000).toISOString() },
+      { accountId: 'studio-2@example.test', pool: 'Model Pro', window: '5h', remaining: 94, unit: 'percent', resetAt: new Date(Date.now() + 4 * 3600_000).toISOString() },
     ],
   },
 };
@@ -1212,11 +1212,11 @@ const executors = [
 
 export default {
   config: {
-    default_model: CARBON,
+    default_model: MODEL_PRO,
     default_permission_mode: 'auto',
     providers: {},
     agent_executor_overrides: {
-      'antigravity-acp': { show_in_profile_list: true, quota_source: 'plugin:magpie-harness-quota/agy' },
+      'antigravity-acp': { show_in_profile_list: true, quota_source: 'plugin:harness-quota/agy' },
       'agy-cli-131': { show_in_profile_list: true },
       'claude-acp': { show_in_profile_list: true },
       'codex-app-server': { show_in_profile_list: true },
@@ -1261,18 +1261,18 @@ export default {
       executing: false,
       main_turn_active: true,
       pending_interaction: 'approval',
-      agent_config: { model: CARBON, profile: 'agent' },
+      agent_config: { model: MODEL_PRO, profile: 'agent' },
       created_at: ts(45),
       updated_at: ts(1),
     }),
     sessionRecord(SID_WORKING, {
-      title: 'Blender × MMD 高画质动画渲染实战与缺口攻坚（寝室 3090）',
+      title: 'Blender × MMD 高画质动画渲染实战与缺口攻坚（gpu-box）',
       workspace_id: WS_MAIN,
       metadata: { cwd: 'C:/fixture/easyagent' },
       busy: true,
       executing: true,
       main_turn_active: true,
-      agent_config: { model: NEON, profile: 'agent' },
+      agent_config: { model: MODEL_FAST, profile: 'agent' },
       created_at: ts(60),
       updated_at: ts(1),
     }),
@@ -1285,20 +1285,20 @@ export default {
       unread: true,
       last_read_at: ts(20),
       last_turn_ended_at: ts(6),
-      agent_config: { model: CARBON, profile: 'agent', persona: PERSONA_NIA },
+      agent_config: { model: MODEL_PRO, profile: 'agent', persona: PERSONA_ARIA },
       created_at: ts(95),
       updated_at: ts(5),
     }),
     sessionRecord(SID_PERSONA, {
-      title: '妮娅 · 多平台矩阵人设与记忆隔离方案',
+      title: 'Aria · 多平台矩阵人设与记忆隔离方案',
       workspace_id: WS_MAIN,
       delivery: 'message',
       busy: false,
       last_seq: 11,
       message_count: 6,
       last_turn_reason: 'completed',
-      metadata: { cwd: 'C:/fixture/easyagent', bot_persona_id: PERSONA_NIA.id },
-      agent_config: { model: LUNA, persona: PERSONA_NIA },
+      metadata: { cwd: 'C:/fixture/easyagent', bot_persona_id: PERSONA_ARIA.id },
+      agent_config: { model: MODEL_LITE, persona: PERSONA_ARIA },
       created_at: ts(110),
       updated_at: ts(9),
     }),
@@ -1319,7 +1319,7 @@ export default {
       last_seq: 12,
       message_count: 6,
       last_turn_reason: 'failed',
-      agent_config: { model: CARBON, profile: 'agent' },
+      agent_config: { model: MODEL_PRO, profile: 'agent' },
       created_at: ts(140),
       updated_at: ts(2),
     }),

@@ -885,23 +885,23 @@ describe('NbSearchService', () => {
   it('marks custom-proxy Tavily instances as balance_supported=false without calling upstream /usage', async () => {
     ix.get(IConfigService).get = ((domain: string) => domain === NB_SEARCH_SECTION ? {
       provider_instances: {
-        'tavily.axon': { provider_id: 'tavily', enabled: true, base_url: 'https://api.example.test/raw/69', credential_slot_id: 'tavily.axon', options: {} },
+        'tavily.gateway': { provider_id: 'tavily', enabled: true, base_url: 'https://api.example.test/raw/69', credential_slot_id: 'tavily.gateway', options: {} },
       },
       credential_slots: {
-        'tavily.axon': { provider_id: 'tavily', env: 'NB_SEARCH_TAVILY_AXON_API_KEY' },
+        'tavily.gateway': { provider_id: 'tavily', env: 'NB_SEARCH_TAVILY_GATEWAY_API_KEY' },
       },
     } : domain === NB_SEARCH_SOURCE_SECTION ? { reuse_local_config: false } : undefined) as IConfigService['get'];
     const service = ix.get(INbSearchService);
     const sources = await service.quotaSources();
-    expect(sources.find((source) => source.id === 'tavily.axon')).toMatchObject({
+    expect(sources.find((source) => source.id === 'tavily.gateway')).toMatchObject({
       provider_id: 'tavily',
       enabled: true,
       base_url: 'https://api.example.test/raw/69',
       balance_supported: false,
     });
-    const usage = await service.keyUsage('tavily.axon', true);
+    const usage = await service.keyUsage('tavily.gateway', true);
     expect(usage).toEqual({
-      provider_instance_id: 'tavily.axon',
+      provider_instance_id: 'tavily.gateway',
       provider_id: 'tavily',
       balance_supported: false,
       keys: [],
@@ -1765,7 +1765,7 @@ describe('NbSearchSourceStore single-key provider inheritance', () => {
     await rm(fixture, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
-  it('inherits same-origin provider/credential key for exa.axon and tavily.axon without leaking to third-party origins', async () => {
+  it('inherits same-origin provider/credential key for exa.gateway and tavily.gateway without leaking to third-party origins', async () => {
     const kikiConfigData: Record<string, unknown> = {
       providers: {
         axon: { type: 'anthropic', baseUrl: 'https://api.example.test/v1', credentialId: 'axon' },
@@ -1776,12 +1776,12 @@ describe('NbSearchSourceStore single-key provider inheritance', () => {
     };
     const nbPatch = {
       credential_slots: {
-        'exa.axon': { provider_id: 'exa', env: 'NB_SEARCH_EXA_AXON_API_KEY' },
-        'tavily.axon': { provider_id: 'tavily', env: 'NB_SEARCH_TAVILY_AXON_API_KEY' },
+        'exa.gateway': { provider_id: 'exa', env: 'NB_SEARCH_EXA_GATEWAY_API_KEY' },
+        'tavily.gateway': { provider_id: 'tavily', env: 'NB_SEARCH_TAVILY_GATEWAY_API_KEY' },
       },
       provider_instances: {
-        'exa.axon': { provider_id: 'exa', enabled: true, base_url: 'https://api.example.test/raw/68', credential_slot_id: 'exa.axon', options: {} },
-        'tavily.axon': { provider_id: 'tavily', enabled: true, base_url: 'https://api.example.test/raw/69', credential_slot_id: 'tavily.axon', options: {} },
+        'exa.gateway': { provider_id: 'exa', enabled: true, base_url: 'https://api.example.test/raw/68', credential_slot_id: 'exa.gateway', options: {} },
+        'tavily.gateway': { provider_id: 'tavily', enabled: true, base_url: 'https://api.example.test/raw/69', credential_slot_id: 'tavily.gateway', options: {} },
       },
     } as never;
 
@@ -1806,17 +1806,17 @@ describe('NbSearchSourceStore single-key provider inheritance', () => {
     const store = ix.get(INbSearchSourceStore);
     const source = await store.withSource(false, nbPatch, (value) => value);
 
-    expect(source.env['NB_SEARCH_EXA_AXON_API_KEY']).toBe('sk-axon-shared-key-123');
-    expect(source.env['NB_SEARCH_TAVILY_AXON_API_KEY']).toBe('sk-axon-shared-key-123');
+    expect(source.env['NB_SEARCH_EXA_GATEWAY_API_KEY']).toBe('sk-axon-shared-key-123');
+    expect(source.env['NB_SEARCH_TAVILY_GATEWAY_API_KEY']).toBe('sk-axon-shared-key-123');
     expect(source.env['NB_SEARCH_EXA_API_KEY']).toBeUndefined();
     expect(source.status.credential_source).toBe('environment+managed');
 
-    const exaView = await store.readManaged(source, 'exa.axon', true);
+    const exaView = await store.readManaged(source, 'exa.gateway', true);
     expect(exaView.active).toBe(true);
     expect(exaView.source).toBe('managed');
     expect(exaView.value).toBeUndefined();
 
-    const tavilyView = await store.readManaged(source, 'tavily.axon', false);
+    const tavilyView = await store.readManaged(source, 'tavily.gateway', false);
     expect(tavilyView.active).toBe(true);
     expect(tavilyView.source).toBe('managed');
     expect(tavilyView.value).toBeUndefined();
@@ -1827,7 +1827,7 @@ describe('NbSearchSourceStore single-key provider inheritance', () => {
   });
 
   it('prefers explicit nb_search env or managed override over inherited provider key', async () => {
-    vi.stubEnv('NB_SEARCH_EXA_AXON_API_KEY', 'explicit-env-exa-key');
+    vi.stubEnv('NB_SEARCH_EXA_GATEWAY_API_KEY', 'explicit-env-exa-key');
     const ix = createServices(disposables, {
       additionalServices: (reg) => {
         reg.definePartialInstance(IHostFileSystem, new HostFileSystem());
@@ -1849,16 +1849,16 @@ describe('NbSearchSourceStore single-key provider inheritance', () => {
     });
     const nbPatch = {
       credential_slots: {
-        'exa.axon': { provider_id: 'exa', env: 'NB_SEARCH_EXA_AXON_API_KEY' },
+        'exa.gateway': { provider_id: 'exa', env: 'NB_SEARCH_EXA_GATEWAY_API_KEY' },
       },
       provider_instances: {
-        'exa.axon': { provider_id: 'exa', enabled: true, base_url: 'https://api.example.test/raw/68', credential_slot_id: 'exa.axon', options: {} },
+        'exa.gateway': { provider_id: 'exa', enabled: true, base_url: 'https://api.example.test/raw/68', credential_slot_id: 'exa.gateway', options: {} },
       },
     } as never;
     const store = ix.get(INbSearchSourceStore);
     const source = await store.withSource(false, nbPatch, (value) => value);
-    expect(source.env['NB_SEARCH_EXA_AXON_API_KEY']).toBe('explicit-env-exa-key');
-    const view = await store.readManaged(source, 'exa.axon', true);
+    expect(source.env['NB_SEARCH_EXA_GATEWAY_API_KEY']).toBe('explicit-env-exa-key');
+    const view = await store.readManaged(source, 'exa.gateway', true);
     expect(view.source).toBe('environment');
     expect(view.value).toBe('explicit-env-exa-key');
   });
@@ -1889,7 +1889,7 @@ describe('NbSearchSourceStore single-key provider inheritance', () => {
         'exa.no_origin': { provider_id: 'exa', env: 'NB_SEARCH_NO_ORIGIN_KEY' },
       },
       provider_instances: {
-        'exa.axon': { provider_id: 'exa', enabled: true, base_url: 'https://api.example.test/raw/68', credential_slot_id: 'exa.shared', options: {} },
+        'exa.gateway': { provider_id: 'exa', enabled: true, base_url: 'https://api.example.test/raw/68', credential_slot_id: 'exa.shared', options: {} },
         'exa.other': { provider_id: 'exa', enabled: true, base_url: 'https://api.other.test/v1', credential_slot_id: 'exa.shared', options: {} },
         'exa.unknown': { provider_id: 'exa', enabled: true, credential_slot_id: 'exa.no_origin', options: {} },
       },
@@ -1926,14 +1926,14 @@ describe('NbSearchSourceStore single-key provider inheritance', () => {
         'tavily.slotB': { provider_id: 'tavily', env: 'NB_SEARCH_AXON_ALIAS_KEY' },
       },
       provider_instances: {
-        'exa.axon': { provider_id: 'exa', enabled: true, base_url: 'https://api.example.test/raw/68', credential_slot_id: 'exa.slotA', options: {} },
-        'tavily.axon': { provider_id: 'tavily', enabled: true, base_url: 'https://api.example.test/raw/69', credential_slot_id: 'tavily.slotB', options: {} },
+        'exa.gateway': { provider_id: 'exa', enabled: true, base_url: 'https://api.example.test/raw/68', credential_slot_id: 'exa.slotA', options: {} },
+        'tavily.gateway': { provider_id: 'tavily', enabled: true, base_url: 'https://api.example.test/raw/69', credential_slot_id: 'tavily.slotB', options: {} },
       },
     } as never;
     const store = ix.get(INbSearchSourceStore);
     const source = await store.withSource(false, nbPatch, (value) => value);
     expect(source.env['NB_SEARCH_AXON_ALIAS_KEY']).toBe('sk-axon-alias-secret');
-    const aliasView = await store.readManaged(source, 'tavily.axon', true);
+    const aliasView = await store.readManaged(source, 'tavily.gateway', true);
     expect(aliasView.active).toBe(true);
     expect(aliasView.source).toBe('managed');
     expect(aliasView.value).toBeUndefined();
@@ -1964,17 +1964,17 @@ describe('NbSearchSourceStore single-key provider inheritance', () => {
     });
     const nbPatch = {
       credential_slots: {
-        'exa.axon': { provider_id: 'exa', env: 'NB_SEARCH_EXA_AXON_API_KEY' },
+        'exa.gateway': { provider_id: 'exa', env: 'NB_SEARCH_EXA_GATEWAY_API_KEY' },
         'exa.missing': { provider_id: 'exa', env: 'NB_SEARCH_EXA_MISSING_API_KEY' },
       },
       provider_instances: {
-        'exa.axon': { provider_id: 'exa', enabled: true, base_url: 'https://api.example.test/raw/68', credential_slot_id: 'exa.axon', options: {} },
+        'exa.gateway': { provider_id: 'exa', enabled: true, base_url: 'https://api.example.test/raw/68', credential_slot_id: 'exa.gateway', options: {} },
         'exa.missing': { provider_id: 'exa', enabled: true, base_url: 'https://api.example.test/raw/68', credential_slot_id: 'exa.missing', options: {} },
       },
     } as never;
     const store = ix.get(INbSearchSourceStore);
     const source = await store.withSource(false, nbPatch, (value) => value);
-    expect(source.env['NB_SEARCH_EXA_AXON_API_KEY']).toBeUndefined();
+    expect(source.env['NB_SEARCH_EXA_GATEWAY_API_KEY']).toBeUndefined();
     expect(source.env['NB_SEARCH_EXA_MISSING_API_KEY']).toBeUndefined();
   });
 
@@ -1983,7 +1983,7 @@ describe('NbSearchSourceStore single-key provider inheritance', () => {
     const staleDoc = Buffer.from(JSON.stringify({
       schema_version: '1',
       slots: {
-        'exa.axon': { provider_id: 'exa', env: 'NB_SEARCH_EXA_AXON_API_KEY', binding: 'stale-old-base-url-fingerprint', value: storedSecret },
+        'exa.gateway': { provider_id: 'exa', env: 'NB_SEARCH_EXA_GATEWAY_API_KEY', binding: 'stale-old-base-url-fingerprint', value: storedSecret },
         'exa.standalone': { provider_id: 'exa', env: 'NB_SEARCH_EXA_STANDALONE_API_KEY', binding: 'stale-standalone-fingerprint', value: storedSecret },
       },
     }), 'utf8');
@@ -2008,19 +2008,19 @@ describe('NbSearchSourceStore single-key provider inheritance', () => {
     });
     const nbPatch = {
       credential_slots: {
-        'exa.axon': { provider_id: 'exa', env: 'NB_SEARCH_EXA_AXON_API_KEY' },
+        'exa.gateway': { provider_id: 'exa', env: 'NB_SEARCH_EXA_GATEWAY_API_KEY' },
         'exa.standalone': { provider_id: 'exa', env: 'NB_SEARCH_EXA_STANDALONE_API_KEY' },
       },
       provider_instances: {
-        'exa.axon': { provider_id: 'exa', enabled: true, base_url: 'https://direct.example.test/raw/68', credential_slot_id: 'exa.axon', options: {} },
+        'exa.gateway': { provider_id: 'exa', enabled: true, base_url: 'https://direct.example.test/raw/68', credential_slot_id: 'exa.gateway', options: {} },
         'exa.standalone': { provider_id: 'exa', enabled: true, base_url: 'https://other.example.test/raw/99', credential_slot_id: 'exa.standalone', options: {} },
       },
     } as never;
     const store = ix.get(INbSearchSourceStore);
     const source = await store.withSource(false, nbPatch, (value) => value);
-    expect(source.env['NB_SEARCH_EXA_AXON_API_KEY']).toBe('sk-live-axon-key');
+    expect(source.env['NB_SEARCH_EXA_GATEWAY_API_KEY']).toBe('sk-live-axon-key');
     expect(source.env['NB_SEARCH_EXA_STANDALONE_API_KEY']).toBeUndefined();
-    expect(source.status.issues).not.toContain('MANAGED_CREDENTIALS_MISMATCH:exa.axon');
+    expect(source.status.issues).not.toContain('MANAGED_CREDENTIALS_MISMATCH:exa.gateway');
     expect(source.status.issues).toContain('MANAGED_CREDENTIALS_MISMATCH:exa.standalone');
 
     const { describeCapabilities } = await import('#/app/nbSearch/toolDescriptions');
@@ -2034,7 +2034,7 @@ describe('NbSearchSourceStore single-key provider inheritance', () => {
       jobs: { result_ttl_seconds: 60, cancel_supported: true },
     });
     expect(described.search).toContain('exa.standalone');
-    expect(described.search).not.toContain('exa.axon');
+    expect(described.search).not.toContain('exa.gateway');
     expect(described.search).not.toContain(storedSecret);
     expect(described.search).not.toContain('sk-live-axon-key');
   });

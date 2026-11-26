@@ -58,10 +58,10 @@ afterEach(() => {
 
 describe('0.6.1 failureText & TimelineErrorCallout (Release Gate 2)', () => {
   it('decodes gateway capacity error, double-encoded JSON, validation arrays, and never misclassifies Request ID digits', () => {
-    const gatewayRaw = 'Anthropic error: gateway_stream_terminal_error: No capacity available for model gemini-4-carbon-20260401';
+    const gatewayRaw = 'Upstream error: gateway_stream_terminal_error: No capacity available for model model-pro-20260401';
     const decoded = decodeFullDiagnostic(gatewayRaw);
     expect(decoded.category).toBe('capacity');
-    expect(decoded.decodedMessage).toContain('No capacity available for model gemini-4-carbon-20260401');
+    expect(decoded.decodedMessage).toContain('No capacity available for model model-pro-20260401');
 
     const reqIdOnly = 'Unknown failure (request_id: req_401_403_429_503_abc)';
     expect(classifyDiagnosticCategory({ message: reqIdOnly })).toBe('unknown');
@@ -94,11 +94,11 @@ describe('0.6.1 failureText & TimelineErrorCallout (Release Gate 2)', () => {
       },
     });
 
-    const rawMessage = 'Anthropic error: gateway_stream_terminal_error: No capacity available for model gemini-4-carbon';
+    const rawMessage = 'Upstream error: gateway_stream_terminal_error: No capacity available for model model-pro';
     const rawDetails = JSON.stringify({
       error: {
         type: 'gateway_stream_terminal_error',
-        message: 'No capacity available for model gemini-4-carbon',
+        message: 'No capacity available for model model-pro',
         request_id: 'req_cap_001',
         status: 503,
       },
@@ -118,7 +118,7 @@ describe('0.6.1 failureText & TimelineErrorCallout (Release Gate 2)', () => {
 
     expect(container.querySelector('[data-error-title]')?.textContent).toBe('模型容量暂时不足');
     const msgEl = container.querySelector('[data-error-message]')!;
-    expect(msgEl.textContent).toContain('No capacity available for model gemini-4-carbon');
+    expect(msgEl.textContent).toContain('No capacity available for model model-pro');
     expect(msgEl.className).not.toContain('truncate');
     expect(msgEl.className).not.toContain('line-clamp');
 
@@ -383,18 +383,18 @@ describe('0.6.1 MobileTranscript parity (Reply & Message modes)', () => {
     const onOpenProviderSettings = vi.fn();
     const catalog = [
       {
-        id: 'axon-message/gemini-4-carbon',
-        remote_id: 'gemini-4-carbon',
-        provider_id: 'axon-message',
-        display_name: 'Gemini 4 Carbon',
-        provider_display_name: 'Axon',
+        id: 'gateway/model-pro',
+        remote_id: 'model-pro',
+        provider_id: 'cloud-gateway',
+        display_name: 'Model Pro',
+        provider_display_name: 'Gateway',
       },
       {
-        id: 'axon/gpt-6-luna',
-        remote_id: 'gpt-6-luna',
-        provider_id: 'axon',
-        display_name: 'GPT-6 Luna',
-        provider_display_name: 'Axon',
+        id: 'gateway/model-lite',
+        remote_id: 'model-lite',
+        provider_id: 'gateway',
+        display_name: 'Model Lite',
+        provider_display_name: 'Gateway',
       },
     ];
     const blocks: Block[] = [
@@ -408,8 +408,8 @@ describe('0.6.1 MobileTranscript parity (Reply & Message modes)', () => {
           operationId: 'sw-op-1',
           state: 'failed',
           mode: 'compact',
-          from: 'axon/gpt-6-luna',
-          to: 'axon-message/gemini-4-carbon',
+          from: 'gateway/model-lite',
+          to: 'gateway/model-pro',
           error: { code: 'compact_failed', message: 'Compaction failed before switch' },
         },
       },
@@ -486,12 +486,12 @@ describe('0.6.1 MobileTranscript parity (Reply & Message modes)', () => {
       </ModelSwitchActionsContext.Provider>,
     );
 
-    expect(container.textContent).toContain('GPT-6 Luna');
+    expect(container.textContent).toContain('Model Lite');
     expect(container.textContent).not.toContain('模型名称未知');
     const rawToggle = container.querySelector<HTMLButtonElement>('[data-model-switch-notice="failed"] [data-error-raw-toggle]');
     expect(rawToggle).not.toBeNull();
     act(() => { rawToggle?.click(); });
-    expect(container.textContent).toContain('axon-message/gemini-4-carbon');
+    expect(container.textContent).toContain('gateway/model-pro');
 
     const retrySwitchBtn = container.querySelector<HTMLButtonElement>('[data-model-switch-notice="failed"] [data-error-action="retry"]');
     expect(retrySwitchBtn).not.toBeNull();
@@ -539,8 +539,8 @@ describe('0.6.1 MobileTranscript parity (Reply & Message modes)', () => {
             dispatchOnPage: false,
           }}
           name="audit_worker"
-          model="Gemini 4 Neon"
-          modelRawId="axon-message/gemini-4-neon"
+          model="Model Fast"
+          modelRawId="gateway/model-fast"
           summary={undefined}
           elapsed="12s"
           renderReceipt={(text) => <span>{text}</span>}
@@ -550,7 +550,7 @@ describe('0.6.1 MobileTranscript parity (Reply & Message modes)', () => {
     const toggle = container.querySelector<HTMLButtonElement>('[data-subagent-ended="agent-child-1"] button');
     expect(toggle).not.toBeNull();
     act(() => { toggle?.click(); });
-    expect(container.querySelector('[data-subagent-model-raw]')?.textContent).toBe('axon-message/gemini-4-neon');
+    expect(container.querySelector('[data-subagent-model-raw]')?.textContent).toBe('gateway/model-fast');
     expect(container.querySelector('[data-subagent-model-details] [data-copy-state]')).not.toBeNull();
   });
 
@@ -590,7 +590,7 @@ describe('0.6.1 MobileTranscript parity (Reply & Message modes)', () => {
         tail={{
           turnId: 't-cap',
           state: 'failed',
-          error: 'No capacity available for model gemini-4-carbon (503)',
+          error: 'No capacity available for model model-pro (503)',
           endedAt: '2026-11-25T07:05:00Z',
           durationMs: undefined,
           ttftMs: undefined,

@@ -14,6 +14,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { writeDesktopPrefs, writeSettings } from '@kiki/session-core/settings';
 import type { SessionController } from '@kiki/session-core/session';
 import { browserHost, HostProvider } from '../host';
+import { tauriHost } from '../host/tauri';
 import { I18nProvider } from '../i18n';
 import { ConnectionSection } from '../components/settings/ConnectionSection';
 import {
@@ -334,7 +335,7 @@ async function mountProvider(strict = false, settings = false, switcher = false,
     {recovery ? <RecoveryHarness /> : null}
     {strict && !browserReturn ? <StrictLifecycleHarness /> : <RouterProvider router={router} />}
   </ConnectionProvider>;
-  const hosted = strict ? <HostProvider host={browserHost}>{connection}</HostProvider> : connection;
+  const hosted = <HostProvider host={strict ? browserHost : tauriHost}>{connection}</HostProvider>;
   const tree = (
     <QueryClientProvider client={queryClient}>
       <I18nProvider>{hosted}</I18nProvider>

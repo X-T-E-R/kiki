@@ -165,9 +165,9 @@ it('excludes session conversation branches from the background worker roster whi
 it('keeps a completed parent inside the ended group even when a cold grandchild has unknown status', () => {
   const mixed = buildAgentForest([], [
     { agentId: 'main', name: 'Main' },
-    { agentId: 'live-1', parentAgentId: 'main', name: 'G4N xhigh VIP0 backtest ablation', status: 'running' },
-    { agentId: 'live-2', parentAgentId: 'main', name: 'Astra xhigh stochastic 1000U council', status: 'running' },
-    { agentId: 'live-3', parentAgentId: 'main', name: 'Fable 5.2 xhigh 1000U council', status: 'running' },
+    { agentId: 'live-1', parentAgentId: 'main', name: 'Model Fast xhigh backtest ablation', status: 'running' },
+    { agentId: 'live-2', parentAgentId: 'main', name: 'Model Think xhigh stochastic council', status: 'running' },
+    { agentId: 'live-3', parentAgentId: 'main', name: 'Model Review xhigh council', status: 'running' },
     { agentId: 'wealth-audit', parentAgentId: 'main', name: 'Render wealth audit & research visual brief', status: 'completed' },
     { agentId: 'wealth-c1', parentAgentId: 'wealth-audit', name: 'Child 1', status: 'completed' },
     { agentId: 'wealth-c2', parentAgentId: 'wealth-audit', name: 'Child 2', status: 'completed' },
@@ -183,9 +183,9 @@ it('keeps a completed parent inside the ended group even when a cold grandchild 
   const model = buildRoster({ ...base, forest: mixed, waiting: new Set() });
   expect(model.counts).toEqual({ waiting: 0, running: 3, idle: 0, unknown: 0, ended: 121 });
   expect(labels(model.rows)).toEqual([
-    'G4N xhigh VIP0 backtest ablation',
-    'Astra xhigh stochastic 1000U council',
-    'Fable 5.2 xhigh 1000U council',
+    'Model Fast xhigh backtest ablation',
+    'Model Think xhigh stochastic council',
+    'Model Review xhigh council',
     '[117 done]',
   ]);
 });

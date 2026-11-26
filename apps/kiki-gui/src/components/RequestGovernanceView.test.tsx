@@ -1618,10 +1618,10 @@ describe('live agent snapshot availability', () => {
           { dimension: 'executor', id: 'kiki', active: 4, queued: 0, main: 1, subagent: 3, independent: 0, queuedMain: 0, queuedSubagent: 0, queuedIndependent: 0, mainActive: 1, subActive: 3, totalActive: 4 },
         ],
         agents: [
-          { sessionId: 's_neon', agentId: 'main', role: 'main', phase: 'running', modelId: 'axon-message/gemini-4-neon', startedAt: '2026-01-01T11:55:00Z' },
-          { sessionId: 's_neon', agentId: 'sub-1', role: 'subagent', phase: 'running', modelId: 'axon-message/gemini-4-neon', startedAt: '2026-01-01T11:56:00Z' },
-          { sessionId: 's_neon', agentId: 'sub-2', role: 'subagent', phase: 'tool_waiting', modelId: 'axon-message/gemini-4-neon', startedAt: '2026-01-01T11:57:00Z' },
-          { sessionId: 's_carbon', agentId: 'sub-3', role: 'subagent', phase: 'running', modelId: 'axon-message/gemini-4-carbon', startedAt: '2026-01-01T11:50:00Z' },
+          { sessionId: 's_fast', agentId: 'main', role: 'main', phase: 'running', modelId: 'gateway/model-fast', startedAt: '2026-01-01T11:55:00Z' },
+          { sessionId: 's_fast', agentId: 'sub-1', role: 'subagent', phase: 'running', modelId: 'gateway/model-fast', startedAt: '2026-01-01T11:56:00Z' },
+          { sessionId: 's_fast', agentId: 'sub-2', role: 'subagent', phase: 'tool_waiting', modelId: 'gateway/model-fast', startedAt: '2026-01-01T11:57:00Z' },
+          { sessionId: 's_pro', agentId: 'sub-3', role: 'subagent', phase: 'running', modelId: 'gateway/model-pro', startedAt: '2026-01-01T11:50:00Z' },
         ],
         waiting: [],
       },
@@ -1639,18 +1639,18 @@ describe('live agent snapshot availability', () => {
       active: 4,
       queued: 1,
       dimensions: [
-        { dimension: 'model', id: 'axon-message/gemini-4-carbon', active: 2, queued: 1 },
-        { dimension: 'model', id: 'axon-message/gemini-4-neon', active: 2, queued: 0 },
-        { dimension: 'provider', id: 'axon-message', active: 4, queued: 1 },
-        { dimension: 'session', id: 's_neon', active: 2, queued: 0 },
-        { dimension: 'session', id: 's_carbon', active: 2, queued: 1 },
+        { dimension: 'model', id: 'gateway/model-pro', active: 2, queued: 1 },
+        { dimension: 'model', id: 'gateway/model-fast', active: 2, queued: 0 },
+        { dimension: 'provider', id: 'cloud-gateway', active: 4, queued: 1 },
+        { dimension: 'session', id: 's_fast', active: 2, queued: 0 },
+        { dimension: 'session', id: 's_pro', active: 2, queued: 1 },
       ],
       rules: [
         {
-          id: 'gemini-carbon-cap',
+          id: 'model-pro-cap',
           resource: 'model_request',
           scope: 'global',
-          models: ['axon-message/gemini-4-carbon'],
+          models: ['gateway/model-pro'],
           maxConcurrent: 4,
           subagentsOnly: false,
           overflow: 'queue',
@@ -1668,13 +1668,13 @@ describe('live agent snapshot availability', () => {
       ],
       waiting: [
         {
-          attemptId: 'att-carbon-1',
-          sessionId: 's_carbon',
-          modelId: 'axon-message/gemini-4-carbon',
-          providerId: 'axon-message',
+          attemptId: 'att-pro-1',
+          sessionId: 's_pro',
+          modelId: 'gateway/model-pro',
+          providerId: 'cloud-gateway',
           purpose: 'turn',
           waitedMs: 8000,
-          blockingRules: ['gemini-carbon-cap'],
+          blockingRules: ['model-pro-cap'],
         },
       ],
     });
@@ -1682,14 +1682,14 @@ describe('live agent snapshot availability', () => {
     const { container, render } = mount('realtime', false, (queryClient) => {
       queryClient.setQueryData(['models'], {
         items: [
-          { id: 'axon-message/gemini-4-carbon', display_name: 'Gemini 4 Carbon' },
-          { id: 'axon-message/gemini-4-neon', display_name: 'Gemini 4 Neon' },
+          { id: 'gateway/model-pro', display_name: 'Model Pro' },
+          { id: 'gateway/model-fast', display_name: 'Model Fast' },
         ],
       });
       queryClient.setQueryData(['sessions'], {
         items: [
-          { id: 's_neon', title: 'Neon 多子代理任务', workspace_id: 'wd_1', updated_at: '2026-01-01T12:00:00Z' },
-          { id: 's_carbon', title: 'Carbon 架构审校', workspace_id: 'wd_1', updated_at: '2026-01-01T12:00:00Z' },
+          { id: 's_fast', title: 'Fast 多子代理任务', workspace_id: 'wd_1', updated_at: '2026-01-01T12:00:00Z' },
+          { id: 's_pro', title: 'Pro 架构审校', workspace_id: 'wd_1', updated_at: '2026-01-01T12:00:00Z' },
         ],
       });
     });
@@ -1704,33 +1704,33 @@ describe('live agent snapshot availability', () => {
     // 2. First-screen Live Concurrency (`实时并发`) open by default on Model tab
     const concurrency = container.querySelector<HTMLElement>('[data-governance-concurrency]')!;
     expect(concurrency).not.toBeNull();
-    const carbonRow = concurrency.querySelector<HTMLElement>('[data-governance-concurrency-row="axon-message/gemini-4-carbon"]')!;
-    expect(carbonRow.textContent).toContain('Gemini 4 Carbon');
-    expect(carbonRow.querySelector('[data-governance-meter]')).not.toBeNull();
-    expect(carbonRow.querySelector('[data-governance-row-active]')?.textContent).toBe('2');
-    expect(carbonRow.querySelector('[data-governance-row-cap]')?.textContent).toBe('2 / 4');
-    expect(carbonRow.querySelector('[data-governance-row-queued]')?.textContent).toBe('+1');
+    const proRow = concurrency.querySelector<HTMLElement>('[data-governance-concurrency-row="gateway/model-pro"]')!;
+    expect(proRow.textContent).toContain('Model Pro');
+    expect(proRow.querySelector('[data-governance-meter]')).not.toBeNull();
+    expect(proRow.querySelector('[data-governance-row-active]')?.textContent).toBe('2');
+    expect(proRow.querySelector('[data-governance-row-cap]')?.textContent).toBe('2 / 4');
+    expect(proRow.querySelector('[data-governance-row-queued]')?.textContent).toBe('+1');
 
-    const neonRow = concurrency.querySelector<HTMLElement>('[data-governance-concurrency-row="axon-message/gemini-4-neon"]')!;
-    expect(neonRow.textContent).toContain('Gemini 4 Neon');
-    expect(neonRow.querySelector('[data-governance-meter]')).toBeNull();
-    expect(neonRow.querySelector('[data-governance-row-active]')?.textContent).toBe('2');
-    expect(neonRow.querySelector('[data-governance-row-uncapped]')?.textContent).toBe('—');
+    const fastRow = concurrency.querySelector<HTMLElement>('[data-governance-concurrency-row="gateway/model-fast"]')!;
+    expect(fastRow.textContent).toContain('Model Fast');
+    expect(fastRow.querySelector('[data-governance-meter]')).toBeNull();
+    expect(fastRow.querySelector('[data-governance-row-active]')?.textContent).toBe('2');
+    expect(fastRow.querySelector('[data-governance-row-uncapped]')?.textContent).toBe('—');
 
     // Cross-dimension pressured rule (`subagent-pool-cap` 3 / 4) is also surfaced without opening Manage rules
     const extraRule = concurrency.querySelector<HTMLElement>('[data-governance-pressure-rule="subagent-pool-cap"]')!;
     expect(extraRule).not.toBeNull();
     expect(extraRule.textContent).toContain('3 / 4');
 
-    // 3. Per-session concurrency in `当前会话` (`2 并发 · Gemini 4 Neon · 3 个智能体`)
-    const neonSession = container.querySelector<HTMLElement>('[data-execution-session="s_neon"]')!;
-    expect(neonSession.querySelector('[data-governance-session-concurrency="2"]')?.textContent).toBe('2 并发');
-    expect(neonSession.textContent).toContain('Gemini 4 Neon');
-    expect(neonSession.textContent).toContain('3 个智能体');
+    // 3. Per-session concurrency in `当前会话` (`2 并发 · Model Fast · 3 个智能体`)
+    const fastSession = container.querySelector<HTMLElement>('[data-execution-session="s_fast"]')!;
+    expect(fastSession.querySelector('[data-governance-session-concurrency="2"]')?.textContent).toBe('2 并发');
+    expect(fastSession.textContent).toContain('Model Fast');
+    expect(fastSession.textContent).toContain('3 个智能体');
 
-    // Clicking the rule chip on the Carbon row opens ConcurrencyRulesEditor focused on `gemini-carbon-cap`
+    // Clicking the rule chip on the Pro row opens ConcurrencyRulesEditor focused on `model-pro-cap`
     expect(container.querySelector('[data-governance-rules]')).toBeNull();
-    await act(async () => { carbonRow.querySelector<HTMLButtonElement>('[data-governance-row-rule="gemini-carbon-cap"]')!.click(); });
+    await act(async () => { proRow.querySelector<HTMLButtonElement>('[data-governance-row-rule="model-pro-cap"]')!.click(); });
     expect(container.querySelector('[data-governance-rules]')).not.toBeNull();
     expect(container.querySelector('[data-governance-editor]')).not.toBeNull();
 

@@ -12438,10 +12438,10 @@ describe('virtualizer scroll row-measurement guards and compact assistant row ac
       <Transcript
         modelCatalog={[
           {
-            id: 'axon-message/gemini-4-neon',
-            provider_id: 'axon-message',
-            remote_id: 'gemini-4-neon',
-            display_name: 'Gemini 4 Neon',
+            id: 'gateway/model-fast',
+            provider_id: 'cloud-gateway',
+            remote_id: 'model-fast',
+            display_name: 'Model Fast',
           },
         ]}
         state={transcriptState([
@@ -12459,7 +12459,7 @@ describe('virtualizer scroll row-measurement guards and compact assistant row ac
             parentAgentId: 'main',
             parentToolCallId: 'tc-sub-1',
             name: 'windows_everything_explorer_owner',
-            model: 'axon-message/gemini-4-neon',
+            model: 'gateway/model-fast',
             thinkingEffort: 'high',
             status: 'running',
             description: 'Diagnose RAM bloat',
@@ -12481,7 +12481,7 @@ describe('virtualizer scroll row-measurement guards and compact assistant row ac
             updated_at: '2026-01-01T00:05:00.000Z',
             busy: false,
             metadata: { cwd: '/example' },
-            agent_config: { model: 'axon-message/gemini-4-neon' },
+            agent_config: { model: 'gateway/model-fast' },
             usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0 },
             permission_rules: [],
             message_count: 2,
@@ -12499,7 +12499,7 @@ describe('virtualizer scroll row-measurement guards and compact assistant row ac
     expect(steerRow).not.toBeNull();
     expect(steerRow?.textContent).toContain('Model Steer');
     expect(steerRow?.textContent).not.toContain('System reminder');
-    expect(container.textContent).toContain('Gemini 4 Neon');
+    expect(container.textContent).toContain('Model Fast');
     expect(container.querySelector('[data-interruption-recovery]')).toBeNull();
   });
 });

@@ -21,7 +21,7 @@ export interface FormattedModelLabel {
 
 /**
  * Format a wire model ID into a human-readable catalog display name without
- * exposing raw provider prefixes (`axon-message/...`) as default titles.
+ * exposing raw provider prefixes (`gateway/model-pro`) as default titles.
  */
 export function formatRuntimeModelLabel(
   modelId: string | null | undefined,
