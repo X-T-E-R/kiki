@@ -1196,4 +1196,94 @@ describe('http transport', () => {
     await expect(end).resolves.toEqual({ done: true, value: undefined });
     await channel.close();
   });
+
+  it('nudges reconnect on online and visibilitychange (visible) with debounce and cleans up listeners on close', async () => {
+    const windowListeners = new Map<string, Set<() => void>>();
+    const docListeners = new Map<string, Set<() => void>>();
+    const fakeWindow = {
+      addEventListener: (type: string, fn: () => void) => {
+        const set = windowListeners.get(type) ?? new Set();
+        set.add(fn);
+        windowListeners.set(type, set);
+      },
+      removeEventListener: (type: string, fn: () => void) => {
+        windowListeners.get(type)?.delete(fn);
+      },
+      dispatch: (type: string) => {
+        for (const fn of [...(windowListeners.get(type) ?? [])]) fn();
+      },
+    };
+    const fakeDocument = {
+      visibilityState: 'hidden',
+      addEventListener: (type: string, fn: () => void) => {
+        const set = docListeners.get(type) ?? new Set();
+        set.add(fn);
+        docListeners.set(type, set);
+      },
+      removeEventListener: (type: string, fn: () => void) => {
+        docListeners.get(type)?.delete(fn);
+      },
+      dispatch: (type: string) => {
+        for (const fn of [...(docListeners.get(type) ?? [])]) fn();
+      },
+    };
+
+    const g = globalThis as Record<string, unknown>;
+    const prevWindow = g['window'];
+    const prevDocument = g['document'];
+    g['window'] = fakeWindow;
+    g['document'] = fakeDocument;
+    try {
+      const server = new FakeWebSocketServer();
+      const channel = new HttpChannel({
+        endpoint: 'http://127.0.0.1:58627',
+        fetch: vi.fn() as unknown as typeof fetch,
+        WebSocket: fakeWebSocket(server),
+      });
+      const sub = channel.listen({}, { kind: 'stream', name: 'events' }, vi.fn());
+      await tick(15);
+      expect(server.sockets).toHaveLength(1);
+      expect(windowListeners.get('online')?.size).toBe(1);
+      expect(docListeners.get('visibilitychange')?.size).toBe(1);
+
+      // visibilitychange to hidden must not send a liveness ping
+      fakeDocument.visibilityState = 'hidden';
+      fakeDocument.dispatch('visibilitychange');
+      await tick(140);
+      expect(server.frames.filter((f) => f['type'] === 'ping')).toHaveLength(0);
+
+      // Back-to-back online + visibilitychange(visible) debounce into a single liveness ping
+      fakeDocument.visibilityState = 'visible';
+      fakeWindow.dispatch('online');
+      fakeDocument.dispatch('visibilitychange');
+      await tick(140);
+      expect(server.frames.filter((f) => f['type'] === 'ping')).toHaveLength(1);
+
+      // When disconnected and waiting on reconnect backoff, online wakes it immediately (<500ms)
+      server.autoOpen = false;
+      server.disconnect();
+      // Disconnect again after first fast retry to ensure backoff timer is pending
+      await tick(20);
+      const countBeforeWake = server.sockets.length;
+      server.autoOpen = true;
+      fakeWindow.dispatch('online');
+      await tick(150);
+      expect(server.sockets.length).toBeGreaterThan(countBeforeWake);
+
+      // close() removes both listeners and cancels any pending debounce timer
+      fakeWindow.dispatch('online');
+      sub.dispose();
+      await channel.close();
+      expect(windowListeners.get('online')?.size ?? 0).toBe(0);
+      expect(docListeners.get('visibilitychange')?.size ?? 0).toBe(0);
+      const socketsAfterClose = server.sockets.length;
+      await tick(140);
+      expect(server.sockets.length).toBe(socketsAfterClose);
+    } finally {
+      if (prevWindow === undefined) delete g['window'];
+      else g['window'] = prevWindow;
+      if (prevDocument === undefined) delete g['document'];
+      else g['document'] = prevDocument;
+    }
+  });
 });

@@ -24,6 +24,10 @@ export const COPY = {
     hint: 'Click the top-left Space menu on your computer → Pair device to view the address and pairing code.',
     open: 'Open Kiki',
     reconnect: 'Reconnect',
+    retry: 'Retry',
+    cancel: 'Cancel',
+    editConnection: 'Edit address',
+    repair: 'Re-pair',
     switchComputer: 'Switch computer',
     pairAndOpen: 'Pair & open',
     opening: 'Opening…',
@@ -61,6 +65,8 @@ export const COPY = {
     pairRejected: 'That pairing code expired or was already used. Refresh the code on your computer and try again.',
     unreachableLan:
       'Could not reach {host} over LAN. Confirm Kiki is running and both devices share the same Wi-Fi, or switch to a VPN address.',
+    unreachableLocal:
+      'Local Kiki service ({host}) is not running yet. Wait a moment for the local kernel to start, or retry.',
     unreachableVpn:
       'Could not reach {host} over VPN. Confirm Tailscale or your VPN is active on both devices and Kiki is running.',
     unreachableHttps:
@@ -101,6 +107,10 @@ export const COPY = {
     hint: '点击电脑左上角空间菜单 → 配对设备，查看地址与配对码。',
     open: '打开 Kiki',
     reconnect: '重新连接',
+    retry: '重试',
+    cancel: '取消',
+    editConnection: '编辑连接',
+    repair: '重新配对',
     switchComputer: '切换电脑',
     pairAndOpen: '配对并连接',
     opening: '正在打开…',
@@ -138,6 +148,8 @@ export const COPY = {
     pairRejected: '配对码已过期或已被使用。请在电脑上刷新二维码或配对码后重试。',
     unreachableLan:
       '无法通过局域网连接 {host}。请确认电脑端 Kiki 正在运行且处于同一 Wi‑Fi，或改用 VPN 地址。',
+    unreachableLocal:
+      '本机 Kiki 服务（{host}）尚未就绪或未运行。请稍候待本地内核启动，或点击重试。',
     unreachableVpn:
       '无法通过 VPN 连接 {host}。请确认手机与电脑均已开启 Tailscale 或 VPN，且 Kiki 正在运行。',
     unreachableHttps:

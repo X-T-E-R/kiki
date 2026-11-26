@@ -480,7 +480,8 @@ input[aria-invalid='true'] { border-color: var(--danger); }
   width: 100%;
 }
 
-.switch-computer-btn {
+.switch-computer-btn,
+.cancel-open-btn {
   width: 100%;
 }
 
@@ -641,6 +642,42 @@ input:focus-visible { outline: none; }
   padding: 2px 8px;
   border-top: 1px solid var(--hairline);
   background: var(--panel-subtle);
+}
+
+.saved-card-status {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 16px 12px;
+  border-top: 1px solid var(--hairline);
+  background: color-mix(in srgb, var(--danger) 7%, var(--panel));
+}
+
+.saved-card-status[data-tone='ok'] {
+  background: color-mix(in srgb, var(--ok) 8%, var(--panel));
+}
+
+.saved-card-status-text {
+  margin: 0;
+  color: var(--danger);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.saved-card-status[data-tone='ok'] .saved-card-status-text {
+  color: var(--ok);
+}
+
+.saved-card-status-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.saved-card-status-actions .mini-button {
+  min-height: 44px;
+  padding: 0 14px;
+  font-size: 13px;
 }
 
 .text-button {

@@ -107,6 +107,8 @@ public class KikiShellPlugin extends Plugin {
     private volatile String currentDocumentNavNonce;
     private volatile String deliveredDocumentNavNonce;
     static final String PAIR_DEEPLINK_EVENT_SCRIPT = "window.dispatchEvent(new CustomEvent('kiki:pair-deeplink'));";
+    static final String HOST_BACK_DISPATCH_SCRIPT =
+        "(function(){try{return window.dispatchEvent(new CustomEvent('kiki:host-back',{cancelable:true}));}catch(_){return true;}})();";
     private WebViewListener shellWebViewListener;
 
     private static final class HandshakeResult {
@@ -249,12 +251,24 @@ public class KikiShellPlugin extends Plugin {
                     @Override
                     public void handleOnBackPressed() {
                         WebView webView = getBridge().getWebView();
-                        if (webView.canGoBack() && !backLeavesServer(webView)) {
-                            invalidateCurrentDocumentNavigation();
-                            webView.goBack();
-                        } else {
+                        if (webView == null) {
                             getActivity().moveTaskToBack(true);
+                            return;
                         }
+                        webView.evaluateJavascript(
+                            HOST_BACK_DISPATCH_SCRIPT,
+                            result -> {
+                                if ("false".equals(result)) {
+                                    return;
+                                }
+                                if (webView.canGoBack() && !backLeavesServer(webView)) {
+                                    invalidateCurrentDocumentNavigation();
+                                    webView.goBack();
+                                } else {
+                                    getActivity().moveTaskToBack(true);
+                                }
+                            }
+                        );
                     }
                 }
             );

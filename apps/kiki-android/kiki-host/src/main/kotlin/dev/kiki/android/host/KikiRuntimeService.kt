@@ -175,6 +175,21 @@ class KikiRuntimeService : Service() {
             ACTION_RESUME_ARBITER -> {
                 if (::screenArbiter.isInitialized) screenArbiter.resumeFromUserOrNewTurn()
             }
+            ACTION_RESTART_KERNEL -> {
+                if (::supervisor.isInitialized && ::installer.isInitialized && ::hostGateway.isInitialized) {
+                    serviceScope.launch(Dispatchers.Default) {
+                        runCatching { supervisor.stop(2_000L) }
+                        supervisor.start(
+                            runtimeProvider = {
+                                val installed = installer.ensureReady()
+                                installer.cleanupOldRuntimes(installed.runtimeDir)
+                                installed
+                            },
+                            gatewayPortProvider = { hostGateway.port },
+                        )
+                    }
+                }
+            }
         }
         return START_STICKY
     }
@@ -401,6 +416,7 @@ class KikiRuntimeService : Service() {
 
         const val ACTION_STOP_TURNS = "dev.kiki.android.host.STOP_TURNS"
         const val ACTION_RESUME_ARBITER = "dev.kiki.android.host.RESUME_ARBITER"
+        const val ACTION_RESTART_KERNEL = "dev.kiki.android.host.RESTART_KERNEL"
         const val EXTRA_SESSION_ROUTE = "kiki.route"
 
         private val _kernelState = MutableStateFlow<KernelState>(KernelState.Idle)
@@ -417,6 +433,18 @@ class KikiRuntimeService : Service() {
         fun ensureStarted(context: Context) {
             val appCtx = context.applicationContext
             val intent = Intent(appCtx, KikiRuntimeService::class.java)
+            runCatching {
+                appCtx.startForegroundService(intent)
+            }.onFailure {
+                runCatching { appCtx.startService(intent) }
+            }
+        }
+
+        fun restartKernel(context: Context) {
+            val appCtx = context.applicationContext
+            val intent = Intent(appCtx, KikiRuntimeService::class.java).apply {
+                action = ACTION_RESTART_KERNEL
+            }
             runCatching {
                 appCtx.startForegroundService(intent)
             }.onFailure {

@@ -3,6 +3,7 @@ export * from './attachedRecency';
 export * from './awayAttention';
 export * from './busySessions';
 export * from './inbox';
+export * from './intentOutbox';
 export * from './conversationList';
 export * from './conversationLinks';
 export * from './quickSwitcher';

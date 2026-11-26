@@ -40,6 +40,7 @@ import type { KlientBatchLine } from '../../host.js';
 const DEFAULT_CALL_TIMEOUT_MS = 30_000;
 const DEFAULT_RECONNECT_DELAY_MS = 500;
 const STABLE_OPEN_RESET_MS = 5_000;
+const LIFECYCLE_NUDGE_DEBOUNCE_MS = 100;
 const DEFAULT_MAX_BATCH_SIZE = 24;
 const WS_BEARER_PROTOCOL_PREFIX = 'kimi-code.bearer.';
 export const HTTP_TRANSPORT_TIMEOUT_REASON = 'transport.timeout';
@@ -1068,6 +1069,8 @@ class HttpEventSocket {
   private watchdogTimer: ReturnType<typeof setTimeout> | undefined;
   private probeTimer: ReturnType<typeof setTimeout> | undefined;
   private stableOpenTimer: ReturnType<typeof setTimeout> | undefined;
+  private lifecycleNudgeTimer: ReturnType<typeof setTimeout> | undefined;
+  private detachLifecycleListeners: (() => void) | undefined;
   private probeSentAt = 0;
   private lastInboundAt = 0;
   private openedAt = 0;
@@ -1177,7 +1180,7 @@ class HttpEventSocket {
   }
 
   private nudge(): void {
-    if (this.closed) return;
+    if (this.closed || this.suspended) return;
     if (this.state === 'open') {
       this.sendLivenessProbe(5_000);
       return;
@@ -1215,6 +1218,51 @@ class HttpEventSocket {
     this.token = options.token;
     this.WebSocketCtor = options.WebSocket ?? globalThis.WebSocket;
     this.onDiagnostic = options.onDiagnostic;
+    this.attachLifecycleListeners();
+  }
+
+  private attachLifecycleListeners(): void {
+    const cleanups: Array<() => void> = [];
+    const win = (globalThis as {
+      readonly window?: {
+        addEventListener?: (type: string, listener: () => void) => void;
+        removeEventListener?: (type: string, listener: () => void) => void;
+      };
+    }).window;
+    if (typeof win?.addEventListener === 'function' && typeof win.removeEventListener === 'function') {
+      const onOnline = () => { this.scheduleLifecycleNudge(); };
+      win.addEventListener('online', onOnline);
+      cleanups.push(() => { win.removeEventListener?.('online', onOnline); });
+    }
+    const doc = (globalThis as {
+      readonly document?: {
+        readonly visibilityState?: string;
+        addEventListener?: (type: string, listener: () => void) => void;
+        removeEventListener?: (type: string, listener: () => void) => void;
+      };
+    }).document;
+    if (typeof doc?.addEventListener === 'function' && typeof doc.removeEventListener === 'function') {
+      const onVisibilityChange = () => {
+        if (doc.visibilityState === 'visible') this.scheduleLifecycleNudge();
+      };
+      doc.addEventListener('visibilitychange', onVisibilityChange);
+      cleanups.push(() => { doc.removeEventListener?.('visibilitychange', onVisibilityChange); });
+    }
+    if (cleanups.length > 0) {
+      this.detachLifecycleListeners = () => {
+        for (const cleanup of cleanups) cleanup();
+      };
+    }
+  }
+
+  private scheduleLifecycleNudge(): void {
+    if (this.closed || this.suspended || !this.hasDemand()) return;
+    if (this.lifecycleNudgeTimer !== undefined) clearTimeout(this.lifecycleNudgeTimer);
+    this.lifecycleNudgeTimer = setTimeout(() => {
+      this.lifecycleNudgeTimer = undefined;
+      if (this.closed || this.suspended || !this.hasDemand()) return;
+      this.nudge();
+    }, LIFECYCLE_NUDGE_DEBOUNCE_MS);
   }
 
   private diagnose(event: HttpSocketDiagnostic): void {
@@ -1383,6 +1431,10 @@ class HttpEventSocket {
     this.socketGeneration += 1;
     if (this.reconnectTimer !== undefined) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
+    if (this.lifecycleNudgeTimer !== undefined) clearTimeout(this.lifecycleNudgeTimer);
+    this.lifecycleNudgeTimer = undefined;
+    this.detachLifecycleListeners?.();
+    this.detachLifecycleListeners = undefined;
     this.clearLivenessTimers();
     this.state = 'closed';
     this.ws?.close(1000, 'klient closed');

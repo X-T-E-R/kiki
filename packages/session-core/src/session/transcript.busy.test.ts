@@ -5,6 +5,7 @@ import { AgentTranscript, type AgentTranscriptSnapshot, type TranscriptOperation
 import { FIXED_AT, FIXED_AT_1, FIXED_AT_2, emptySnapshot } from './__fixtures__/canonicalTranscript';
 import {
   agentBusyFromMeta,
+  applyTranscriptShell,
   createViewState,
   projectAgentTranscriptView,
   sessionAgentForestFromAgentSnapshots,
@@ -142,5 +143,135 @@ describe('one busy signal for a turn opened after a terminal phase', () => {
     }));
     const forest = sessionAgentForestFromAgentSnapshots(new Map([['main', emptySnapshot()], ['child-1', child]]));
     expect(forest.byId['child-1']).toMatchObject({ status: 'running', busy: true });
+  });
+
+  it('preserves busy, abortableTurnId, and abortablePromptId across mid-turn applyTranscriptShell refreshes', () => {
+    const live = projectAgentTranscriptView(createViewState('session_test'), 'main', replay('main', [
+      ...staleEndedPhaseOps({ promptId: 'p-314', origin: { kind: 'user' } }),
+    ]));
+    expect(live.transcriptReady).toBe(true);
+    expect(live.busy).toBe(true);
+    expect(live.abortableTurnId).toBe(314);
+    expect(live.abortablePromptId).toBe('p-314');
+
+    const baseSession: Parameters<typeof applyTranscriptShell>[1]['session'] = {
+      id: 'session_test',
+      workspace_id: 'ws_test',
+      title: 'Test',
+      created_at: FIXED_AT,
+      updated_at: FIXED_AT_2,
+      busy: true,
+      metadata: { cwd: '/tmp' },
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        total_cost_usd: 0,
+        context_tokens: 0,
+        context_limit: 0,
+        turn_count: 1,
+      },
+      permission_rules: [],
+      message_count: 1,
+      last_seq: 12,
+      main_turn_active: true,
+      agent_config: { model: 'm', profile: 'default' },
+    };
+
+    // Compact shell refresh with null in_flight_turn must not wipe live busy/abortable IDs.
+    const afterNullShell = applyTranscriptShell('session_test', {
+      as_of_seq: 12,
+      epoch: 'e1',
+      session: baseSession,
+      messages: { items: [], has_more: false },
+      in_flight_turn: null,
+      pending_approvals: [],
+      pending_questions: [],
+    }, live);
+    expect(afterNullShell.busy).toBe(true);
+    expect(afterNullShell.abortableTurnId).toBe(314);
+    expect(afterNullShell.abortablePromptId).toBe('p-314');
+
+    // Lagging shell snapshot pointing at an earlier turn must not overwrite live IDs.
+    const afterLaggingShell = applyTranscriptShell('session_test', {
+      as_of_seq: 11,
+      epoch: 'e1',
+      session: baseSession,
+      messages: { items: [], has_more: false },
+      in_flight_turn: {
+        turn_id: 313,
+        assistant_text: '',
+        thinking_text: '',
+        running_tools: [],
+        current_prompt_id: 'p-313',
+      },
+      pending_approvals: [],
+      pending_questions: [],
+    }, afterNullShell);
+    expect(afterLaggingShell.busy).toBe(true);
+    expect(afterLaggingShell.abortableTurnId).toBe(314);
+    expect(afterLaggingShell.abortablePromptId).toBe('p-314');
+
+    // Same-turn shell refresh with fresh current_prompt_id prefers the fresh ID, and missing prompt ID keeps existing.
+    const afterPromptlessSameTurn = applyTranscriptShell('session_test', {
+      as_of_seq: 13,
+      epoch: 'e1',
+      session: baseSession,
+      messages: { items: [], has_more: false },
+      in_flight_turn: {
+        turn_id: 314,
+        assistant_text: '',
+        thinking_text: '',
+        running_tools: [],
+      },
+      pending_approvals: [],
+      pending_questions: [],
+    }, afterLaggingShell);
+    expect(afterPromptlessSameTurn.abortableTurnId).toBe(314);
+    expect(afterPromptlessSameTurn.abortablePromptId).toBe('p-314');
+
+    const afterFreshSameTurn = applyTranscriptShell('session_test', {
+      as_of_seq: 14,
+      epoch: 'e1',
+      session: baseSession,
+      messages: { items: [], has_more: false },
+      in_flight_turn: {
+        turn_id: 314,
+        assistant_text: '',
+        thinking_text: '',
+        running_tools: [],
+        current_prompt_id: 'p-314-rebound',
+      },
+      pending_approvals: [],
+      pending_questions: [],
+    }, afterPromptlessSameTurn);
+    expect(afterFreshSameTurn.abortableTurnId).toBe(314);
+    expect(afterFreshSameTurn.abortablePromptId).toBe('p-314-rebound');
+
+    // Once transcript settles idle, applyTranscriptShell clears abortable IDs even if shell lags with an old in_flight_turn.
+    const idleLive = projectAgentTranscriptView(afterFreshSameTurn, 'main', replay('main', [
+      { op: 'turn.upsert', turn: { ...endedTurn, turnId: 't314', ordinal: 314, state: 'completed' } },
+      { op: 'meta.merge', meta: { activity: 'idle', agent: { phase: { kind: 'ended', turnId: 314, reason: 'completed', durationMs: 100, at: 0 } } } },
+    ]));
+    expect(idleLive.busy).toBe(false);
+    const afterIdleShell = applyTranscriptShell('session_test', {
+      as_of_seq: 15,
+      epoch: 'e1',
+      session: { ...baseSession, main_turn_active: false },
+      messages: { items: [], has_more: false },
+      in_flight_turn: {
+        turn_id: 314,
+        assistant_text: '',
+        thinking_text: '',
+        running_tools: [],
+        current_prompt_id: 'p-314',
+      },
+      pending_approvals: [],
+      pending_questions: [],
+    }, idleLive);
+    expect(afterIdleShell.busy).toBe(false);
+    expect(afterIdleShell.abortableTurnId).toBeUndefined();
+    expect(afterIdleShell.abortablePromptId).toBeUndefined();
   });
 });

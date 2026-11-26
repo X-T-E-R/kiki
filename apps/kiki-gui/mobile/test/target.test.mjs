@@ -1918,9 +1918,13 @@ ${origin}
             this.inboundEnabled = inboundEnabled;
         }
     }
+    private interface ValueCallback<T> {
+        void onReceiveValue(T value);
+    }
     private static class WebView {
         volatile String url = ORIGIN + "/";
         volatile String documentId = "A-document";
+        volatile String hostBackResult = "true";
         final BlockingQueue<Runnable> posted = new LinkedBlockingQueue<>();
         final List<String> deliveries = new ArrayList<>();
         final List<String> deliveredScripts = new ArrayList<>();
@@ -1931,11 +1935,14 @@ ${origin}
         boolean canGoBack() { return true; }
         WebBackForwardList copyBackForwardList() { return new WebBackForwardList(); }
         void goBack() { backStarted = true; }
-        void evaluateJavascript(String script, Object ignored) {
+        void evaluateJavascript(String script, ValueCallback<String> callback) {
             if (script.contains("__kikiShellStagedCredential")) {
                 if (!script.contains("fixture-peer-a")) throw new AssertionError("wrong credential script");
                 deliveries.add(documentId);
                 deliveredScripts.add(script);
+            }
+            if (callback != null && script.contains("kiki:host-back")) {
+                callback.onReceiveValue(hostBackResult);
             }
         }
     }
@@ -2132,6 +2139,12 @@ ${origin}
         p5.activeAuthOrigin = ORIGIN;
         p5.activeAuthServerId = "home-a";
         p5.load();
+        // When JS consumes kiki:host-back (preventDefault -> dispatchEvent returns false), goBack() must NOT run.
+        p5.view.hostBackResult = "false";
+        p5.activity.dispatcher.back.handleOnBackPressed();
+        if (p5.view.backStarted) throw new AssertionError("Consumed kiki:host-back must not call goBack()");
+        p5.view.hostBackResult = "true";
+
         Reply staleBackMismatch = new Reply("home-temporary-mismatch", "host-other");
         p5.replies.add(staleBackMismatch);
         p5.bridge.listener.onPageLoaded(p5.view);
