@@ -6,10 +6,11 @@
  * identically on any host OS. `detectEnvironmentFromNode()` bundles the Node
  * defaults for production callers.
  *
- * On Windows the probe expects bash from Git for Windows or MSYS2. If it
- * cannot be located the function throws `KaosShellNotFoundError`; the SDK
- * layer can wrap that into a user-facing install hint. Set
- * `KIKI_SHELL_PATH` to override.
+ * On Windows the probe resolves Git Bash from `KIKI_SHELL_PATH`, user `PATH` /
+ * standard Git for Windows locations, or a bundled Kiki `toolchain/`, falling
+ * back gracefully to PowerShell (`pwsh.exe` / `powershell.exe`) when no Bash
+ * shell is available so workspace/profile inspection and file tools never fail
+ * on clean hosts.
  */
 
 import { execFile as nodeExecFile } from 'node:child_process';
@@ -17,8 +18,6 @@ import { constants as fsConstants } from 'node:fs';
 import { access } from 'node:fs/promises';
 import * as nodeOs from 'node:os';
 import * as nodePath from 'node:path';
-
-import { KaosShellNotFoundError } from './errors';
 
 // `OsKind` carries 'macOS' / 'Linux' / 'Windows' for known platforms and
 // falls back to the raw `process.platform` string for unknown ones (e.g.
@@ -46,6 +45,7 @@ export interface EnvironmentDeps {
   readonly arch: string;
   readonly release: string;
   readonly homeDir?: string;
+  readonly execPath?: string;
   readonly env: Record<string, string | undefined>;
   readonly isFile: (path: string) => Promise<boolean>;
   readonly execFileText: (
@@ -95,10 +95,141 @@ function inferPosixShellName(shellPath: string): 'bash' | 'sh' {
   return base === 'bash' || base.endsWith('-bash') ? 'bash' : 'sh';
 }
 
-async function runEnvironmentProbe(
-  deps: EnvironmentDeps,
-  includeCheckedInMessage: boolean,
-): Promise<Environment> {
+function inferWindowsShellName(shellPath: string): ShellName {
+  const base = nodePath.win32.basename(normalizeWindowsPath(shellPath)).toLowerCase();
+  if (base === 'pwsh' || base === 'pwsh.exe' || base === 'powershell' || base === 'powershell.exe') {
+    return 'powershell';
+  }
+  if (base === 'cmd' || base === 'cmd.exe') return 'cmd';
+  if (base === 'sh' || base === 'sh.exe') return 'sh';
+  return 'bash';
+}
+
+function findEnvPathEntry(
+  env: Readonly<Record<string, string | undefined>>,
+  platform: string,
+): { readonly key: string; readonly value: string | undefined } {
+  if (platform !== 'win32') return { key: 'PATH', value: env['PATH'] };
+  if (env['PATH'] !== undefined) return { key: 'PATH', value: env['PATH'] };
+  for (const [key, value] of Object.entries(env)) {
+    if (key.toLowerCase() === 'path') return { key, value };
+  }
+  return { key: 'PATH', value: undefined };
+}
+
+export function bundledWindowsToolchainCandidates(
+  env: Readonly<Record<string, string | undefined>>,
+  execPath?: string,
+): readonly string[] {
+  if (env['KIKI_DISABLE_BUNDLED_TOOLCHAIN'] === '1') return [];
+  const candidates: string[] = [];
+  const explicit = env['KIKI_TOOLCHAIN_DIR']?.trim();
+  if (explicit !== undefined && explicit.length > 0 && isAbsoluteWindowsPath(explicit)) {
+    candidates.push(nodePath.win32.normalize(normalizeWindowsPath(explicit)));
+  }
+  if (execPath !== undefined && execPath.trim().length > 0 && isAbsoluteWindowsPath(execPath)) {
+    const normalizedExec = nodePath.win32.normalize(normalizeWindowsPath(execPath));
+    const execDir = nodePath.win32.dirname(normalizedExec);
+    const execBase = nodePath.win32.basename(normalizedExec).toLowerCase();
+    if (execBase !== 'node.exe' && execBase !== 'node') {
+      candidates.push(nodePath.win32.join(execDir, 'toolchain'));
+      candidates.push(nodePath.win32.join(execDir, 'resources', 'toolchain'));
+      candidates.push(nodePath.win32.normalize(nodePath.win32.join(execDir, '..', 'toolchain')));
+      candidates.push(
+        nodePath.win32.normalize(nodePath.win32.join(execDir, '..', 'resources', 'toolchain')),
+      );
+      candidates.push(
+        nodePath.win32.normalize(nodePath.win32.join(execDir, '..', '..', 'toolchain')),
+      );
+    }
+  }
+  return dedupeWindowsPaths(candidates);
+}
+
+export async function locateBundledWindowsToolchainRoot(
+  deps: Pick<EnvironmentDeps, 'platform' | 'env' | 'execPath' | 'isFile'>,
+): Promise<string | undefined> {
+  if (deps.platform !== 'win32') return undefined;
+  for (const root of bundledWindowsToolchainCandidates(deps.env, deps.execPath)) {
+    const markers = [
+      nodePath.win32.join(root, 'git', 'bin', 'bash.exe'),
+      nodePath.win32.join(root, 'git', 'usr', 'bin', 'bash.exe'),
+      nodePath.win32.join(root, 'bin', 'rg.exe'),
+      nodePath.win32.join(root, 'git', 'cmd', 'git.exe'),
+    ];
+    for (const marker of markers) {
+      if (await deps.isFile(marker)) return root;
+    }
+  }
+  return undefined;
+}
+
+export async function applyBundledWindowsToolchainPath(
+  deps: Pick<EnvironmentDeps, 'platform' | 'env' | 'execPath' | 'isFile'>,
+): Promise<string | undefined> {
+  if (deps.platform !== 'win32') return undefined;
+  const toolchainRoot = await locateBundledWindowsToolchainRoot(deps);
+  if (toolchainRoot === undefined) return undefined;
+
+  const dirProbes: readonly { readonly dir: string; readonly markers: readonly string[] }[] = [
+    {
+      dir: nodePath.win32.join(toolchainRoot, 'git', 'cmd'),
+      markers: ['git.exe'],
+    },
+    {
+      dir: nodePath.win32.join(toolchainRoot, 'git', 'mingw64', 'bin'),
+      markers: ['git.exe', 'curl.exe'],
+    },
+    {
+      dir: nodePath.win32.join(toolchainRoot, 'git', 'clangarm64', 'bin'),
+      markers: ['git.exe', 'curl.exe'],
+    },
+    {
+      dir: nodePath.win32.join(toolchainRoot, 'git', 'usr', 'bin'),
+      markers: ['bash.exe', 'sed.exe'],
+    },
+    {
+      dir: nodePath.win32.join(toolchainRoot, 'bin'),
+      markers: ['rg.exe', 'node.cmd'],
+    },
+  ];
+
+  const pathEntry = findEnvPathEntry(deps.env, 'win32');
+  const current = pathEntry.value ?? '';
+  const existingParts = current.length === 0 ? [] : current.split(';');
+  const seen = new Set(
+    existingParts
+      .map((entry) => entry.trim().replace(/^"(.*)"$/, '$1').replace(/[\\/]+$/, ''))
+      .filter((entry) => entry.length > 0)
+      .map((entry) => normalizeWindowsPath(entry).toLowerCase()),
+  );
+  const additions: string[] = [];
+  for (const probe of dirProbes) {
+    const key = normalizeWindowsPath(probe.dir).replace(/\\+$/, '').toLowerCase();
+    if (seen.has(key)) continue;
+    let present = false;
+    for (const marker of probe.markers) {
+      if (await deps.isFile(nodePath.win32.join(probe.dir, marker))) {
+        present = true;
+        break;
+      }
+    }
+    if (!present) continue;
+    seen.add(key);
+    additions.push(probe.dir);
+  }
+  if (additions.length > 0) {
+    const joined = additions.join(';');
+    deps.env[pathEntry.key] = current.length === 0
+      ? joined
+      : current.endsWith(';')
+        ? `${current}${joined}`
+        : `${current};${joined}`;
+  }
+  return toolchainRoot;
+}
+
+async function runEnvironmentProbe(deps: EnvironmentDeps): Promise<Environment> {
   const osKind = resolveOsKind(deps.platform, deps.env);
   const osArch = deps.arch;
   const osVersion = deps.release;
@@ -106,8 +237,8 @@ async function runEnvironmentProbe(
   const homeDir = deps.homeDir ?? '';
 
   if (deps.platform === 'win32') {
-    const shellPath = await locateWindowsGitBash(deps, includeCheckedInMessage);
-    return { osKind, osArch, osVersion, shellName: 'bash', shellPath, pathClass, homeDir };
+    const { shellName, shellPath } = await locateWindowsShell(deps);
+    return { osKind, osArch, osVersion, shellName, shellPath, pathClass, homeDir };
   }
 
   const override = deps.env['KIKI_SHELL_PATH']?.trim();
@@ -163,43 +294,47 @@ async function runEnvironmentProbe(
 }
 
 export async function detectEnvironment(deps: EnvironmentDeps): Promise<Environment> {
-  return runEnvironmentProbe(deps, true);
+  return runEnvironmentProbe(deps);
 }
 
 export async function probeHostEnvironment(
   deps: HostEnvironmentProbeDeps,
 ): Promise<HostEnvironmentInfo> {
-  return runEnvironmentProbe(deps, false);
+  return runEnvironmentProbe(deps);
 }
 
-async function locateWindowsGitBash(
-  deps: EnvironmentDeps,
-  includeCheckedInMessage: boolean,
-): Promise<string> {
-  const checked: string[] = [];
+function isWithinWindowsPrefix(candidate: string, prefix: string): boolean {
+  const normCandidate = nodePath.win32.normalize(normalizeWindowsPath(candidate)).toLowerCase();
+  const normPrefix = nodePath.win32.normalize(normalizeWindowsPath(prefix)).replace(/\\+$/, '').toLowerCase();
+  return normCandidate === normPrefix || normCandidate.startsWith(`${normPrefix}\\`);
+}
 
+async function locateWindowsShell(
+  deps: EnvironmentDeps,
+): Promise<{ readonly shellName: ShellName; readonly shellPath: string }> {
   const override = deps.env['KIKI_SHELL_PATH']?.trim();
-  if (override !== undefined && override.length > 0) {
-    checked.push(override);
-    if (await deps.isFile(override)) {
-      return override;
-    }
+  if (override !== undefined && override.length > 0 && await deps.isFile(override)) {
+    return { shellName: inferWindowsShellName(override), shellPath: override };
   }
 
+  const bundledRoots = bundledWindowsToolchainCandidates(deps.env, deps.execPath);
+  const pathValue = findEnvPathEntry(deps.env, 'win32').value;
   const gitExecutables = await findExecutablesOnPath(
     'git.exe',
-    deps.env['PATH'],
+    pathValue,
     deps.platform,
     deps.isFile,
   );
 
   for (const gitExe of gitExecutables) {
+    if (bundledRoots.some((root) => isWithinWindowsPrefix(gitExe, root))) {
+      continue;
+    }
     const inferred = gitBashCandidatesFromGitExe(gitExe);
     if (inferred !== undefined) {
       for (const candidate of inferred) {
-        checked.push(candidate);
         if (await deps.isFile(candidate)) {
-          return candidate;
+          return { shellName: 'bash', shellPath: candidate };
         }
       }
     }
@@ -209,37 +344,64 @@ async function locateWindowsGitBash(
       continue;
     }
     for (const candidate of gitBashCandidatesFromGitExecPath(gitExecPath)) {
-      checked.push(candidate);
       if (await deps.isFile(candidate)) {
-        return candidate;
+        return { shellName: 'bash', shellPath: candidate };
       }
     }
   }
 
-  const candidates: string[] = [
-    'C:\\Program Files\\Git\\bin\\bash.exe',
-    'C:\\Program Files\\Git\\usr\\bin\\bash.exe',
-    'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
-    'C:\\Program Files (x86)\\Git\\usr\\bin\\bash.exe',
+  const programFiles = deps.env['ProgramFiles']?.trim() || 'C:\\Program Files';
+  const programFilesX86 = deps.env['ProgramFiles(x86)']?.trim() || 'C:\\Program Files (x86)';
+  const systemCandidates: string[] = [
+    ...gitBashCandidatesFromGitRoot(nodePath.win32.join(normalizeWindowsPath(programFiles), 'Git')),
+    ...gitBashCandidatesFromGitRoot(nodePath.win32.join(normalizeWindowsPath(programFilesX86), 'Git')),
   ];
   const localAppData = deps.env['LOCALAPPDATA']?.trim();
   if (localAppData !== undefined && localAppData.length > 0) {
-    candidates.push(`${localAppData}\\Programs\\Git\\bin\\bash.exe`);
-    candidates.push(`${localAppData}\\Programs\\Git\\usr\\bin\\bash.exe`);
+    systemCandidates.push(
+      ...gitBashCandidatesFromGitRoot(nodePath.win32.join(normalizeWindowsPath(localAppData), 'Programs', 'Git')),
+    );
   }
-  for (const candidate of candidates) {
-    checked.push(candidate);
+  for (const candidate of systemCandidates) {
     if (await deps.isFile(candidate)) {
-      return candidate;
+      return { shellName: 'bash', shellPath: candidate };
     }
   }
 
-  const baseMessage =
-    'Git Bash was not found on this Windows host. Install Git for Windows from https://gitforwindows.org/ or set KIKI_SHELL_PATH to a bash.exe.';
-  throw new KaosShellNotFoundError(
-    includeCheckedInMessage ? `${baseMessage} Checked: ${checked.join(', ')}.` : baseMessage,
-    checked,
+  for (const root of bundledRoots) {
+    for (const candidate of gitBashCandidatesFromGitRoot(nodePath.win32.join(root, 'git'))) {
+      if (await deps.isFile(candidate)) {
+        return { shellName: 'bash', shellPath: candidate };
+      }
+    }
+  }
+
+  const pwshOnPath = await findExecutablesOnPath('pwsh.exe', pathValue, deps.platform, deps.isFile);
+  if (pwshOnPath.length > 0) {
+    return { shellName: 'powershell', shellPath: pwshOnPath[0]! };
+  }
+  const psOnPath = await findExecutablesOnPath(
+    'powershell.exe',
+    pathValue,
+    deps.platform,
+    deps.isFile,
   );
+  if (psOnPath.length > 0) {
+    return { shellName: 'powershell', shellPath: psOnPath[0]! };
+  }
+
+  const systemRoot =
+    deps.env['SystemRoot']?.trim() ||
+    deps.env['WINDIR']?.trim() ||
+    'C:\\Windows';
+  const defaultPowerShell = nodePath.win32.join(
+    normalizeWindowsPath(systemRoot),
+    'System32',
+    'WindowsPowerShell',
+    'v1.0',
+    'powershell.exe',
+  );
+  return { shellName: 'powershell', shellPath: defaultPowerShell };
 }
 
 async function readGitExecPath(
@@ -329,6 +491,7 @@ function dedupeWindowsPaths(paths: readonly string[]): readonly string[] {
  */
 let detectedEnvironment: Promise<Environment> | undefined;
 let probedHostEnvironment: Promise<HostEnvironmentInfo> | undefined;
+let appliedBundledToolchainPath: Promise<string | undefined> | undefined;
 
 function createNodeProbeDeps(): HostEnvironmentProbeDeps {
   const platform = process.platform;
@@ -346,6 +509,7 @@ function createNodeProbeDeps(): HostEnvironmentProbeDeps {
     arch: process.arch,
     release: nodeOs.release(),
     homeDir: nodeOs.homedir(),
+    execPath: process.execPath,
     env,
     isFile,
     execFileText,
@@ -362,6 +526,12 @@ export function probeHostEnvironmentFromNode(): Promise<HostEnvironmentInfo> {
   if (probedHostEnvironment !== undefined) return probedHostEnvironment;
   probedHostEnvironment = probeHostEnvironment(createNodeProbeDeps());
   return probedHostEnvironment;
+}
+
+export function applyBundledWindowsToolchainPathFromNode(): Promise<string | undefined> {
+  if (appliedBundledToolchainPath !== undefined) return appliedBundledToolchainPath;
+  appliedBundledToolchainPath = applyBundledWindowsToolchainPath(createNodeProbeDeps());
+  return appliedBundledToolchainPath;
 }
 
 async function findExecutablesOnPath(

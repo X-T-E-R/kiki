@@ -7,9 +7,9 @@
  *   - POSIX path probing prefers /bin/bash, falls back to /usr/bin/bash,
  *     /usr/local/bin/bash, then /bin/sh (with shellName 'sh').
  *   - Windows resolves Git Bash via `KIKI_SHELL_PATH`, `git.exe` on PATH
- *     (including `git --exec-path` for shims), or well-known install
- *     locations; throws `KaosShellNotFoundError`
- *     if none are present.
+ *     (including `git --exec-path` for shims), well-known system install
+ *     locations, or bundled Kiki `toolchain/`, falling back gracefully to
+ *     PowerShell (`pwsh.exe` / `powershell.exe`) when no Bash is present.
  *   - `osArch` / `osVersion` are populated from the Node OS APIs.
  *
  * All tests expect `detectEnvironment()` to be a pure function of
@@ -20,17 +20,18 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  applyBundledWindowsToolchainPath,
   detectEnvironment,
   type Environment,
   type OsKind,
   type ShellName,
 } from '#/environment';
-import { KaosShellNotFoundError } from '#/errors';
 
 interface StubOpts {
   readonly platform: NodeJS.Platform;
   readonly arch?: string;
   readonly release?: string;
+  readonly execPath?: string;
   readonly env?: Record<string, string | undefined>;
   readonly existingPaths?: readonly string[];
   readonly execFileResults?: Readonly<Record<string, string>>;
@@ -44,6 +45,7 @@ function stubDeps(opts: StubOpts): Parameters<typeof detectEnvironment>[0] {
     platform: opts.platform,
     arch: opts.arch ?? 'x86_64',
     release: opts.release ?? '1.2.3',
+    execPath: opts.execPath,
     env: opts.env ?? {},
     isFile: async (path: string) => existing.has(path),
     execFileText:
@@ -310,7 +312,7 @@ describe('detectEnvironment', () => {
 
   it('skips relative Windows PATH entries before git --exec-path probing', async () => {
     const relativeGit = 'tools\\git.exe';
-    const error = await detectEnvironment(
+    const env = await detectEnvironment(
       stubDeps({
         platform: 'win32',
         env: { PATH: 'tools' },
@@ -319,13 +321,8 @@ describe('detectEnvironment', () => {
           throw new Error(`unexpected execFileText call for ${file}`);
         },
       }),
-    ).then(
-      () => {
-        throw new Error('expected throw');
-      },
-      (error: unknown) => error,
     );
-    expect(error).toBeInstanceOf(KaosShellNotFoundError);
+    expect(env.shellName).toBe('powershell');
   });
 
   it('scans PATH directly for git.exe candidates', async () => {
@@ -395,38 +392,82 @@ describe('detectEnvironment', () => {
     expect(env.shellPath).toBe('C:\\Users\\me\\AppData\\Local\\Programs\\Git\\usr\\bin\\bash.exe');
   });
 
-  it('throws KaosShellNotFoundError when no Git Bash candidate is found', async () => {
-    const error = await detectEnvironment(
+  it('resolves bundled Kiki toolchain Git Bash after user system Git and before PowerShell fallback', async () => {
+    const bundledBash = 'C:\\Users\\me\\AppData\\Local\\Kiki\\toolchain\\git\\bin\\bash.exe';
+    const systemBash = 'C:\\Program Files\\Git\\bin\\bash.exe';
+
+    const withSystemGit = await detectEnvironment(
       stubDeps({
         platform: 'win32',
-        env: { LOCALAPPDATA: 'C:\\Users\\me\\AppData\\Local' },
-        existingPaths: [],
+        execPath: 'C:\\Users\\me\\AppData\\Local\\Kiki\\kiki-server.exe',
+        existingPaths: [bundledBash, systemBash],
       }),
-    ).then(
-      () => {
-        throw new Error('expected throw');
-      },
-      (error: unknown) => error,
     );
-    expect(error).toBeInstanceOf(KaosShellNotFoundError);
+    expect(withSystemGit.shellName).toBe('bash');
+    expect(withSystemGit.shellPath).toBe(systemBash);
+
+    const virginWithBundle = await detectEnvironment(
+      stubDeps({
+        platform: 'win32',
+        execPath: 'C:\\Users\\me\\AppData\\Local\\Kiki\\kiki-server.exe',
+        existingPaths: [bundledBash],
+      }),
+    );
+    expect(virginWithBundle.shellName).toBe('bash');
+    expect(virginWithBundle.shellPath).toBe(bundledBash);
   });
 
-  it('includes attempted paths in the thrown error message', async () => {
-    const error = await detectEnvironment(
+  it('falls back gracefully to PowerShell when neither system Git Bash nor bundled toolchain is present', async () => {
+    const env = await detectEnvironment(
       stubDeps({
         platform: 'win32',
-        env: { KIKI_SHELL_PATH: 'D:\\custom\\bash.exe' },
+        env: { LOCALAPPDATA: 'C:\\Users\\me\\AppData\\Local', SystemRoot: 'C:\\Windows' },
         existingPaths: [],
       }),
-    ).then(
-      () => {
-        throw new Error('expected throw');
-      },
-      (error: unknown) => error as KaosShellNotFoundError,
     );
-    expect(error.message).toContain('D:\\custom\\bash.exe');
-    expect(error.message).toContain('C:\\Program Files\\Git\\bin\\bash.exe');
-    expect(error.message).toContain('C:\\Program Files\\Git\\usr\\bin\\bash.exe');
+    expect(env.shellName).toBe('powershell');
+    expect(env.shellPath).toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+  });
+
+  it('prefers pwsh.exe on PATH when falling back without Git Bash on Windows', async () => {
+    const env = await detectEnvironment(
+      stubDeps({
+        platform: 'win32',
+        env: { PATH: 'C:\\Program Files\\PowerShell\\7;C:\\Windows\\System32' },
+        existingPaths: ['C:\\Program Files\\PowerShell\\7\\pwsh.exe'],
+      }),
+    );
+    expect(env.shellName).toBe('powershell');
+    expect(env.shellPath).toBe('C:\\Program Files\\PowerShell\\7\\pwsh.exe');
+  });
+
+  it('appends bundled toolchain directories at the tail of PATH without shadowing user entries', async () => {
+    const envObj: Record<string, string | undefined> = {
+      Path: 'C:\\Windows\\System32;C:\\CustomUserTools',
+    };
+    const root = 'C:\\Users\\me\\AppData\\Local\\Kiki\\toolchain';
+    const resolvedRoot = await applyBundledWindowsToolchainPath({
+      platform: 'win32',
+      execPath: 'C:\\Users\\me\\AppData\\Local\\Kiki\\cli\\kiki.exe',
+      env: envObj,
+      isFile: async (p) =>
+        p === `${root}\\git\\bin\\bash.exe` ||
+        p === `${root}\\git\\cmd\\git.exe` ||
+        p === `${root}\\git\\mingw64\\bin\\curl.exe` ||
+        p === `${root}\\git\\usr\\bin\\bash.exe` ||
+        p === `${root}\\bin\\rg.exe`,
+    });
+    expect(resolvedRoot).toBe(root);
+    expect(envObj['Path']).toBe(
+      [
+        'C:\\Windows\\System32',
+        'C:\\CustomUserTools',
+        `${root}\\git\\cmd`,
+        `${root}\\git\\mingw64\\bin`,
+        `${root}\\git\\usr\\bin`,
+        `${root}\\bin`,
+      ].join(';'),
+    );
   });
 
   // ── arch / version passthrough ─────────────────────────────────────
@@ -482,23 +523,5 @@ describe('detectEnvironment', () => {
       }),
     );
     expect(iosEnv.osKind).toBe('iOS');
-  });
-
-  it('populates structured checked paths on KaosShellNotFoundError', async () => {
-    const error = await detectEnvironment(
-      stubDeps({
-        platform: 'win32',
-        env: { KIKI_SHELL_PATH: 'D:\\custom\\bash.exe' },
-        existingPaths: [],
-      }),
-    ).then(
-      () => {
-        throw new Error('expected throw');
-      },
-      (err: unknown) => err as KaosShellNotFoundError,
-    );
-    expect(error).toBeInstanceOf(KaosShellNotFoundError);
-    expect(error.checked).toContain('D:\\custom\\bash.exe');
-    expect(error.checked).toContain('C:\\Program Files\\Git\\bin\\bash.exe');
   });
 });

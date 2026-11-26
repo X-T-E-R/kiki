@@ -1121,9 +1121,12 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     try {
       this.rgResolution = await ensureRgPath(
         probe,
-        inherited === undefined
-          ? {}
-          : { allowCachedFallback: true, fallbackShareDirs: [inherited] },
+        this.runtimeId === 'local'
+          ? {
+              allowCachedFallback: true,
+              fallbackShareDirs: inherited === undefined ? undefined : [inherited],
+            }
+          : {},
       );
     } catch {
       this.rgResolution = null;

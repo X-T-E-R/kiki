@@ -34,6 +34,7 @@ coverage/
 .vitest-results/
 .vite/
 apps/kiki-gui/src-tauri/binaries/
+apps/kiki-gui/src-tauri/toolchain/
 apps/kimi-code/vendor/agent-browser/**/agent-browser.exe
 !/apps/kimi-code/vendor/agent-browser/win32-x64/agent-browser.exe
 apps/kimi-code/vendor/codex-browser-bridge/**/codex-browser-bridge.exe

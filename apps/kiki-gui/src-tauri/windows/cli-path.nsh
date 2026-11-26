@@ -1,4 +1,5 @@
 !include "WinMessages.nsh"
+SetDatablockOptimize on
 
 !ifndef KIKI_PATH_REG_SUBKEY
   !define KIKI_PATH_REG_SUBKEY "Environment"
@@ -125,6 +126,13 @@
   CopyFiles /SILENT "$INSTDIR\kiki-server.exe" "$INSTDIR\cli\kiki.exe"
   IfErrors 0 +2
     Abort "Could not install the Kiki CLI executable."
+!ifdef PRODUCTNAME
+  !if /FileExists "${__FILEDIR__}\..\toolchain\bin\rg.exe"
+    SetOutPath "$INSTDIR\toolchain"
+    File /r "${__FILEDIR__}\..\toolchain\*"
+    SetOutPath "$INSTDIR"
+  !endif
+!endif
   !insertmacro KIKI_UPDATE_USER_PATH "add"
   !insertmacro KIKI_REGISTER_URL_PROTOCOL
 !macroend
@@ -132,4 +140,7 @@
 !macro NSIS_HOOK_PREUNINSTALL
   !insertmacro KIKI_UNREGISTER_URL_PROTOCOL
   !insertmacro KIKI_UPDATE_USER_PATH "remove"
+!ifdef PRODUCTNAME
+  RMDir /r "$INSTDIR\toolchain"
+!endif
 !macroend

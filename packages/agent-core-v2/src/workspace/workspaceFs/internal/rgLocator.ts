@@ -4,6 +4,7 @@ import { ErrorCodes, Error2 } from '#/errors';
 import {
   getShareBinRgPath,
   getShareDir,
+  getVendorRgPath,
   rgBinaryName,
   rgUnavailableMessage,
   type EnsureRgPathOptions,
@@ -12,7 +13,7 @@ import {
 
 export { getShareBinRgPath, rgUnavailableMessage, type EnsureRgPathOptions, type RgProbe };
 
-export type RgResolutionSource = 'system-path' | 'share-bin-cached';
+export type RgResolutionSource = 'system-path' | 'vendor' | 'share-bin-cached';
 
 export interface RgResolution {
   readonly path: string;
@@ -32,16 +33,25 @@ export async function ensureRgPath(
 
   if (options.allowCachedFallback === true) {
     options.signal?.throwIfAborted();
+    const vendor = getVendorRgPath(rgBinaryName());
+    if (vendor !== undefined) {
+      const vendorRun = await probe.exec([vendor, '--version']).catch(() => ({ exitCode: -1 }));
+      if (vendorRun.exitCode === 0) {
+        return { path: vendor, source: 'vendor' };
+      }
+    }
     const shareDir = options.shareDir ?? getShareDir();
     const cacheDirs = [
       shareDir,
       ...(options.fallbackShareDirs ?? []).filter((dir) => dir !== '' && dir !== shareDir),
     ];
     for (const dir of cacheDirs) {
-      const cached = join(dir, 'bin', rgBinaryName());
-      const cachedRun = await probe.exec([cached, '--version']).catch(() => ({ exitCode: -1 }));
-      if (cachedRun.exitCode === 0) {
-        return { path: cached, source: 'share-bin-cached' };
+      for (const subdir of ['bin', 'tools']) {
+        const cached = join(dir, subdir, rgBinaryName());
+        const cachedRun = await probe.exec([cached, '--version']).catch(() => ({ exitCode: -1 }));
+        if (cachedRun.exitCode === 0) {
+          return { path: cached, source: 'share-bin-cached' };
+        }
       }
     }
   }

@@ -3,9 +3,10 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
-import { mergeChildEnv } from '@kiki/kaos/exec-env';
+import { bundledWindowsToolchainCandidates, mergeChildEnv } from '@kiki/kaos/exec-env';
 import { z } from 'zod';
 
+import { ensureKikiNodeShimSync } from '#/os/backends/node-local/kikiCliPath';
 import { type IHostProcess, IHostProcessService } from '#/os/interface/hostProcess';
 import { toErrorMessage } from '#/_base/errors/errorMessage';
 import { toErrorPayload } from '#/_base/errors/serialize';
@@ -27,6 +28,7 @@ export interface HookEnvContext {
   readonly execPath?: string;
   readonly homeDir?: string;
   readonly pathExists?: (candidate: string) => boolean;
+  readonly ensureNodeShimDir?: (kikiHome: string, seaExecutable: string) => string | undefined;
 }
 
 export function resolveHookEnvOverrides(
@@ -47,6 +49,17 @@ export function resolveHookEnvOverrides(
   const existing = currentPath.split(sep).filter((entry) => entry.length > 0);
   const seen = new Set(existing.map((entry) => normalizePathSegment(entry, isWindows)));
   const added: string[] = [];
+  const extraEnv: Record<string, string> = {};
+
+  const pluginRoot = overrides?.['KIKI_PLUGIN_ROOT'] ?? baseEnv['KIKI_PLUGIN_ROOT'];
+  if (
+    pluginRoot !== undefined &&
+    pluginRoot.trim().length > 0 &&
+    overrides?.['CLAUDE_PLUGIN_ROOT'] === undefined &&
+    baseEnv['CLAUDE_PLUGIN_ROOT'] === undefined
+  ) {
+    extraEnv['CLAUDE_PLUGIN_ROOT'] = pluginRoot;
+  }
 
   const appendIfMissing = (candidate: string): void => {
     if (candidate.length === 0) return;
@@ -62,6 +75,51 @@ export function resolveHookEnvOverrides(
     const nodeDir = pathImpl.dirname(execPath);
     if (nodeDir.length > 0 && nodeDir !== '.') {
       appendIfMissing(nodeDir);
+    }
+  } else if (isWindows) {
+    const mergedLookup: Record<string, string | undefined> = { ...baseEnv, ...overrides };
+    let hasToolchainNodeShim = false;
+    for (const root of bundledWindowsToolchainCandidates(mergedLookup, execPath)) {
+      const gitCmd = path.win32.join(root, 'git', 'cmd');
+      if (pathExists(path.win32.join(gitCmd, 'git.exe'))) appendIfMissing(gitCmd);
+      const mingwBin = path.win32.join(root, 'git', 'mingw64', 'bin');
+      if (pathExists(path.win32.join(mingwBin, 'git.exe')) || pathExists(path.win32.join(mingwBin, 'curl.exe'))) {
+        appendIfMissing(mingwBin);
+      }
+      const armBin = path.win32.join(root, 'git', 'clangarm64', 'bin');
+      if (pathExists(path.win32.join(armBin, 'git.exe'))) appendIfMissing(armBin);
+      const usrBin = path.win32.join(root, 'git', 'usr', 'bin');
+      if (pathExists(path.win32.join(usrBin, 'bash.exe'))) appendIfMissing(usrBin);
+      const toolBin = path.win32.join(root, 'bin');
+      const hasNodeCmd = pathExists(path.win32.join(toolBin, 'node.cmd'));
+      if (hasNodeCmd || pathExists(path.win32.join(toolBin, 'rg.exe'))) {
+        appendIfMissing(toolBin);
+        if (hasNodeCmd) hasToolchainNodeShim = true;
+      }
+    }
+
+    const hasSystemNode = existing.some((entry) => {
+      const clean = entry.trim().replace(/^"(.*)"$/, '$1');
+      return clean.length > 0 && pathExists(path.win32.join(clean, 'node.exe'));
+    });
+    if (!hasSystemNode) {
+      if (overrides?.['KIKI_SEA_EXEC'] === undefined && baseEnv['KIKI_SEA_EXEC'] === undefined) {
+        extraEnv['KIKI_SEA_EXEC'] = execPath;
+      }
+      if (!hasToolchainNodeShim) {
+        const home = context.homeDir ?? safeHomedir();
+        const kikiHome =
+          overrides?.['KIKI_HOME']?.trim() ||
+          baseEnv['KIKI_HOME']?.trim() ||
+          (home.length > 0 ? path.win32.join(home, '.kiki') : '');
+        const shimBuilder =
+          context.ensureNodeShimDir ??
+          ((resolvedHome: string, seaExec: string) => ensureKikiNodeShimSync(resolvedHome, seaExec, 'win32'));
+        const nodeShimDir = kikiHome.length > 0 ? shimBuilder(kikiHome, execPath) : undefined;
+        if (nodeShimDir !== undefined) {
+          appendIfMissing(nodeShimDir);
+        }
+      }
     }
   }
 
@@ -79,13 +137,17 @@ export function resolveHookEnvOverrides(
     }
   }
 
-  if (added.length === 0) {
+  if (added.length === 0 && Object.keys(extraEnv).length === 0) {
     return overrides === undefined ? undefined : { ...overrides };
   }
-  return {
+  const result: Record<string, string> = {
     ...overrides,
-    [pathKey]: [...existing, ...added].join(sep),
+    ...extraEnv,
   };
+  if (added.length > 0) {
+    result[pathKey] = [...existing, ...added].join(sep);
+  }
+  return result;
 }
 
 export function buildHookSpawnOptions(
@@ -176,6 +238,21 @@ const HookJsonOutputSchema = z.strictObject({
   hookSpecificOutput: HookSpecificOutputSchema.optional(),
 });
 
+function translateWindowsPluginRootVars(
+  command: string,
+  overrides: Readonly<Record<string, string>> | undefined,
+): string {
+  if (process.platform !== 'win32') return command;
+  let next = command;
+  if ((overrides?.['KIKI_PLUGIN_ROOT'] ?? process.env['KIKI_PLUGIN_ROOT']) !== undefined) {
+    next = next.replaceAll('${KIKI_PLUGIN_ROOT}', '%KIKI_PLUGIN_ROOT%');
+  }
+  if ((overrides?.['CLAUDE_PLUGIN_ROOT'] ?? process.env['CLAUDE_PLUGIN_ROOT']) !== undefined) {
+    next = next.replaceAll('${CLAUDE_PLUGIN_ROOT}', '%CLAUDE_PLUGIN_ROOT%');
+  }
+  return next;
+}
+
 export async function runHook(
   hostProcess: IHostProcessService,
   command: string,
@@ -185,11 +262,13 @@ export async function runHook(
   const failClosed = options.failClosed;
   let proc: IHostProcess;
   try {
-    proc = await hostProcess.spawn(command, [], {
+    const envOverrides = resolveHookEnvOverrides(options.env);
+    const effectiveCommand = translateWindowsPluginRootVars(command, envOverrides);
+    proc = await hostProcess.spawn(effectiveCommand, [], {
       shell: true,
       ownedProcessTree: true,
       cwd: options.cwd,
-      env: resolveHookEnvOverrides(options.env),
+      env: envOverrides,
     });
   } catch (error) {
     const message = toErrorMessage(error);

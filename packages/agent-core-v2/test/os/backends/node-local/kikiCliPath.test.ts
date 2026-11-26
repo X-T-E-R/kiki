@@ -7,7 +7,9 @@ import { promisify } from 'node:util';
 import {
   applyKikiCliEnv,
   ensureKikiCliShim,
+  ensureKikiNodeShimSync,
   type KikiShimWriter,
+  kikiNodeShimFiles,
   kikiShimFiles,
   prependPathEntry,
   resolveKikiCliLaunch,
@@ -298,5 +300,59 @@ describe('ensureKikiCliShim', () => {
     });
     expect(written?.writtenFiles).toEqual([]);
     expect(harness.written).toEqual([]);
+  });
+
+  it('writes the SEA node fallback shim under bin/node-shim and preserves ) args + exit codes on Windows', async () => {
+    const tempHome = await mkdtemp(join(process.env['TEMP'] ?? '/tmp', 'kiki-node-shim-'));
+    try {
+      const files = kikiNodeShimFiles(SEA_EXE, 'win32');
+      expect(files.map((item) => item.name)).toEqual(['node', 'node.cmd']);
+      expect(files[0]?.content).toContain('KIKI_NODE_SHIM=1');
+      expect(files[0]?.content).toContain('__plugin_run_node');
+      expect(files[1]?.content).toContain('set "KIKI_NODE_SHIM=1"');
+      expect(files[1]?.content).toContain('__plugin_run_node %*');
+      expect(files[1]?.content).not.toContain('(');
+      expect(files[1]?.content).not.toContain(')');
+
+      const nodeShimDir = ensureKikiNodeShimSync(tempHome, SEA_EXE, 'win32');
+      expect(nodeShimDir).toBe(join(tempHome, 'bin', 'node-shim'));
+
+      if (process.platform === 'win32' && nodeShimDir !== undefined) {
+        const fakeSea = join(tempHome, 'fake-sea.cmd');
+        await writeFile(
+          fakeSea,
+          [
+            '@echo off',
+            'if "%~2"=="-e" echo %~3& exit /b 0',
+            'if "%~2"=="exit3" exit /b 3',
+            'exit /b 2',
+            '',
+          ].join('\r\n'),
+          'utf8',
+        );
+        const nodeCmd = join(nodeShimDir, 'node.cmd');
+        const execFileAsync = promisify(execFile);
+        const parenOut = await execFileAsync(
+          process.env['ComSpec'] ?? 'cmd.exe',
+          ['/d', '/s', '/c', `""${nodeCmd}" -e "console.log('node-ok')""`],
+          { env: { ...process.env, KIKI_SEA_EXEC: fakeSea }, windowsVerbatimArguments: true },
+        );
+        expect(parenOut.stdout.trim()).toBe("console.log('node-ok')");
+
+        let observedExitCode = 0;
+        try {
+          await execFileAsync(
+            process.env['ComSpec'] ?? 'cmd.exe',
+            ['/d', '/s', '/c', `""${nodeCmd}" exit3"`],
+            { env: { ...process.env, KIKI_SEA_EXEC: fakeSea }, windowsVerbatimArguments: true },
+          );
+        } catch (error) {
+          observedExitCode = (error as { code?: number }).code ?? -1;
+        }
+        expect(observedExitCode).toBe(3);
+      }
+    } finally {
+      await rm(tempHome, { recursive: true, force: true });
+    }
   });
 });

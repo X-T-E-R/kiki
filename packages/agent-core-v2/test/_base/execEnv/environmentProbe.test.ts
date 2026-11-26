@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 
 import {
   probeHostEnvironment,
-  ProbeShellNotFoundError,
   type HostEnvironmentProbeDeps,
 } from '@kiki/kaos/exec-env';
 
@@ -80,20 +79,19 @@ describe('probeHostEnvironment', () => {
     expect(env.shellPath).toBe('C:\\msys64\\usr\\bin\\bash.exe');
   });
 
-  it('throws ProbeShellNotFoundError when Git Bash is missing on Windows', async () => {
-    const rejected: unknown = await probeHostEnvironment(
+  it('falls back cleanly to PowerShell when Git Bash and bundled toolchain are missing on Windows', async () => {
+    const env = await probeHostEnvironment(
       stubDeps({
         platform: 'win32',
-        env: { PATH: 'C:\\Windows\\System32' },
+        env: { PATH: 'C:\\Windows\\System32', SystemRoot: 'C:\\Windows' },
         existingPaths: [],
       }),
-    ).catch((error: unknown) => error);
+    );
 
-    expect(rejected).toBeInstanceOf(ProbeShellNotFoundError);
-    const probeError = rejected as ProbeShellNotFoundError;
-    expect(probeError.message).toContain('https://gitforwindows.org/');
-    expect(probeError.message).not.toContain('Checked:');
-    expect(probeError.checked.length).toBeGreaterThan(0);
+    expect(env.osKind).toBe('Windows');
+    expect(env.pathClass).toBe('win32');
+    expect(env.shellName).toBe('powershell');
+    expect(env.shellPath).toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
   });
 
   it('honors KIKI_SHELL_PATH on POSIX and Android before standard candidates', async () => {

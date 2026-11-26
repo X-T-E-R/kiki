@@ -3,6 +3,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { BugIndicatingError } from '#/_base/errors/errors';
 import {
+  applyBundledWindowsToolchainPathFromNode,
   applyLoginShellPathFromNode,
   probeHostEnvironmentFromNode,
   ProbeShellNotFoundError,
@@ -30,7 +31,9 @@ export class HostEnvironmentService implements IHostEnvironment {
       probeHostEnvironmentFromNode().then((info) => {
         this._info = info;
       }),
-      applyLoginShellPathFromNode().then(() => applyKikiCliShimFromNode()),
+      applyLoginShellPathFromNode()
+        .then(() => applyBundledWindowsToolchainPathFromNode())
+        .then(() => applyKikiCliShimFromNode()),
     ])
       .then(() => {})
       .catch((error: unknown) => {
