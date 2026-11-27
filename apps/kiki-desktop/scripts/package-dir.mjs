@@ -34,8 +34,10 @@ const { values } = parseArgs({
   options: {
     'skip-gui-build': { type: 'boolean', default: false },
     'skip-stage-server': { type: 'boolean', default: false },
+    'out-dir': { type: 'string', default: 'out' },
   },
 });
+const outputDirName = String(values['out-dir'] ?? 'out').trim() || 'out';
 
 if (!values['skip-stage-server']) {
   await stageDesktopServer({
@@ -72,6 +74,7 @@ try {
     publish: 'never',
     config: {
       electronDist,
+      directories: { output: outputDirName },
     },
   });
 } catch (error) {
@@ -84,6 +87,7 @@ try {
       publish: 'never',
       config: {
         electronDist,
+        directories: { output: outputDirName },
         win: {
           signAndEditExecutable: false,
         },
@@ -95,7 +99,7 @@ try {
 }
 
 if (process.platform === 'win32') {
-  const unpackedDir = join(desktopRoot, 'out', 'win-unpacked');
+  const unpackedDir = resolve(desktopRoot, outputDirName, 'win-unpacked');
   const unpackedExe = join(unpackedDir, 'kiki-desktop.exe');
   execFileSync(process.execPath, [join(scriptDir, 'verify-fuses.mjs'), unpackedExe, '--packaged'], {
     cwd: desktopRoot,

@@ -6,6 +6,7 @@ import { executeCpuOperation, type CpuOperation } from './tasks';
 import { RESOURCE_DEFAULTS } from '#/_base/node/resourceDefaults';
 import { warnIfWorkerHeapLimit } from '#/_base/node/workerHeapPolicy';
 
+(process as { noAsar?: boolean }).noAsar = true;
 warnIfWorkerHeapLimit(RESOURCE_DEFAULTS.workerHeapMb);
 const port = parentPort;
 if (port === null) throw new Error('CPU worker requires a parent port');

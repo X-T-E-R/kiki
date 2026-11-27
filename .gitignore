@@ -39,6 +39,7 @@ apps/kimi-code/vendor/codex-browser-bridge/**/codex-browser-bridge.exe
 !/apps/kimi-code/vendor/codex-browser-bridge/win32-x64/codex-browser-bridge.exe
 apps/kiki-desktop/dist/
 apps/kiki-desktop/out/
+apps/kiki-desktop/out-*/
 .DS_Store
 .playwright-mcp/
 .claude
