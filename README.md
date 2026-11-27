@@ -9,7 +9,7 @@
 
 [Download](#start-here) · [Docs](https://x-t-e-r.github.io/kiki/en/) · [Plugins](https://github.com/X-T-E-R/kiki-plugins) · [Recipes](https://github.com/X-T-E-R/kiki-recipes) · [Screenshot tour](marketing/gallery.en.md) · [Issues](https://github.com/X-T-E-R/kiki/issues)
 
-English · [简体中文](README.zh-CN.md)
+English · [简体中文](README.zh-CN.md) · [Türkçe](README.tr.md)
 
 </div>
 
