@@ -9,7 +9,7 @@
 
 [下载安装](#从这里开始) · [文档](https://x-t-e-r.github.io/kiki/zh/) · [插件市场](https://github.com/X-T-E-R/kiki-plugins) · [模型配方](https://github.com/X-T-E-R/kiki-recipes) · [截图巡览](marketing/gallery.zh-CN.md) · [问题反馈](https://github.com/X-T-E-R/kiki/issues)
 
-[English](README.md) · 简体中文
+[English](README.md) · 简体中文 · [Türkçe](README.tr.md)
 
 </div>
 
