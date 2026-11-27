@@ -14,9 +14,10 @@
 import { useCallback, useContext, useEffect, useMemo, useSyncExternalStore } from 'react';
 import { QueryClientContext, type QueryClient, type QueryKey } from '@tanstack/react-query';
 
-import type { Session, Workspace } from '@kiki/protocol';
+import type { Session, SidebarRow, Workspace } from '@kiki/protocol';
 
 import { threadRefInfoOf, type ThreadRefInfo } from '@kiki/session-core/composer';
+import { sidebarRowToSession } from '@kiki/session-core/sessions';
 
 /** The workspace label a chip and the context block show. Only `name` is read,
  * so the metadata-only catalog entry (`WorkspaceCatalogEntry`, no
@@ -37,35 +38,53 @@ export interface ThreadRefDirectory {
   readonly info: (sessionId: string) => ThreadRefInfo;
 }
 
-function isSession(value: unknown): value is Session {
+function isSessionLike(value: unknown): value is Session | SidebarRow {
   return typeof value === 'object' && value !== null
     && typeof (value as Session).id === 'string'
     && typeof (value as Session).workspace_id === 'string'
     && typeof (value as Session).updated_at === 'string';
 }
 
+function toCachedSession(value: Session | SidebarRow): Session {
+  if (typeof (value as Partial<Session>).metadata === 'object' && (value as Partial<Session>).metadata !== null) {
+    return value as Session;
+  }
+  return sidebarRowToSession(value as SidebarRow);
+}
+
+function hasSessionCwd(session: Session): boolean {
+  const cwd = session.worktree?.source_root ?? session.metadata?.cwd;
+  return typeof cwd === 'string' && cwd.trim() !== '';
+}
+
 /** Session records inside one cached list payload (infinite pages, `{ items }`, or `{ units }`). */
-function sessionsIn(data: unknown): Session[] {
+export function cachedSessionsFromQueryData(data: unknown): Session[] {
   if (typeof data !== 'object' || data === null) return [];
-  const pages = (data as { pages?: unknown }).pages;
-  if (Array.isArray(pages)) return pages.flatMap((page) => sessionsIn(page));
+  const out: Session[] = [];
+  const items = (data as { items?: unknown }).items;
+  if (Array.isArray(items)) {
+    for (const item of items) {
+      if (isSessionLike(item)) out.push(toCachedSession(item));
+    }
+  }
   const units = (data as { units?: unknown }).units;
   if (Array.isArray(units)) {
-    const out: Session[] = [];
     for (const unit of units) {
       if (typeof unit !== 'object' || unit === null) continue;
       const rec = unit as { kind?: unknown; row?: unknown; members?: unknown };
-      if (rec.kind === 'session' && isSession(rec.row)) out.push(rec.row);
+      if (rec.kind === 'session' && isSessionLike(rec.row)) out.push(toCachedSession(rec.row));
       else if (rec.kind === 'group' && Array.isArray(rec.members)) {
         for (const m of rec.members) {
-          if (isSession(m)) out.push(m);
+          if (isSessionLike(m)) out.push(toCachedSession(m));
         }
       }
     }
-    return out;
   }
-  const items = (data as { items?: unknown }).items;
-  return Array.isArray(items) ? items.filter(isSession) : [];
+  const pages = (data as { pages?: unknown }).pages;
+  if (Array.isArray(pages)) {
+    for (const page of pages) out.push(...cachedSessionsFromQueryData(page));
+  }
+  return out;
 }
 
 function snapshotOf(client: QueryClient | undefined): { sessions: Map<string, Session>; workspaces: Map<string, ThreadRefWorkspace> } {
@@ -73,10 +92,21 @@ function snapshotOf(client: QueryClient | undefined): { sessions: Map<string, Se
   const workspaces = new Map<string, ThreadRefWorkspace>();
   if (client === undefined) return { sessions, workspaces };
   for (const [, data] of client.getQueriesData({ queryKey: ['sessions'] })) {
-    for (const session of sessionsIn(data)) sessions.set(session.id, session);
+    for (const session of cachedSessionsFromQueryData(data)) {
+      const existing = sessions.get(session.id);
+      if (existing === undefined || (!hasSessionCwd(existing) && hasSessionCwd(session))) {
+        sessions.set(session.id, session);
+      }
+    }
   }
   for (const [, data] of client.getQueriesData({ queryKey: ['thread-ref'] })) {
-    if (isSession(data) && !sessions.has(data.id)) sessions.set(data.id, data);
+    if (isSessionLike(data)) {
+      const full = toCachedSession(data);
+      const existing = sessions.get(full.id);
+      if (existing === undefined || hasSessionCwd(full) || !hasSessionCwd(existing)) {
+        sessions.set(full.id, full);
+      }
+    }
   }
   // App's metadata-only directory: the same key every picker reads, so a
   // rename invalidation reaches these labels with no second workspace listing.
@@ -238,7 +268,10 @@ export function useThreadRefDirectory(
   const knownHostId = client?.getQueryData<string>(['thread-host-id']);
   const sourceMatches = sourceHostId === undefined || sourceHostId === knownHostId;
   const missing = useMemo(
-    () => [...new Set(ids)].filter((id) => !snapshot.sessions.has(id)),
+    () => [...new Set(ids)].filter((id) => {
+      const entry = snapshot.sessions.get(id);
+      return entry === undefined || !hasSessionCwd(entry);
+    }),
     [ids, snapshot],
   );
   useEffect(() => {

@@ -112,9 +112,13 @@ function realFirstBubble(): HTMLElement | null {
 }
 
 function clearHandoff(): void {
+  const hadHandoff = document.documentElement.hasAttribute(HANDOFF_ATTR);
   document.documentElement.removeAttribute(HANDOFF_ATTR);
   for (const attr of [SOURCE_ATTR, TARGET_ATTR]) {
     for (const node of document.querySelectorAll(`[${attr}]`)) node.removeAttribute(attr);
+  }
+  if (hadHandoff) {
+    window.dispatchEvent(new Event('kiki:ime-resync'));
   }
 }
 

@@ -21,6 +21,7 @@ import { NavBackButton } from './NavBackButton';
 import { PhoneRemoteSpaceLine } from './PageChrome';
 import { invalidatePersonaSessionLists } from '../lib/personaFreshness';
 import { placeNewPath, placeRoutePrefix, placeSessionPath, stripPlacePrefix } from '../lib/placeRoutes';
+import { cachedSessionsFromQueryData } from '../lib/threadRefs';
 import { useGuardedNavigate } from './dirtyGuard';
 import { Composer, DEFAULT_AGENT_PROFILE, resolveSelectedEffort, type ComposerEngine, type PendingRuntimeControls } from './Composer';
 import { ContextBreakdownProvider } from './ContextMeter';
@@ -2730,12 +2731,9 @@ export function SessionView({
     if (fromProp !== undefined) return fromProp;
     const direct = queryClient.getQueryData<Session>(['session', sessionId]);
     if (direct !== undefined && direct !== null) return direct;
-    for (const [, data] of queryClient.getQueriesData<{ pages?: Array<{ items?: readonly Session[] }> }>({ queryKey: ['sessions'] })) {
-      if (!Array.isArray(data?.pages)) continue;
-      for (const page of data.pages) {
-        const hit = Array.isArray(page?.items) ? page.items.find((item) => item.id === sessionId) : undefined;
-        if (hit !== undefined) return hit;
-      }
+    for (const [, data] of queryClient.getQueriesData({ queryKey: ['sessions'] })) {
+      const hit = cachedSessionsFromQueryData(data).find((item) => item.id === sessionId);
+      if (hit !== undefined) return hit;
     }
     return undefined;
   }, [sessions, sessionId, queryClient]);

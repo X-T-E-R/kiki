@@ -226,6 +226,8 @@ export function ComposerCodeMirror(props: ComposerInputProps) {
     });
     let composing = false;
     let compositionKey = false;
+    let hiddenWithFocus = false;
+    let suppressFocusCallbacks = false;
     const view = new EditorView({
       parent: container,
       state: EditorState.create({
@@ -245,8 +247,12 @@ export function ComposerCodeMirror(props: ComposerInputProps) {
               propsRef.current.onKeyDown(event);
               return event.defaultPrevented;
             },
-            focus: () => { propsRef.current.onFocus(); },
-            blur: () => { propsRef.current.onBlur(); },
+            focus: () => {
+              if (!suppressFocusCallbacks) propsRef.current.onFocus();
+            },
+            blur: () => {
+              if (!suppressFocusCallbacks) propsRef.current.onBlur();
+            },
             compositionstart: () => { composing = true; propsRef.current.onCompositionStart(); },
             compositionend: () => { composing = false; propsRef.current.onCompositionEnd(); },
             paste: (event) => {
@@ -312,7 +318,63 @@ export function ComposerCodeMirror(props: ComposerInputProps) {
     };
     propsRef.current.inputRef.current = handle;
     const unregister = registerComposerInput(handle);
+    let imeSyncFrame = 0;
+    const syncNativeImeCaretRect = () => {
+      if (imeSyncFrame !== 0) cancelAnimationFrame(imeSyncFrame);
+      imeSyncFrame = requestAnimationFrame(() => {
+        imeSyncFrame = 0;
+        if (!view.dom.isConnected || !view.hasFocus || composing || view.composing || propsRef.current.disabled) return;
+        view.requestMeasure();
+        if (!view.state.selection.main.empty) return;
+        const sel = window.getSelection();
+        if (sel === null || sel.rangeCount === 0) return;
+        try {
+          const domPos = view.domAtPos(view.state.selection.main.head);
+          if (view.contentDOM.contains(domPos.node)) {
+            sel.collapse(domPos.node, domPos.offset);
+          }
+        } catch {
+          // Ignore transient detached text nodes while CodeMirror reconciles decorations.
+        }
+      });
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        if (view.hasFocus && !composing && !view.composing) {
+          hiddenWithFocus = true;
+          suppressFocusCallbacks = true;
+          try {
+            view.contentDOM.blur();
+          } finally {
+            suppressFocusCallbacks = false;
+          }
+        }
+        return;
+      }
+      if (hiddenWithFocus) {
+        hiddenWithFocus = false;
+        if (!propsRef.current.disabled && (document.activeElement === null || document.activeElement === document.body)) {
+          suppressFocusCallbacks = true;
+          try {
+            view.contentDOM.focus({ preventScroll: true });
+          } finally {
+            suppressFocusCallbacks = false;
+          }
+        }
+      }
+      syncNativeImeCaretRect();
+    };
+    window.addEventListener('focus', syncNativeImeCaretRect);
+    window.addEventListener('resize', syncNativeImeCaretRect);
+    window.addEventListener('kiki:ime-resync', syncNativeImeCaretRect);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    syncNativeImeCaretRect();
     return () => {
+      if (imeSyncFrame !== 0) cancelAnimationFrame(imeSyncFrame);
+      window.removeEventListener('focus', syncNativeImeCaretRect);
+      window.removeEventListener('resize', syncNativeImeCaretRect);
+      window.removeEventListener('kiki:ime-resync', syncNativeImeCaretRect);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
       unregister();
       view.destroy();
       viewRef.current = null;

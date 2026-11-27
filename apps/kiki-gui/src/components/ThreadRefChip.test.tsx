@@ -166,6 +166,50 @@ describe('thread-reference directory cache', () => {
     expect(container.textContent).toBe('unknown · unknown · unknown');
   });
 
+  it('normalizes sidebar-units rows without metadata and upgrades missing cwd via thread-ref prefetch', async () => {
+    const fetchSession = vi.fn(async () => record({ title: 'Sidebar unit thread', metadata: { cwd: 'C:/src/upgraded' } }));
+    let latestCwd: string | undefined;
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(['sessions', 'sidebar-units', false, null, 'hide', 'updated_desc'], {
+      pages: [{
+        revision: 1,
+        has_more: false,
+        units: [{
+          kind: 'session',
+          id: ID,
+          sort_at: 1,
+          row: {
+            id: ID,
+            workspace_id: 'wd_kiki',
+            title: 'Sidebar unit thread',
+            created_at: '2026-01-01T10:00:00.000Z',
+            updated_at: '2026-01-01T11:30:00.000Z',
+            own_updated_at: '2026-01-01T11:30:00.000Z',
+            busy: false,
+            executing: false,
+            last_seq: 1,
+          },
+        }],
+      }],
+    });
+    function InfoProbe() {
+      const refs = useThreadRefDirectory([ID], fetchSession);
+      const resolved = refs.info(ID);
+      latestCwd = resolved.cwd;
+      return <output>{resolved.title ?? 'unknown'} · {resolved.cwd ?? 'no-cwd'}</output>;
+    }
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    roots.push(root);
+    await act(async () => { root.render(<QueryClientProvider client={client}><InfoProbe /></QueryClientProvider>); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(fetchSession).toHaveBeenCalledWith(ID);
+    expect(latestCwd).toBe('C:/src/upgraded');
+    expect(container.textContent).toBe('Sidebar unit thread · C:/src/upgraded');
+  });
+
   it('refreshes a removed and recreated query even when its update count is unchanged', async () => {
     const { client, container } = await directory();
     await act(async () => { client.setQueryData(['thread-ref', ID], record()); });

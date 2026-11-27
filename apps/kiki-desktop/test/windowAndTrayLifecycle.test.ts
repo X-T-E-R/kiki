@@ -22,6 +22,7 @@ function createFakeWindow(): ManagedWindowLike & {
   fullScreen: boolean;
   lastLoadedUrl: string | null;
   zoomFactor: number;
+  events: string[];
   triggerLeaveFullScreen: () => void;
 } {
   let leaveFullScreenListener: (() => void) | null = null;
@@ -32,6 +33,7 @@ function createFakeWindow(): ManagedWindowLike & {
     fullScreen: false,
     lastLoadedUrl: null as string | null,
     zoomFactor: 1,
+    events: [] as string[],
     isDestroyed: () => false,
     isVisible: () => win.visible,
     isFocused: () => win.focused,
@@ -39,16 +41,26 @@ function createFakeWindow(): ManagedWindowLike & {
     isFullScreen: () => win.fullScreen,
     restore: () => {
       win.minimized = false;
+      win.events.push('restore');
     },
     show: () => {
       win.visible = true;
+      win.events.push('show');
     },
     focus: () => {
       win.focused = true;
+      win.events.push('focus');
     },
     hide: () => {
       win.visible = false;
       win.focused = false;
+      win.events.push('hide');
+    },
+    blurWebView: () => {
+      win.events.push('blurWebView');
+    },
+    focusOnWebView: () => {
+      win.events.push('focusOnWebView');
     },
     setFullScreen: (flag: boolean) => {
       win.fullScreen = flag;
@@ -224,6 +236,7 @@ describe('WindowService and TrayService', () => {
     expect(dockEvents).toEqual([false, true]);
     expect(fakeWin.visible).toBe(true);
     expect(fakeWin.lastLoadedUrl).toBe('http://127.0.0.1:41234');
+    expect(fakeWin.events).toEqual(['blurWebView', 'show', 'focus', 'focusOnWebView']);
 
     // macOS fullscreen close uses leave-full-screen -> hide cleanly (no objc2)
     fakeWin.fullScreen = true;
@@ -238,6 +251,14 @@ describe('WindowService and TrayService', () => {
     expect(fakeWin.visible).toBe(true);
     fakeWin.triggerLeaveFullScreen();
     expect(fakeWin.visible).toBe(false);
+    expect(fakeWin.events).toEqual(['blurWebView', 'show', 'focus', 'focusOnWebView', 'blurWebView', 'hide']);
+
+    await service.showMainWindow();
+    expect(fakeWin.events).toEqual([
+      'blurWebView', 'show', 'focus', 'focusOnWebView',
+      'blurWebView', 'hide',
+      'blurWebView', 'show', 'focus', 'focusOnWebView',
+    ]);
   });
 
   it('detaches desktop on close when close_to_tray=false without stopping ready daemon', async () => {

@@ -234,8 +234,13 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       for (;;) {
         const batch = runtime.queue.takeNextBatch();
         if (batch === undefined) break;
-        if (this.materializeBatch(batch, { turnId: runtime.turnId, stepId: randomUUID(), step: runtime.steps }).invalidatesUserDelivery) {
+        const materialized = this.materializeBatch(batch, { turnId: runtime.turnId, stepId: randomUUID(), step: runtime.steps });
+        if (materialized.invalidatesUserDelivery) {
           runtime.userDeliveryConfirmed = false;
+          runtime.backgroundWakeupActive = false;
+          runtime.lastStepBlockedSilentWakeup = false;
+        } else if (materialized.hasBackgroundNotification && runtime.userDeliveryConfirmed && this.scope.parentAgentId === undefined) {
+          runtime.backgroundWakeupActive = true;
         }
       }
       runtime.queue.enqueue(new ResumeStepRequest(runtime.job?.seed ?? { input: [], origin: { kind: 'unknown' } }));
@@ -253,6 +258,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     return {
       turnId: runtime.turnId, completedSteps: runtime.steps,
       userDeliveryConfirmed: runtime.userDeliveryConfirmed,
+      backgroundWakeupActive: runtime.backgroundWakeupActive,
       pendingStep: runtime.pendingStep,
       seed: runtime.job.seed, binding: structuredClone(binding),
     };
@@ -1163,6 +1169,10 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       userDeliveryConfirmed: job?.restored?.userDeliveryConfirmed
         ?? job?.restored?.pendingStep?.userDeliveryConfirmed
         ?? (this.scope.parentAgentId === undefined && isBackgroundWakeupSeed(job?.seed.origin)),
+      backgroundWakeupActive: job?.restored?.backgroundWakeupActive
+        ?? job?.restored?.pendingStep?.backgroundWakeupActive
+        ?? (this.scope.parentAgentId === undefined && isBackgroundWakeupSeed(job?.seed.origin)),
+      lastStepBlockedSilentWakeup: false,
       thinkingOnlyContinuations: 0,
       extensionRecoveryStreak: 0,
       extensionBudgetUsed: 0,
@@ -1217,12 +1227,18 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     runtime.attempts.set(batch.driver.id, attempt);
     const stepNumber = ++runtime.steps;
     const stepUuid = randomUUID();
-    const { invalidatesUserDelivery, allowsSilentPostDelivery } = this.materializeBatch(batch, {
+    const { invalidatesUserDelivery, allowsSilentPostDelivery, hasBackgroundNotification } = this.materializeBatch(batch, {
       turnId: runtime.turnId,
       stepId: stepUuid,
       step: stepNumber,
     });
-    if (invalidatesUserDelivery) runtime.userDeliveryConfirmed = false;
+    if (invalidatesUserDelivery) {
+      runtime.userDeliveryConfirmed = false;
+      runtime.backgroundWakeupActive = false;
+      runtime.lastStepBlockedSilentWakeup = false;
+    } else if (hasBackgroundNotification && runtime.userDeliveryConfirmed && this.scope.parentAgentId === undefined) {
+      runtime.backgroundWakeupActive = true;
+    }
     const step: StepRuntime = {
       attempt,
       number: stepNumber,
@@ -1454,7 +1470,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   private materializeBatch(
     batch: StepRequestBatch,
     anchor: MaterializeAnchor,
-  ): { readonly invalidatesUserDelivery: boolean; readonly allowsSilentPostDelivery: boolean } {
+  ): { readonly invalidatesUserDelivery: boolean; readonly allowsSilentPostDelivery: boolean; readonly hasBackgroundNotification: boolean } {
     const evaluation = evaluateStepBatchDelivery(batch);
     const delivery = {};
     this.materializeRequest(batch.driver, delivery, anchor);
@@ -1560,13 +1576,15 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
           continuationBudget.deliveryPhase = 'partial_output_unclosed';
         }
         const facts = readGenerateFailureFacts(error);
+        const canSilentlyEndTurn = continuationBudget.userDeliveryConfirmed ||
+          (continuationBudget.backgroundWakeupActive && (!continuationBudget.lastStepBlockedSilentWakeup || thinkingOnlyFollowup));
         if (
           !signal.aborted &&
           !turnSignal.aborted &&
           !isAbortError(error) &&
           this.scope.parentAgentId === undefined &&
           plainToolContinuation &&
-          continuationBudget.userDeliveryConfirmed &&
+          canSilentlyEndTurn &&
           retained.thinkingOnly &&
           isSilentPostDeliveryTurnEnd(error)
         ) {
@@ -1629,9 +1647,11 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       continuationBudget.deliveryPhase = 'partial_output_unclosed';
       continuationBudget.extensionRecoveryStreak = 0;
       this.lastRequestTraceId = request.trace.traceId;
+      const canSilentlyEndTurn = continuationBudget.userDeliveryConfirmed ||
+        (continuationBudget.backgroundWakeupActive && (!continuationBudget.lastStepBlockedSilentWakeup || thinkingOnlyFollowup));
       const silentPostDeliveryTurnEnd = this.scope.parentAgentId === undefined &&
         plainToolContinuation &&
-        continuationBudget.userDeliveryConfirmed &&
+        canSilentlyEndTurn &&
         response.completionAuthority === 'normal' &&
         response.providerFinishReason === 'completed' && response.message.partial !== true &&
         response.rawFinishReason !== 'CONTINUATION' && !hasAnswerOrToolCall(response);
@@ -1876,7 +1896,10 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     stepIdentity: Pick<BeforeStepContext, 'logicalStepId' | 'attempt'>,
   ): Promise<FinishReason> {
     const finishReason = response.providerFinishReason ?? 'completed';
-    if (response.message.toolCalls.length === 0) return finishReason === 'tool_calls' ? 'other' : finishReason;
+    if (response.message.toolCalls.length === 0) {
+      runtime.lastStepBlockedSilentWakeup = false;
+      return finishReason === 'tool_calls' ? 'other' : finishReason;
+    }
     let pending: readonly ExecutionPendingTool[] = runtime.pendingStep?.tools ?? response.message.toolCalls.map(call => ({ call }));
     let sendMessageStopRequested = runtime.pendingStep?.stopTurn ?? false;
     let forcedStopTurn = runtime.pendingStep?.forcedStopTurn ?? false;
@@ -1898,6 +1921,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         anySendMessageUnconfirmed,
         anyToolError,
         userDeliveryConfirmed: runtime.userDeliveryConfirmed,
+        backgroundWakeupActive: runtime.backgroundWakeupActive,
       };
       try { await this.pauseAtBoundary(runtime); }
       finally { runtime.pendingStep = undefined; }
@@ -1994,6 +2018,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     }
     signal.throwIfAborted();
     for (const reminder of systemReminders) this.appendExtensionReminder(reminder.text, reminder.variant);
+    runtime.lastStepBlockedSilentWakeup = anySendMessageUnconfirmed || anyToolError;
     if (anySendMessageUnconfirmed || (sendMessageCompletionBlocked && (!sendMessageStopRequested || anyToolError))) {
       runtime.userDeliveryConfirmed = false;
     }
@@ -2548,15 +2573,33 @@ function googleThinkSnapshotExhausted(response: AgentLLMRequestFinish): ChatProv
   );
 }
 
+function isBackgroundWakeupOrigin(origin: PromptOrigin | undefined): boolean {
+  if (origin === undefined) return false;
+  switch (origin.kind) {
+    case 'task':
+    case 'agent_message':
+    case 'peer_thread':
+    case 'bridged_peer':
+    case 'cron_job':
+    case 'cron_missed':
+    case 'branch_fold':
+      return true;
+    case 'room_message':
+      return origin.targeted !== true;
+    default:
+      return false;
+  }
+}
+
 function isBackgroundNotificationOrigin(origin: PromptOrigin | undefined): boolean {
   if (origin === undefined) return false;
   if (origin.kind === 'merged') return origin.origins.length > 0 && origin.origins.every(isBackgroundNotificationOrigin);
-  return origin.kind === 'task' || origin.kind === 'agent_message' || origin.kind === 'injection';
+  return origin.kind === 'injection' || isBackgroundWakeupOrigin(origin);
 }
 
 function isBackgroundWakeupSeed(origin: PromptOrigin | undefined): boolean {
   if (origin === undefined) return false;
-  if (origin.kind === 'task' || origin.kind === 'agent_message') return true;
+  if (isBackgroundWakeupOrigin(origin)) return true;
   if (origin.kind !== 'merged' || origin.origins.length === 0) return false;
   return origin.origins.every(isBackgroundNotificationOrigin) && origin.origins.some(isBackgroundWakeupSeed);
 }
@@ -2579,6 +2622,7 @@ function requestInvalidatesUserDelivery(request: StepRequest): boolean {
 function evaluateStepBatchDelivery(batch: StepRequestBatch): {
   readonly invalidatesUserDelivery: boolean;
   readonly allowsSilentPostDelivery: boolean;
+  readonly hasBackgroundNotification: boolean;
 } {
   const requests = [batch.driver, ...batch.merged];
   const invalidatesUserDelivery = requests.some(requestInvalidatesUserDelivery);
@@ -2588,7 +2632,8 @@ function evaluateStepBatchDelivery(batch: StepRequestBatch): {
       request.kind === 'thinking-only-continuation' ||
       isBackgroundNotificationRequest(request),
   );
-  return { invalidatesUserDelivery, allowsSilentPostDelivery };
+  const hasBackgroundNotification = !invalidatesUserDelivery && requests.some(isBackgroundNotificationRequest);
+  return { invalidatesUserDelivery, allowsSilentPostDelivery, hasBackgroundNotification };
 }
 
 function isThinkOnlyCompletion(response: AgentLLMRequestFinish): boolean {
@@ -2739,6 +2784,8 @@ interface LoopRuntime {
   readonly attempts: Map<string, number>;
   pendingStep?: ExecutionPendingStep;
   userDeliveryConfirmed: boolean;
+  backgroundWakeupActive: boolean;
+  lastStepBlockedSilentWakeup: boolean;
   steps: number;
   thinkingOnlyContinuations: number;
   extensionRecoveryStreak: number;

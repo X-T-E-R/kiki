@@ -30,17 +30,16 @@ export const SEMANTIC_STATE_TONE: Record<SemanticTone, string> = {
   accent: 'text-accent-ink',
 };
 
+import { cachedSessionsFromQueryData } from '../../lib/threadRefs';
+
 /** Session titles the client already holds (the sidebar's session pages). */
 function useKnownSessionTitles(): (sessionId: string) => string | undefined {
   const queryClient = useContext(QueryClientContext);
   return useCallback((sessionId: string) => {
     if (queryClient === undefined) return undefined;
     for (const [, data] of queryClient.getQueriesData({ queryKey: ['sessions'] })) {
-      const pages = (data as { pages?: readonly { items?: readonly Session[] }[] } | undefined)?.pages;
-      for (const page of pages ?? []) {
-        const hit = page.items?.find((session) => session.id === sessionId);
-        if (hit !== undefined && hit.title.trim() !== '') return hit.title;
-      }
+      const hit = cachedSessionsFromQueryData(data).find((session) => session.id === sessionId);
+      if (hit !== undefined && hit.title.trim() !== '') return hit.title;
     }
     return undefined;
   }, [queryClient]);

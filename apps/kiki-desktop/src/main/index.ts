@@ -345,6 +345,12 @@ if (!singleInstanceLock) {
     hide: () => {
       win.hide();
     },
+    blurWebView: () => {
+      win.blurWebView();
+    },
+    focusOnWebView: () => {
+      win.focusOnWebView();
+    },
     setBackgroundColor: (bg) => {
       win.setBackgroundColor(bg);
     },
@@ -472,6 +478,16 @@ if (!singleInstanceLock) {
 
       win.on('resize', scheduleBoundsSave);
       win.on('move', scheduleBoundsSave);
+      win.on('moved', () => {
+        if (process.platform === 'darwin' && !win.isDestroyed() && win.isFocused()) {
+          win.webContents.executeJavaScript("window.dispatchEvent(new Event('kiki:ime-resync'));", true).catch(() => undefined);
+        }
+      });
+      win.on('show', () => {
+        if (process.platform === 'darwin' && !win.isDestroyed()) {
+          win.webContents.executeJavaScript("window.dispatchEvent(new Event('kiki:ime-resync'));", true).catch(() => undefined);
+        }
+      });
       win.on('focus', () => {
         sendToRenderer(IPC_EVENTS.windowFocus);
       });

@@ -245,6 +245,18 @@ describe('thread context block', () => {
     // The catalog's metadata-only row carries no counts or Git flag, and still
     // names the thread it belongs to.
     expect(threadRefInfoOf(ID, record, { name: 'catalog-only' })).toMatchObject({ workspaceName: 'catalog-only', workspaceId: 'wd_1' });
+    const summaryWithoutMetadata = {
+      id: ID, workspace_id: 'wd_1', title: 'Sidebar summary row', updated_at: '2026-01-01T00:00:00.000Z',
+      busy: false, executing: false,
+    } as unknown as Session;
+    expect(threadRefInfoOf(ID, summaryWithoutMetadata, { name: 'catalog-only' })).toMatchObject({
+      sessionId: ID,
+      title: 'Sidebar summary row',
+      workspaceName: 'catalog-only',
+      workspaceId: 'wd_1',
+      cwd: undefined,
+      status: 'idle',
+    });
   });
 });
 

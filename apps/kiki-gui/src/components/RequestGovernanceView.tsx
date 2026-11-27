@@ -38,6 +38,7 @@ import { useRequestGovernance } from '../lib/useRequestGovernance';
 import { sanitizeDisplayTitle, useSessionNames } from '../lib/threadTitles';
 import { ROOM_ITEMS_QUERY_KEY } from '../lib/useConversationList';
 import { useConnection } from '../state/connection';
+import { cachedSessionsFromQueryData } from '../lib/threadRefs';
 import { useSessionSeen } from '../lib/sessionSeen';
 import { DisclosureChevron, Icon } from './icons';
 import { ConcurrencyRulesEditor, type GovernanceRule } from './usage/ConcurrencyRulesEditor';
@@ -176,26 +177,9 @@ export function RequestGovernanceView({ view = 'realtime' }: { view?: 'realtime'
   const seen = useSessionSeen();
   const cachedSessions = useMemo(() => {
     const byId = new Map<string, Session>();
-    const addSession = (item: Session | undefined) => {
-      if (item !== undefined && typeof item.id === 'string' && !byId.has(item.id)) byId.set(item.id, item);
-    };
     for (const [, data] of queryClient.getQueriesData({ queryKey: ['sessions'] })) {
-      const pages = (data as {
-        pages?: readonly {
-          items?: readonly Session[];
-          units?: readonly ({ kind?: string; row?: Session; members?: readonly Session[] })[];
-        }[];
-        items?: readonly Session[];
-      } | undefined);
-      for (const item of pages?.items ?? []) addSession(item);
-      for (const page of pages?.pages ?? []) {
-        for (const item of page.items ?? []) addSession(item);
-        for (const unit of page.units ?? []) {
-          if (unit.kind === 'session') addSession(unit.row);
-          else if (unit.kind === 'group') {
-            for (const member of unit.members ?? []) addSession(member);
-          }
-        }
+      for (const session of cachedSessionsFromQueryData(data)) {
+        if (!byId.has(session.id)) byId.set(session.id, session);
       }
     }
     return [...byId.values()];

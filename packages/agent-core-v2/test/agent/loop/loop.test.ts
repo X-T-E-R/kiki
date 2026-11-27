@@ -2802,6 +2802,72 @@ describe('post-delivery thinking-only completion', () => {
       await local.dispose();
     }
   });
+
+  it('allows peer_thread and cron_job wakeups to inspect with synchronous tools and then end silently on thinking-only', async () => {
+    const local = createTestAgent(permissionModeServices('yolo'));
+    const requester = local.get(IAgentLLMRequesterService);
+    const start = requester.start.bind(requester);
+    vi.spyOn(requester, 'start').mockImplementation((...args) => {
+      const request = start(...args);
+      return { ...request, result: request.result.then((response) => ({ ...response, completionAuthority: 'normal' as const })) };
+    });
+    vi.spyOn(requester, 'supportsAssistantPrefill').mockReturnValue(true);
+    const inspectTool = vi.fn(async () => ({ output: '2026-11-28T01:01:54' }));
+    local.get(IAgentToolRegistryService).register({
+      name: 'CheckClock',
+      foregroundPolicy: 'instant',
+      description: 'Read local clock.',
+      parameters: { type: 'object' },
+      resolveExecution: () => ({ approvalRule: 'CheckClock', execute: inspectTool }),
+    });
+    local.get(IAgentProfileService).update({ activeToolNames: ['SendMessage', 'CheckClock'] });
+    try {
+      local.mockNextResponse({ type: 'function', id: 'peer-clock', name: 'CheckClock', arguments: '{}' });
+      local.mockNextResponse({ type: 'think', think: 'Night patrol noted; staying in standby without waking user.' });
+      const peerHandle = await local.get(IAgentPromptService).enqueue({
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: 'Message from patrol thread: night digest.' }],
+          toolCalls: [],
+          origin: {
+            kind: 'peer_thread',
+            source: { hostId: 'local', workspaceId: 'wd_patrol', sessionId: 'session_patrol' },
+            messageId: 'msg-patrol-1',
+            acceptedAt: Date.now(),
+          },
+        },
+      });
+      expect(await peerHandle.completion).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 2 } });
+      expect(inspectTool).toHaveBeenCalledTimes(1);
+      expect(local.llmCalls).toHaveLength(2);
+      expect(local.contextData().history.some((m) =>
+        m.role === 'user' && m.content.some((p) => p.type === 'text' && p.text === 'Continue.'))).toBe(false);
+
+      local.mockNextResponse({ type: 'function', id: 'cron-clock', name: 'CheckClock', arguments: '{}' });
+      local.mockNextResponse({ type: 'think', think: 'Scheduled check clean; nothing to post.' });
+      const cronHandle = await local.get(IAgentPromptService).enqueue({
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: '<cron-fire jobId="job-1"/>' }],
+          toolCalls: [],
+          origin: {
+            kind: 'cron_job',
+            jobId: 'job-1',
+            cron: '0 * * * *',
+            recurring: true,
+            coalescedCount: 1,
+            stale: false,
+            deliveryMode: 'idle',
+          },
+        },
+      });
+      expect(await cronHandle.completion).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 2 } });
+      expect(local.llmCalls).toHaveLength(4);
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
 });
 
 describe('native empty provider completion', () => {

@@ -17,6 +17,7 @@ export interface ExecutionPendingStep {
   readonly anySendMessageUnconfirmed?: boolean;
   readonly anyToolError?: boolean;
   readonly userDeliveryConfirmed?: boolean;
+  readonly backgroundWakeupActive?: boolean;
   readonly step: number;
   readonly stepId: string;
   readonly logicalStepId?: string;
@@ -29,6 +30,7 @@ export interface ExecutionPendingStep {
 export interface ExecutionResumePoint {
   readonly pendingStep?: ExecutionPendingStep;
   readonly userDeliveryConfirmed?: boolean;
+  readonly backgroundWakeupActive?: boolean;
   readonly turnId: number;
   readonly completedSteps: number;
   readonly seed: TurnSeed;

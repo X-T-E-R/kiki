@@ -1,7 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react';
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { Navigate, useLocation, useMatch, useNavigate } from 'react-router-dom';
-import type { SessionListData } from '@kiki/session-core/sessions';
 import { readLastSessionId, writeLastSessionId } from '@kiki/session-core/settings';
 
 import { useHost } from '../host';
@@ -11,6 +10,7 @@ import { createBotRoomApi } from '../lib/botRooms';
 import { isSessionNotFoundMessage } from '../lib/client';
 import { placeNewPath, stripPlacePrefix } from '../lib/placeRoutes';
 import { markSpaceViewRoute, writeSpaceViewRoute } from '../lib/spaceViewState';
+import { cachedSessionsFromQueryData } from '../lib/threadRefs';
 import { useConnection, useOptionalControllerRegistry } from '../state/connection';
 
 /** Re-read an absence before trusting it: one index miss during a resume is not a deletion. */
@@ -18,8 +18,8 @@ export const SESSION_ABSENCE_RECHECK_DELAYS_MS = [250, 750] as const;
 
 /** A loaded roster row is independent evidence that the id is not a deletion event. */
 export function sessionListedInCache(queryClient: QueryClient, sessionId: string): boolean {
-  for (const [, data] of queryClient.getQueriesData<SessionListData>({ queryKey: ['sessions'] })) {
-    if (Array.isArray(data?.pages) && data.pages.some((page) => Array.isArray(page?.items) && page.items.some((item) => item.id === sessionId))) return true;
+  for (const [, data] of queryClient.getQueriesData({ queryKey: ['sessions'] })) {
+    if (cachedSessionsFromQueryData(data).some((item) => item.id === sessionId)) return true;
   }
   return false;
 }

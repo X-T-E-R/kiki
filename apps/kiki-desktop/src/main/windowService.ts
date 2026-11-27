@@ -27,6 +27,8 @@ export interface ManagedWindowLike {
   show(): void;
   focus(): void;
   hide(): void;
+  blurWebView?(): void;
+  focusOnWebView?(): void;
   setBackgroundColor?(backgroundColor: string): void;
   setFullScreen(flag: boolean): void;
   once(event: 'leave-full-screen', listener: () => void): unknown;
@@ -168,9 +170,16 @@ export class WindowService {
       win = await this.creatingWindow;
       this.mainWindow = win;
     }
+    const wasVisible = win.isVisible() && !win.isMinimized();
+    if (this.platform === 'darwin' && !wasVisible) {
+      win.blurWebView?.();
+    }
     if (win.isMinimized()) win.restore();
     if (!win.isVisible()) win.show();
     win.focus();
+    if (this.platform === 'darwin' && !wasVisible) {
+      win.focusOnWebView?.();
+    }
     return win;
   }
 
@@ -191,6 +200,9 @@ export class WindowService {
   hideMainWindow(): void {
     const win = this.currentWindow;
     if (win === null) return;
+    if (this.platform === 'darwin') {
+      win.blurWebView?.();
+    }
     if (this.platform === 'darwin' && win.isFullScreen()) {
       win.once('leave-full-screen', () => {
         if (!win.isDestroyed()) win.hide();

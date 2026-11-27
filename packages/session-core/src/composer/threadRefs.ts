@@ -182,13 +182,14 @@ export function threadRefInfoOf(
   hostId?: string,
 ): ThreadRefInfo {
   if (session === undefined) return { sessionId, hostId, status: 'unknown' };
+  const rawCwd = session.worktree?.source_root ?? session.metadata?.cwd;
   return {
     sessionId,
     hostId,
     title: session.title.trim() === '' ? undefined : session.title.trim(),
     workspaceId: session.workspace_id,
     workspaceName: workspace?.name,
-    cwd: session.worktree?.source_root ?? session.metadata.cwd,
+    cwd: typeof rawCwd === 'string' && rawCwd.trim() !== '' ? rawCwd : undefined,
     status: threadRefStatusOf(session),
     updatedAt: session.updated_at,
   };
