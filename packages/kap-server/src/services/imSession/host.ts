@@ -6,6 +6,7 @@ import { Readable } from 'node:stream';
 
 import { atomicWrite } from '@kiki/agent-core-v2/_base/utils/fs';
 import { abortable } from '@kiki/agent-core-v2/_base/utils/abort';
+import { IPersonaStore } from '@kiki/agent-core-v2/app/persona/personaStore';
 
 import {
   agentScopeOf,
@@ -253,8 +254,8 @@ class NotificationSessionPorts implements ImSessionPorts {
   };
 
   readonly sessions: ImSessionPorts['sessions'] = {
-    listPersonas: async () => (await this.core.accessor.get(IBotService).list()).map((persona) => ({
-      id: persona.personaId, name: persona.name, ...(persona.homeSessionId === undefined ? {} : { homeSessionId: persona.homeSessionId }),
+    listPersonas: async () => (await this.core.accessor.get(IPersonaStore).list({ includeArchived: false })).map((persona) => ({
+      id: persona.id, name: persona.name, ...(persona.homeSessionId === undefined ? {} : { homeSessionId: persona.homeSessionId }),
     })),
     listSessions: async () => {
       try {

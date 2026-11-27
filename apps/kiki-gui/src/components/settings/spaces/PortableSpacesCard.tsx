@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
 
 import type {
   PortableSpaceCenterSource,
@@ -93,6 +94,7 @@ export function PortableSpacesCard({
 }: PortableSpacesCardProps) {
   const host = useHost();
   const { t, locale } = useI18n();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const detail = useDetailParam('portable');
   const sourcesQuery = usePortableCenterSources(client);
@@ -769,7 +771,18 @@ export function PortableSpacesCard({
         : t('st.portable.subscribeDone', { name: result.commit.source.label, count });
     }
     setFeedback({ tone: 'success', text });
-    pushToast({ tone: 'success', text });
+    pushToast({
+      tone: 'success',
+      text,
+      ...(result.kind === 'commit'
+        ? {
+          action: {
+            label: t('sidebar.newSession'),
+            run: () => { void navigate('/new'); },
+          },
+        }
+        : {}),
+    });
   };
 
   const listContent = (

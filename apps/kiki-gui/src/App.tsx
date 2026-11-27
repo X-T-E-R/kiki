@@ -1796,14 +1796,21 @@ function NormalApp() {
                 pushToast({
                   tone: 'success',
                   text,
-                  ...(location.pathname.startsWith('/settings/subscriptions')
-                    ? {}
-                    : {
+                  ...(location.pathname.startsWith('/settings')
+                    ? {
                       action: {
-                        label: t('st.section.subscriptions'),
-                        run: () => { void navigate('/settings/subscriptions'); },
+                        label: t('sidebar.newSession'),
+                        run: () => { void navigate('/new'); },
                       },
-                    }),
+                    }
+                    : sessions.length === 0 && location.pathname === '/new'
+                      ? {}
+                      : {
+                        action: {
+                          label: t('st.section.subscriptions'),
+                          run: () => { void navigate('/settings/subscriptions'); },
+                        },
+                      }),
                 });
               }
               void subscribeQueue.settleActiveIntent();

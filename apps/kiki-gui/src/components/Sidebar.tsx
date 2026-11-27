@@ -3379,13 +3379,23 @@ export function Sidebar({
                 {t('sidebar.clearAllFilters')}
               </button>
             ) : (
-              <button
-                type="button"
-                onClick={() => { setFilters({ archived: 'include' }); }}
-                className="mt-1 text-[12px] font-normal text-ink underline underline-offset-2"
-              >
-                {t('sidebar.emptyShowArchived')}
-              </button>
+              <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
+                <button
+                  type="button"
+                  data-sidebar-empty-new
+                  onClick={onNewSession}
+                  className="text-[12px] font-bold text-ink underline underline-offset-2"
+                >
+                  {`+ ${t('sidebar.newSession')}`}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setFilters({ archived: 'include' }); }}
+                  className="text-[12px] font-normal text-ink-soft underline underline-offset-2 hover:text-ink"
+                >
+                  {t('sidebar.emptyShowArchived')}
+                </button>
+              </div>
             )}
           </div>
         ) : null}
