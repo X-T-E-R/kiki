@@ -2498,7 +2498,10 @@ export class AgentPromptService implements IAgentPromptService {
         }).catch(error => {
           if (this.steerBatches.get(turnId) === scheduled) this.steerBatches.delete(turnId);
           for (const id of scheduled.ids) this.steeringPromptIds.delete(id);
-          for (const call of scheduled.calls) call.result.reject(error);
+          const normalized = this.closing === undefined && this.loop.status().activeTurnId !== turnId
+            ? new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'no active turn to steer into')
+            : error;
+          for (const call of scheduled.calls) call.result.reject(normalized);
           if (this.active === undefined) this.scheduleNext();
         });
       });

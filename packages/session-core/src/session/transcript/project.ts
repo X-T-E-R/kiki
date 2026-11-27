@@ -1105,7 +1105,8 @@ function markerToBlock(item: {
         : typeof payloadRecord?.['message'] === 'string'
           ? payloadRecord['message']
           : undefined;
-  if (text !== undefined && text.trim() !== '') return { ...base, text };
+  const noticeTone = payloadRecord?.['level'] === 'error' ? 'danger' as const : base.tone;
+  if (text !== undefined && text.trim() !== '') return { ...base, tone: noticeTone, text };
   if (summaryKey === undefined) return { ...base, text: item.marker };
   return {
     ...base,

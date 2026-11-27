@@ -3932,6 +3932,31 @@ describe('AgentPromptService', () => {
     await launching.completion;
   });
 
+  it('launches an acceptSteer prompt as the next turn instead of failing with Turn ended when atStepBoundary rejects on turn termination', async () => {
+    const { prompt, loop } = harness({ manualTurnResult: true });
+    const first = await prompt.enqueue({ id: 'turn-ending', message: message('first') });
+    const turn = await first.launched;
+    expect(turn).toBeDefined();
+
+    const boundaryGate = deferred<never>();
+    const boundarySpy = vi.spyOn(loop, 'atStepBoundary').mockImplementationOnce(() => boundaryGate.promise);
+    const sendNow = await prompt.enqueue({ id: 'msg-now-turn-ended', message: message('算子天梯总分其实也有用？') });
+    await prompt.acceptSteer([sendNow.id], undefined);
+    await vi.waitFor(() => expect(boundarySpy).toHaveBeenCalledTimes(1));
+
+    loop.settleActive({ type: 'failed', steps: 1, error: new Error('thinking truncated') });
+    const abortErr = new Error('Turn ended');
+    abortErr.name = 'AbortError';
+    boundaryGate.reject(abortErr);
+
+    await first.completion;
+    const nextTurn = await sendNow.launched;
+    expect(nextTurn?.id).toBeGreaterThan(turn!.id);
+    expect(sendNow.state).toBe('running');
+    loop.settleActive();
+    await expect(sendNow.completion).resolves.toMatchObject({ state: 'completed' });
+  });
+
   it('awaits durable persistence in abortDurably and abortQueued before returning true for a restored pending prompt', async () => {
     const { prompt, dispatcher } = harness({ manualTurnResult: true });
     await dispatcher.dispatch(new PromptEnqueued({

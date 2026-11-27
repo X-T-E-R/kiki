@@ -9,6 +9,9 @@ const MERGED_DETAIL_KEYS = [
   'retry_attempts',
   'retry_max_attempts',
   'request_delivery',
+  'request_output',
+  'finishReason',
+  'rawFinishReason',
   'statusCode',
   'upstreamStatus',
 ] as const;

@@ -5,9 +5,10 @@ import { useI18n } from '../../i18n';
 import {
   buildDiagnosticClipboardText,
   decodeFullDiagnostic,
+  isMeaningfulUserErrorCode,
   type DiagnosticCategory,
 } from '../agent-panel/failureText';
-import { DisclosureChevron, Icon } from '../icons';
+import { DisclosureChevron } from '../icons';
 import { RelativeTime } from '../RelativeTime';
 import { CopyButton } from './ContentCopyButton';
 
@@ -54,8 +55,13 @@ const CATEGORY_TITLE_KEY: Readonly<Record<DiagnosticCategory, I18nKey | undefine
   auth: 'transcript.error.auth',
   permission: 'transcript.error.permission',
   context_limit: 'transcript.error.contextLimit',
+  thinking_truncated: 'transcript.error.thinkingTruncated',
+  empty_response: 'transcript.error.emptyResponse',
   unknown: undefined,
 };
+
+const QUIET_COPY_BTN =
+  '!min-h-6 !border-transparent !bg-transparent !px-1.5 !text-ink-faint hover:!border-transparent hover:!bg-ink/[0.05] hover:!text-ink';
 
 const ACTION_BASE =
   'inline-flex min-h-7 min-w-7 cursor-pointer items-center justify-center gap-1 rounded-[6px] px-2.5 text-[13px] leading-[20px] font-normal transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-default disabled:opacity-55 pointer-coarse:min-h-11 pointer-coarse:min-w-11 pointer-coarse:px-3';
@@ -104,26 +110,38 @@ export const TimelineErrorCallout = memo(function TimelineErrorCallout({
 
   const categoryKey = CATEGORY_TITLE_KEY[diagnostic.category];
   const resolvedTitle = title ?? (categoryKey !== undefined ? t(categoryKey) : t('notice.turnFailed'));
-  const displayMessage = diagnostic.decodedMessage !== ''
+  const rawDecodedMessage = diagnostic.decodedMessage !== ''
     ? diagnostic.decodedMessage
     : t('transcript.error.noReason');
+  const humanizedBody = useMemo(() => {
+    if (diagnostic.category === 'thinking_truncated' && /^The API returned a response containing only thinking content/i.test(rawDecodedMessage)) {
+      return t('transcript.error.thinkingTruncatedBody');
+    }
+    if (diagnostic.category === 'empty_response' && /^The API returned an empty response/i.test(rawDecodedMessage)) {
+      return t('transcript.error.emptyResponseBody');
+    }
+    if (rawDecodedMessage.trim() === 'Turn ended') {
+      return t('transcript.error.turnEndedSteerBody');
+    }
+    return undefined;
+  }, [diagnostic.category, rawDecodedMessage, t]);
+  const displayMessage = humanizedBody ?? rawDecodedMessage;
 
   const clipboardText = useMemo(
     () => buildDiagnosticClipboardText(diagnostic, resolvedTitle),
     [diagnostic, resolvedTitle],
   );
 
-  const hasMeta = diagnostic.code !== undefined || diagnostic.status !== undefined || diagnostic.requestId !== undefined;
-  const borderColor = superseded
-    ? 'border-hairline-strong'
+  const visibleCode = isMeaningfulUserErrorCode(diagnostic.code) ? diagnostic.code : undefined;
+  const hasMeta = visibleCode !== undefined || diagnostic.status !== undefined || diagnostic.requestId !== undefined;
+  const dotColor = superseded
+    ? 'bg-ink-faint/60'
     : severity === 'warn'
-      ? 'border-amber-rule'
-      : 'border-danger';
-  const glyphColor = superseded
-    ? 'text-ink-faint'
-    : severity === 'warn'
-      ? 'text-amber-ink'
-      : 'text-danger';
+      ? 'bg-amber-ink/75'
+      : 'bg-danger/75';
+  const surfaceClass = superseded
+    ? 'rounded-[8px] border border-hairline/75 bg-surface-subtle/35 px-3 py-1.5'
+    : 'rounded-[10px] border border-hairline bg-surface-subtle/60 px-3.5 py-2.5';
 
   const visibleActions = superseded
     ? actions.filter((action) => action.navigation === true || action.keepWhenSuperseded === true)
@@ -131,8 +149,9 @@ export const TimelineErrorCallout = memo(function TimelineErrorCallout({
   const confirmAction = confirmActionId === null ? undefined : visibleActions.find((action) => action.id === confirmActionId);
   const messageLineCount = displayMessage.split('\n').length;
   const hasLongHeadlineBody = messageLineCount > 2 || displayMessage.length > 220;
-  const effectiveRawText = diagnostic.rawEnvelope ?? (hasLongHeadlineBody ? displayMessage : undefined);
-  const showRawDisclosure = effectiveRawText !== undefined && (diagnostic.hasDistinctRaw || hasLongHeadlineBody);
+  const rawDiagnosticFallback = humanizedBody !== undefined ? (diagnostic.rawEnvelope ?? rawDecodedMessage) : undefined;
+  const effectiveRawText = diagnostic.rawEnvelope ?? rawDiagnosticFallback ?? (hasLongHeadlineBody ? displayMessage : undefined);
+  const showRawDisclosure = effectiveRawText !== undefined && (diagnostic.hasDistinctRaw || humanizedBody !== undefined || hasLongHeadlineBody);
 
   if (superseded && !expandedSuperseded) {
     return (
@@ -141,13 +160,11 @@ export const TimelineErrorCallout = memo(function TimelineErrorCallout({
         data-error-severity={severity}
         data-error-category={diagnostic.category}
         data-error-superseded="true"
-        className={`anim-enter border-l-2 ${borderColor} py-1 pl-3 font-sans ${className}`.trimEnd()}
+        className={`anim-enter ${surfaceClass} font-sans ${className}`.trimEnd()}
         {...attrs}
       >
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-          <span aria-hidden className={`inline-flex shrink-0 items-center ${glyphColor}`}>
-            <Icon name="warning" size={12} />
-          </span>
+          <span aria-hidden className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${dotColor}`} />
           <span className="min-w-0 font-sans text-[13px] leading-[20px] font-normal text-ink-soft">
             {resolvedTitle}
           </span>
@@ -178,6 +195,7 @@ export const TimelineErrorCallout = memo(function TimelineErrorCallout({
               label={resolvedTitle}
               showLabel
               visibleLabel={t('cb.copy')}
+              className={QUIET_COPY_BTN}
             />
             <button
               type="button"
@@ -203,13 +221,11 @@ export const TimelineErrorCallout = memo(function TimelineErrorCallout({
       data-error-category={diagnostic.category}
       data-error-superseded={superseded ? 'true' : undefined}
       role={!superseded && announce ? 'alert' : undefined}
-      className={`anim-enter border-l-2 ${borderColor} py-1.5 pl-3 font-sans ${className}`.trimEnd()}
+      className={`anim-enter ${surfaceClass} font-sans ${className}`.trimEnd()}
       {...attrs}
     >
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-        <span aria-hidden className={`inline-flex shrink-0 items-center ${glyphColor}`}>
-          <Icon name="warning" size={14} />
-        </span>
+        <span aria-hidden className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${dotColor}`} />
         <span data-error-title className="min-w-0 font-sans text-[13px] leading-[20px] font-bold text-ink">
           {resolvedTitle}
         </span>
@@ -230,6 +246,7 @@ export const TimelineErrorCallout = memo(function TimelineErrorCallout({
             label={resolvedTitle}
             showLabel
             visibleLabel={t('cb.copy')}
+            className={QUIET_COPY_BTN}
           />
           {superseded ? (
             <button
@@ -247,10 +264,10 @@ export const TimelineErrorCallout = memo(function TimelineErrorCallout({
         </span>
       </div>
 
-      <div id={bodyPanelId} className="mt-1 space-y-1.5">
+      <div id={bodyPanelId} className="mt-1 space-y-1.5 pl-3.5">
         <p
           data-error-message
-          className={`select-text font-sans text-[13px] leading-[20px] font-normal whitespace-pre-wrap [overflow-wrap:anywhere] text-ink ${
+          className={`select-text font-sans text-[13px] leading-[20px] font-normal whitespace-pre-wrap [overflow-wrap:anywhere] text-ink-soft ${
             hasLongHeadlineBody && !rawOpen ? 'line-clamp-2' : ''
           }`.trimEnd()}
         >
@@ -260,10 +277,10 @@ export const TimelineErrorCallout = memo(function TimelineErrorCallout({
         {hasMeta ? (
           <div
             data-error-meta
-            className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 select-text font-mono text-[12px] leading-[16px] font-normal [overflow-wrap:anywhere] text-ink-soft"
+            className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 select-text font-mono text-[12px] leading-[16px] font-normal [overflow-wrap:anywhere] text-ink-faint"
           >
-            {diagnostic.code !== undefined ? (
-              <span>{t('transcript.error.codeLabel')}: {diagnostic.code}</span>
+            {visibleCode !== undefined ? (
+              <span>{t('transcript.error.codeLabel')}: {visibleCode}</span>
             ) : null}
             {diagnostic.status !== undefined ? (
               <span>{t('transcript.error.statusLabel')}: {diagnostic.status}</span>

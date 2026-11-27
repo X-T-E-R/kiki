@@ -9,7 +9,24 @@ export type DiagnosticCategory =
   | 'auth'
   | 'permission'
   | 'context_limit'
+  | 'thinking_truncated'
+  | 'empty_response'
   | 'unknown';
+
+const INTERNAL_GENERIC_ERROR_CODES = new Set([
+  'internal',
+  'unknown',
+  'provider.api_error',
+  'provider.connection_error',
+  'provider.timeout',
+  'provider.overloaded',
+]);
+
+export function isMeaningfulUserErrorCode(code: string | undefined): code is string {
+  if (code === undefined) return false;
+  const normalized = code.trim().toLowerCase();
+  return normalized !== '' && !INTERNAL_GENERIC_ERROR_CODES.has(normalized);
+}
 
 export interface DecodedDiagnostic {
   readonly decodedMessage: string;
@@ -249,6 +266,14 @@ export function classifyDiagnosticCategory(input: {
     /bad gateway|service unavailable|gateway timeout|stream reset|econnreset|socket hang up|upstream.*(?:timeout|unavailable|disconnected)/i.test(scrubbed)
   ) {
     return 'service';
+  }
+
+  if (/only thinking content without any text or tool calls/i.test(scrubbed)) {
+    return 'thinking_truncated';
+  }
+
+  if (/returned an empty response \(no content, no tool calls\)/i.test(scrubbed)) {
+    return 'empty_response';
   }
 
   return 'unknown';

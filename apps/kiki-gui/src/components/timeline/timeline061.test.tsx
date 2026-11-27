@@ -183,6 +183,43 @@ describe('0.6.1 failureText & TimelineErrorCallout (Release Gate 2)', () => {
     expect(copyBtn.getAttribute('data-copy-state')).not.toBe('copied');
     expect(container.querySelector('[data-error-message]')?.className).toContain('select-text');
   });
+
+  it('humanizes thinking-only APIEmptyResponseError and Turn ended steer outcomes while hiding generic internal codes from main view', async () => {
+    const rawThinkingMsg = 'The API returned a response containing only thinking content without any text or tool calls. This usually indicates the stream was interrupted or the output token budget was exhausted during reasoning. Provider stop details: finishReason=truncated, rawFinishReason=max_tokens. Provider: anthropic, model: gemini-4-carbon';
+    const rawThinkingDetails = JSON.stringify({
+      code: 'provider.api_error',
+      name: 'APIEmptyResponseError',
+      message: rawThinkingMsg,
+    });
+    const container = mount(
+      <TimelineErrorCallout
+        incidentId="inc-thinking-trunc"
+        message={rawThinkingMsg}
+        errorDetails={rawThinkingDetails}
+        actions={[{ id: 'continue', label: '继续', onClick: () => undefined, primary: true }]}
+      />,
+    );
+    expect(container.querySelector('[data-timeline-error-callout]')?.className).not.toContain('border-l-2');
+    expect(container.querySelector('[data-error-title]')?.textContent).toBe('思考阶段未完成正文输出');
+    expect(container.querySelector('[data-error-message]')?.textContent).toContain('模型在思考阶段耗尽了单次输出上限');
+    expect(container.querySelector('[data-error-meta]')).toBeNull();
+    const rawToggle = container.querySelector<HTMLButtonElement>('[data-error-raw-toggle]')!;
+    await act(async () => {
+      rawToggle.click();
+    });
+    expect(container.querySelector('[data-error-raw-details]')?.textContent).toContain('rawFinishReason=max_tokens');
+
+    const steerEnded = mount(
+      <TimelineErrorCallout
+        incidentId="inc-steer-ended"
+        title="发送失败"
+        message="Turn ended"
+        errorDetails={JSON.stringify({ code: 'internal', message: 'Turn ended', name: 'AbortError' })}
+      />,
+    );
+    expect(steerEnded.querySelector('[data-error-message]')?.textContent).toContain('上一轮在插入前刚好结束');
+    expect(steerEnded.querySelector('[data-error-meta]')).toBeNull();
+  });
 });
 
 describe('0.6.1 TurnFootnote & TurnTailSurface (Release Gate 3)', () => {

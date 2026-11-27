@@ -4369,7 +4369,7 @@ export const Transcript = memo(function Transcript({
         if (
           failedTailTurnId !== undefined &&
           isTurnFailureNotice(node, state.turnTail) &&
-          (sameTurn(node.turnId, failedTailTurnId) || (node.turnId === undefined && index > lastUserIndex))
+          (sameTurn(node.turnId, failedTailTurnId) || node.turnId === undefined)
         ) {
           return false;
         }
@@ -6380,7 +6380,6 @@ export const Transcript = memo(function Transcript({
       return;
     }
     const failure = t('locate.failedLoad');
-    pushToast({ tone: 'error', text: failure });
     setReadingRestoreFailed(failure);
     throw new Error(failure);
   }, [nextFrame, resolveAnchorRow, state.transcriptResetVersion, t, virtualizer, readSeekStructure, controller, agentId]);
