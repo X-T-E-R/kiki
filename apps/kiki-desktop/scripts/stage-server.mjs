@@ -285,6 +285,23 @@ async function rebuildNodePtyForElectron({ sourceNodePtyRoot, target, electronVe
     }
   }
 
+  const unixTerminalJs = join(cacheDir, 'lib', 'unixTerminal.js');
+  if (existsSync(unixTerminalJs)) {
+    const rawUnixTerminal = await readFile(unixTerminalJs, 'utf8');
+    const patchedUnixTerminal = rawUnixTerminal
+      .replaceAll(
+        "helperPath.replace('app.asar', 'app.asar.unpacked')",
+        "helperPath.replace(/app\\.asar(?!\\.unpacked)/, 'app.asar.unpacked')",
+      )
+      .replaceAll(
+        "helperPath.replace('node_modules.asar', 'node_modules.asar.unpacked')",
+        "helperPath.replace(/node_modules\\.asar(?!\\.unpacked)/, 'node_modules.asar.unpacked')",
+      );
+    if (patchedUnixTerminal !== rawUnixTerminal) {
+      await writeFile(unixTerminalJs, patchedUnixTerminal, 'utf8');
+    }
+  }
+
   const files = [
     join(cacheDir, 'package.json'),
     join(cacheDir, 'LICENSE'),

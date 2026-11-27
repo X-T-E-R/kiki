@@ -24,6 +24,19 @@ describe('resolvePnpmInvocation', () => {
     });
   });
 
+  it('runs a standalone native pnpm executable directly instead of passing it to Node', () => {
+    expect(
+      resolvePnpmInvocation(
+        { npm_execpath: '/Users/dev/.local/share/mise/installs/pnpm/10.33.0/pnpm' },
+        'darwin',
+        '/Users/dev/.local/share/mise/installs/node/24.22.1/bin/node',
+      ),
+    ).toEqual({
+      command: '/Users/dev/.local/share/mise/installs/pnpm/10.33.0/pnpm',
+      args: [],
+    });
+  });
+
   it('uses Corepack beside the active Node executable when invoked directly', () => {
     expect(resolvePnpmInvocation({}, 'win32', 'C:\\node\\node.exe', () => true)).toEqual({
       command: 'C:\\node\\node.exe',

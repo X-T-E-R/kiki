@@ -17,7 +17,12 @@ export function resolvePnpmInvocation(
   fileExists = existsSync,
 ) {
   const cliPath = env.npm_execpath?.trim();
-  if (cliPath) return { command: nodePath, args: [cliPath] };
+  if (cliPath) {
+    if (/\.(?:cjs|mjs|js)$/i.test(cliPath)) {
+      return { command: nodePath, args: [cliPath] };
+    }
+    return { command: cliPath, args: [] };
+  }
   const path = platform === 'win32' ? win32 : posix;
   const corepackPnpmPath = path.resolve(path.dirname(nodePath), 'node_modules', 'corepack', 'dist', 'pnpm.js');
   if (fileExists(corepackPnpmPath)) {

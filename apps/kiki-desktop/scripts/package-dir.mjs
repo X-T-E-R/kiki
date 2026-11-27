@@ -107,4 +107,22 @@ if (process.platform === 'win32') {
   });
   const receiptResult = await writeElectronBuildReceipt({ candidateDir: unpackedDir });
   console.log(`[package-dir] Verified unpacked release: ${unpackedExe} (releaseId=${receiptResult.releaseId})`);
+} else if (process.platform === 'darwin') {
+  const macOutDir = resolve(desktopRoot, outputDirName, process.arch === 'arm64' ? 'mac-arm64' : 'mac');
+  const appBundle = ['Kiki.app', 'kiki-desktop.app']
+    .map((name) => join(macOutDir, name))
+    .find((candidate) => existsSync(candidate));
+  const unpackedExe = appBundle
+    ? ['kiki-desktop', 'Kiki']
+        .map((name) => join(appBundle, 'Contents', 'MacOS', name))
+        .find((candidate) => existsSync(candidate))
+    : undefined;
+  if (!appBundle || !unpackedExe) {
+    throw new Error(`Packaged macOS app binary not found under ${macOutDir}`);
+  }
+  execFileSync(process.execPath, [join(scriptDir, 'verify-fuses.mjs'), unpackedExe, '--packaged'], {
+    cwd: desktopRoot,
+    stdio: 'inherit',
+  });
+  console.log(`[package-dir] Verified unpacked macOS app: ${appBundle}`);
 }

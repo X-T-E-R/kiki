@@ -20,6 +20,27 @@ function resolveUnpackedPaths() {
       serverDir: join(dir, 'resources', 'app.asar.unpacked', 'dist', 'server'),
     };
   }
+  if (process.platform === 'darwin') {
+    const archDir = join(desktopRoot, 'out', process.arch === 'arm64' ? 'mac-arm64' : 'mac');
+    const appBundle = ['Kiki.app', 'kiki-desktop.app']
+      .map((name) => join(archDir, name))
+      .find((candidate) => existsSync(candidate));
+    if (!appBundle) {
+      throw new Error(`No packaged .app bundle found under ${archDir}`);
+    }
+    const macOsDir = join(appBundle, 'Contents', 'MacOS');
+    const exe = ['kiki-desktop', 'Kiki']
+      .map((name) => join(macOsDir, name))
+      .find((candidate) => existsSync(candidate));
+    if (!exe) {
+      throw new Error(`No packaged executable found under ${macOsDir}`);
+    }
+    return {
+      dir: appBundle,
+      exe,
+      serverDir: join(appBundle, 'Contents', 'Resources', 'app.asar.unpacked', 'dist', 'server'),
+    };
+  }
   if (process.platform === 'linux') {
     const dir = join(desktopRoot, 'out', 'linux-unpacked');
     return {
