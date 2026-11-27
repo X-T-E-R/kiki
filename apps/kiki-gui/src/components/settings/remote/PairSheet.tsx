@@ -24,6 +24,7 @@ import {
   connectionsApi,
   endpointIssue,
   endpointNetworkKind,
+  extractRelayTargetFingerprint,
   fingerprint,
   formatPairingCode,
   labelIssue,
@@ -159,6 +160,8 @@ function OutboundPairSheet({
   const [label, setLabel] = useState('');
   const [endpoint, setEndpoint] = useState('');
   const [pairingFingerprint, setPairingFingerprint] = useState('');
+  const [pairingEndpoints, setPairingEndpoints] = useState<readonly string[]>([]);
+  const [pairingRelayEndpoints, setPairingRelayEndpoints] = useState<readonly string[]>([]);
   const [requestBridge, setRequestBridge] = useState(true);
   const [borrowTools, setBorrowTools] = useState(true);
   const [background, setBackground] = useState(true);
@@ -182,7 +185,9 @@ function OutboundPairSheet({
     if (parsed !== undefined) {
       setEndpoint(completeConnectionEndpoint(parsed.endpoint));
       setCode(parsed.code);
-      setPairingFingerprint(parsed.fingerprint ?? '');
+      setPairingFingerprint(parsed.fingerprint ?? extractRelayTargetFingerprint(parsed.endpoint) ?? '');
+      setPairingEndpoints(parsed.endpoints ?? []);
+      setPairingRelayEndpoints(parsed.relayEndpoints ?? []);
       return true;
     }
     return false;
@@ -194,8 +199,11 @@ function OutboundPairSheet({
       const text = (await navigator.clipboard.readText()).trim();
       if (text === '') return;
       if (!applyPastedValue(text)) {
-        setPairingFingerprint('');
-        setEndpoint(completeConnectionEndpoint(text));
+        const completed = completeConnectionEndpoint(text);
+        setPairingFingerprint(extractRelayTargetFingerprint(completed) ?? '');
+        setPairingEndpoints([]);
+        setPairingRelayEndpoints([]);
+        setEndpoint(completed);
       }
       setFailure(null);
     } catch {
@@ -211,8 +219,11 @@ function OutboundPairSheet({
     setFailure(null);
     try {
       const effectiveBorrowTools = requestBridge && borrowTools;
+      const effectiveFingerprint = pairingFingerprint || extractRelayTargetFingerprint(completedEndpoint) || undefined;
       const record = await connectionsApi(client).pair({
         endpoint: completedEndpoint,
+        ...(pairingEndpoints.length > 1 ? { endpoints: [...pairingEndpoints] } : {}),
+        ...(pairingRelayEndpoints.length > 0 ? { relayEndpoints: [...pairingRelayEndpoints] } : {}),
         code: code.trim(),
         label: label.trim() === '' ? undefined : label.trim(),
         backgroundSummary: background,
@@ -221,7 +232,7 @@ function OutboundPairSheet({
         bridgeOperations: requestBridge
           ? (effectiveBorrowTools ? [...BASE_BRIDGE_OPERATIONS, 'tools'] : [...BASE_BRIDGE_OPERATIONS])
           : undefined,
-        fingerprint: pairingFingerprint || undefined,
+        fingerprint: effectiveFingerprint,
       });
       onPaired?.(record);
     } catch (error) {
@@ -371,7 +382,9 @@ function OutboundPairSheet({
               placeholder="http://192.168.1.20:58627"
               onChange={(event) => {
                 if (applyPastedValue(event.target.value)) return;
-                setPairingFingerprint('');
+                setPairingFingerprint(extractRelayTargetFingerprint(event.target.value) ?? '');
+                setPairingEndpoints([]);
+                setPairingRelayEndpoints([]);
                 setEndpoint(event.target.value);
               }}
               onBlur={() => {
@@ -745,8 +758,15 @@ function InboundPairSheet({
   const qrEndpoint = activeEndpoint === undefined
     ? undefined
     : upgradeEndpointForTlsPin(activeEndpoint, issued.tlsFingerprint);
-  const qrUri = !expired && newlyPairedGrant === undefined && qrEndpoint !== undefined
-    ? formatPairingUri({ endpoint: qrEndpoint, code: issued.code, fingerprint: issued.tlsFingerprint })
+  const relayCandidates = issued.tlsFingerprint !== undefined ? (issued.relayEndpoints ?? []) : [];
+  const qrPrimaryEndpoint = qrEndpoint ?? relayCandidates[0];
+  const qrUri = !expired && newlyPairedGrant === undefined && qrPrimaryEndpoint !== undefined
+    ? formatPairingUri({
+      endpoint: qrPrimaryEndpoint,
+      ...(relayCandidates.length > 0 ? { relayEndpoints: relayCandidates } : {}),
+      code: issued.code,
+      fingerprint: issued.tlsFingerprint,
+    })
     : undefined;
   const qrImage = qrUri === undefined ? undefined : wechatQrImage(qrUri);
 
@@ -879,6 +899,11 @@ function InboundPairSheet({
               })}
             </div>
           )}
+          {relayCandidates.length > 0 ? (
+            <p className="mt-1.5 text-[12px] text-ink-soft" data-inbound-relay-candidates>
+              {t('st.conn.relay.pairedCandidates', { count: relayCandidates.length })}
+            </p>
+          ) : null}
         </div>
 
         <FeedbackLine feedback={failure} />

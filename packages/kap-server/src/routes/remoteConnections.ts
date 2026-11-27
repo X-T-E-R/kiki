@@ -4,8 +4,9 @@ import type { FastifyInstance } from 'fastify';
 import type { IncomingMessage } from 'node:http';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 import { z } from 'zod';
-import { MEDIA_PREVIEW_MAX_BYTES, bridgeOperationsSchema, pluginPanelDocumentSchema, connectionAddInputSchema, connectionBrokerInputSchema, connectionClaimInputSchema, connectionIdentitySchema, connectionInviteInputSchema, connectionPairInputSchema, connectionProvisionInputSchema, connectionTrustUpdateInputSchema, meshCapabilitySchema, pairClaimInputSchema, pairCodeCreateInputSchema, peerTrustTierSchema, sshConnectionConnectInputSchema, sshConnectionRegisterInputSchema, sshRemoteExecuteSchema, sshRemoteProfileSchema, bridgeGrantSchema } from '@kiki/protocol';
+import { MEDIA_PREVIEW_MAX_BYTES, bridgeOperationsSchema, pluginPanelDocumentSchema, connectionAddInputSchema, connectionBrokerInputSchema, connectionClaimInputSchema, connectionIdentitySchema, connectionInviteInputSchema, connectionPairInputSchema, connectionProvisionInputSchema, connectionTrustUpdateInputSchema, isLoopbackHost, meshCapabilitySchema, pairClaimInputSchema, pairCodeCreateInputSchema, peerTrustTierSchema, relayNodeCreateInputSchema, relayNodePatchInputSchema, relayProbeInputSchema, relaySubscriptionCreateInputSchema, sshConnectionConnectInputSchema, sshConnectionRegisterInputSchema, sshRemoteExecuteSchema, sshRemoteProfileSchema, bridgeGrantSchema } from '@kiki/protocol';
 import type { SshRemoteConnector } from '../services/sshRemote/connector';
+import type { RelayTunnelService } from '../services/relayTunnel/relayTunnelService';
 import { readBoundedJsonBody, SESSION_READ_BODY_BYTES } from '@kiki/klient/transports/http/bounded-body';
 import { decodeJsonFrame, parseKlientBatchEnvelope, parseKlientCallRequest, resolveKlientBatchMax } from '@kiki/klient/host';
 import { RPCError } from '@kiki/klient';
@@ -30,8 +31,13 @@ function attachWebSharedConnection(request: object, id: string, manager: RemoteC
   if (!isWebSharedRecord(record, web)) throw new AdmissionError(403, 'connection_not_shared');
   return web!.attachConnection(id, close);
 }
-export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: ConnectionAdmission, manager: RemoteConnectionManager, serverId: string, getOwnerToken: () => string, ssh?: SshRemoteConnector, hooks: { current?: PairingHooks } = {}, web?: WebAccess, tlsFingerprint: () => string | undefined = () => undefined, mintPanelDocument?: MintPluginPanelDocument, x25519Recipient: () => string | undefined = () => undefined): WebSocketServer {
+export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: ConnectionAdmission, manager: RemoteConnectionManager, serverId: string, getOwnerToken: () => string, ssh?: SshRemoteConnector, hooks: { current?: PairingHooks } = {}, web?: WebAccess, tlsFingerprint: () => string | undefined = () => undefined, mintPanelDocument?: MintPluginPanelDocument, x25519Recipient: () => string | undefined = () => undefined, peerRequests?: WeakSet<IncomingMessage>, relayTunnel?: RelayTunnelService): WebSocketServer {
   const pairingLimit = new PairingRateLimit();
+  const requireLocalOwner = (req: object): void => {
+    if (webPrincipal(req) !== undefined || peerAudience(req) !== undefined) {
+      throw new AdmissionError(403, 'local_owner_required');
+    }
+  };
   const respond = async <T>(requestId: string, reply: { code(status: number): unknown; send(value: unknown): unknown }, work: () => Promise<T>) => {
     try { return reply.send(okEnvelope(await work(), requestId)); }
     catch (error) { if (!(error instanceof AdmissionError)) throw error; reply.code(error.status); return reply.send(errEnvelope(40101, error.reason, requestId)); }
@@ -58,14 +64,32 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
     return respond(req.id, reply, async () => {
       const created = await admission.createPairCode(pairCodeCreateInputSchema.parse(req.body ?? {}));
       const extras = hooks.current === undefined ? [] : await hooks.current.endpoints();
+      const relayEndpoints = hooks.current?.relayPairingEndpoints === undefined
+        ? []
+        : await hooks.current.relayPairingEndpoints(created.expiresAt);
       const loopbackEndpoint = hooks.current?.loopbackEndpoint?.();
-      return { code: created.code, expiresAt: created.expiresAt, target: admission.identity, tlsFingerprint: tlsFingerprint(), suggestedEndpoints: directEndpoints({ host: req.socket.localAddress ?? '127.0.0.1', port: req.socket.localPort ?? 0 }, extras), ...(loopbackEndpoint === undefined ? {} : { loopbackEndpoint }), bridgeOperations: created.bridgeOperations, trustTier: created.trustTier, meshCapabilities: created.meshCapabilities };
+      return {
+        code: created.code,
+        expiresAt: created.expiresAt,
+        target: admission.identity,
+        tlsFingerprint: tlsFingerprint(),
+        suggestedEndpoints: directEndpoints({ host: req.socket.localAddress ?? '127.0.0.1', port: req.socket.localPort ?? 0 }, extras),
+        ...(relayEndpoints.length > 0 ? { relayEndpoints: [...relayEndpoints] } : {}),
+        ...(loopbackEndpoint === undefined ? {} : { loopbackEndpoint }),
+        bridgeOperations: created.bridgeOperations,
+        trustTier: created.trustTier,
+        meshCapabilities: created.meshCapabilities,
+      };
     });
   });
   app.post('/api/remote-connections/pair/claim', { bodyLimit: 16 * 1024 * 1024 }, async (req, reply) => {
     reply.header('cache-control', 'no-store');
     return respond(req.id, reply, async () => {
-      if (!pairingLimit.allow(req.ip)) throw new AdmissionError(429, 'pairing_rate_limited');
+      const rateKey =
+        peerRequests?.has(req.raw) && isLoopbackHost(req.ip)
+          ? `relay:${req.socket.remoteAddress ?? req.ip}:${req.socket.remotePort ?? 0}`
+          : req.ip;
+      if (!pairingLimit.allow(rateKey)) throw new AdmissionError(429, 'pairing_rate_limited');
       const input = pairClaimInputSchema.parse(req.body);
       const claimed = await admission.claimPair(input.code, input.source, input.sourceLabel, input.requestBridge);
       try {
@@ -83,6 +107,7 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
               return { ...bundle, grant: grantWithoutCeiling };
             });
         const recipient = x25519Recipient();
+        const relayEndpoints = hooks.current?.relayGrantEndpoints?.(claimed.grantId);
         const result = {
           target: claimed.target,
           targetLabel: machineLabel(),
@@ -90,6 +115,7 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
           revision: claimed.revision,
           peerToken: claimed.peerToken,
           revokedBridgeIds,
+          ...(relayEndpoints !== undefined && relayEndpoints.length > 0 ? { relayEndpoints: [...relayEndpoints] } : {}),
           bridge: wireBridge.length > 0 ? wireBridge : undefined,
           ...(includeTrust
             ? {
@@ -117,10 +143,70 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
       const claimed = await admission.approvePeer(input.source, input.label, input.requestBridge, input.bridgeOperations, input.trustTier, input.meshCapabilities);
       try {
         const bridge = claimed.allowBridge && hooks.current !== undefined ? await hooks.current.issueBridges({ grantId: claimed.grantId, source: input.source, sourceLabel: input.label, sourceWorkspaces: input.sourceWorkspaces ?? [], approvedOperations: claimed.bridgeOperations, requestedOperations: input.bridgeOperations }) : [];
-        return { peerToken: claimed.peerToken, grantId: claimed.grantId, revision: claimed.revision, target: claimed.target, targetLabel: machineLabel(), ...bridge.length > 0 ? { bridge } : {} };
+        const relayEndpoints = hooks.current?.relayGrantEndpoints?.(claimed.grantId);
+        return { peerToken: claimed.peerToken, grantId: claimed.grantId, revision: claimed.revision, target: claimed.target, targetLabel: machineLabel(), ...(relayEndpoints !== undefined && relayEndpoints.length > 0 ? { relayEndpoints: [...relayEndpoints] } : {}), ...bridge.length > 0 ? { bridge } : {} };
       } catch (error) { await admission.revoke(claimed.grantId).catch(() => undefined); throw error; }
     });
   });
+  if (relayTunnel !== undefined) {
+    app.get('/api/remote-connections/relays', async (req, reply) => {
+      reply.header('cache-control', 'no-store');
+      return respond(req.id, reply, async () => {
+        requireLocalOwner(req);
+        return relayTunnel.status();
+      });
+    });
+    app.post('/api/remote-connections/relays/nodes', { bodyLimit: 8192 }, async (req, reply) => {
+      reply.header('cache-control', 'no-store');
+      return respond(req.id, reply, async () => {
+        requireLocalOwner(req);
+        return relayTunnel.addNode(relayNodeCreateInputSchema.parse(req.body));
+      });
+    });
+    app.patch('/api/remote-connections/relays/nodes/:nodeId', { bodyLimit: 8192 }, async (req, reply) => {
+      reply.header('cache-control', 'no-store');
+      return respond(req.id, reply, async () => {
+        requireLocalOwner(req);
+        return relayTunnel.updateNode((req.params as { nodeId: string }).nodeId, relayNodePatchInputSchema.parse(req.body));
+      });
+    });
+    app.delete('/api/remote-connections/relays/nodes/:nodeId', async (req, reply) => {
+      reply.header('cache-control', 'no-store');
+      return respond(req.id, reply, async () => {
+        requireLocalOwner(req);
+        return relayTunnel.removeNode((req.params as { nodeId: string }).nodeId);
+      });
+    });
+    app.post('/api/remote-connections/relays/subscriptions', { bodyLimit: 8192 }, async (req, reply) => {
+      reply.header('cache-control', 'no-store');
+      return respond(req.id, reply, async () => {
+        requireLocalOwner(req);
+        return relayTunnel.addSubscription(relaySubscriptionCreateInputSchema.parse(req.body));
+      });
+    });
+    app.post('/api/remote-connections/relays/subscriptions/:subId/refresh', async (req, reply) => {
+      reply.header('cache-control', 'no-store');
+      return respond(req.id, reply, async () => {
+        requireLocalOwner(req);
+        return relayTunnel.refreshSubscription((req.params as { subId: string }).subId);
+      });
+    });
+    app.delete('/api/remote-connections/relays/subscriptions/:subId', async (req, reply) => {
+      reply.header('cache-control', 'no-store');
+      return respond(req.id, reply, async () => {
+        requireLocalOwner(req);
+        return relayTunnel.removeSubscription((req.params as { subId: string }).subId);
+      });
+    });
+    app.post('/api/remote-connections/relays/probe', { bodyLimit: 8192 }, async (req, reply) => {
+      reply.header('cache-control', 'no-store');
+      return respond(req.id, reply, async () => {
+        requireLocalOwner(req);
+        const input = relayProbeInputSchema.parse(req.body);
+        return relayTunnel.probeUrl(input.url);
+      });
+    });
+  }
   app.post('/api/remote-connections/pair', { bodyLimit: 8192 }, async (req, reply) => {
     reply.header('cache-control', 'no-store');
     return respond(req.id, reply, () => pairOutbound(manager, connectionPairInputSchema.parse(req.body), hooks.current));

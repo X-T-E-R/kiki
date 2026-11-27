@@ -1595,4 +1595,66 @@ describe('PairSheet pre-consent, toast Switch offer, and Access incoming rows (#
     });
     expect(getToasts().at(-1)?.text).toBe('Paired Studio Mac. Verify its TLS fingerprint: 0123456789abcdef…89abcdef.');
   });
+
+  it('embeds Home + Standby &relay= candidates into inbound QR URIs and forwards relayEndpoints when pairing outbound', async () => {
+    const tlsFingerprint = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    const relayHome = `wss://relay-hk.example.com/relay/v1/stream?target=${tlsFingerprint}&rt=p.1800000000.${'1'.repeat(64)}`;
+    const relayStandby = `wss://relay-sg.example.com/v1/stream?target=${tlsFingerprint}&rt=p.1800000000.${'2'.repeat(64)}`;
+
+    connections.inbound.mockResolvedValue({
+      enabled: true,
+      configuredEnabled: true,
+      identity: localIdentity,
+      grants: [],
+    });
+    connections.createPairCode.mockResolvedValue({
+      id: 'code-relay-1',
+      code: 'K9F2-7X4M',
+      expiresAt: Date.now() + 5 * 60_000,
+      target: localIdentity,
+      suggestedEndpoints: ['https://192.0.2.20:58627'],
+      relayEndpoints: [relayHome, relayStandby],
+      tlsFingerprint,
+    });
+
+    await render(<ConnectionServicesSection />, ['/settings/connection-services?tab=kiki']);
+    await click('[data-inbound-invite]');
+    await click('[data-inbound-generate-code]');
+
+    const qrUri = document.querySelector<HTMLImageElement>('[data-inbound-qr]')!.dataset['inboundQrUri']!;
+    const parsedQrUrl = new URL(qrUri);
+    expect(parsedQrUrl.searchParams.getAll('relay')).toEqual([relayHome, relayStandby]);
+    expect(document.querySelector('[data-inbound-relay-candidates]')?.textContent).toContain('2 encrypted relay fallback(s) attached');
+
+    connections.pair.mockResolvedValue({
+      id: '33333333-3333-4333-8333-333333333333',
+      endpoint: 'https://192.0.2.20:58627',
+      relayEndpoints: [relayHome, relayStandby],
+      label: 'Relayed Studio',
+      target: peerSource,
+      purposes: ['gui'],
+      enabled: true,
+      backgroundSummary: true,
+      state: 'online',
+      activeLeases: 0,
+      fingerprintToVerify: tlsFingerprint,
+    });
+
+    await render(<SpacesSection />);
+    await click('[data-remote-add]');
+    await type('[data-remote-endpoint]', qrUri);
+    await click('[data-remote-add-submit]');
+
+    expect(connections.pair).toHaveBeenCalledWith({
+      endpoint: 'https://192.0.2.20:58627',
+      relayEndpoints: [relayHome, relayStandby],
+      code: 'K9F2-7X4M',
+      label: undefined,
+      backgroundSummary: true,
+      requestBridge: true,
+      borrowTools: true,
+      bridgeOperations: ['read', 'send', 'wait', 'wake', 'create', 'tools'],
+      fingerprint: tlsFingerprint,
+    });
+  });
 });

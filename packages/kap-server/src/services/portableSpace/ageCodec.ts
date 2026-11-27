@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
 import { readFile } from 'node:fs/promises';
+import { Decrypter, Encrypter } from 'age-encryption';
 
 import type { PortableSpaceEncryption, PortableSpaceUnlock } from '@kiki/protocol';
 
@@ -8,11 +9,11 @@ import { portableUnlockRequired } from './subscriptionErrors';
 
 type RecipientRecord = { readonly recipient: string; readonly label?: string };
 type AgeMode = 'x25519' | 'passphrase';
-type NativeAge = {
-  readonly ageEncrypt: (plaintext: Uint8Array, passphrase: string) => Promise<Uint8Array>;
-  readonly ageDecrypt: (ciphertext: Uint8Array, passphrase: string) => Promise<Uint8Array>;
-  readonly encryptMultiRecipient: (plaintext: Uint8Array, recipients: readonly string[]) => Uint8Array;
-  readonly decryptIdentity: (ciphertext: Uint8Array, identity: string) => Uint8Array;
+export type AgeCodec = {
+  readonly ageEncrypt: (plaintext: Uint8Array, passphrase: string) => Promise<Uint8Array> | Uint8Array;
+  readonly ageDecrypt: (ciphertext: Uint8Array, passphrase: string) => Promise<Uint8Array> | Uint8Array;
+  readonly encryptMultiRecipient: (plaintext: Uint8Array, recipients: readonly string[]) => Promise<Uint8Array> | Uint8Array;
+  readonly decryptIdentity: (ciphertext: Uint8Array, identity: string) => Promise<Uint8Array> | Uint8Array;
 };
 
 type AgeHeader = {
@@ -23,7 +24,8 @@ const ARMOR_BEGIN = '-----BEGIN AGE ENCRYPTED FILE-----';
 const ARMOR_END = '-----END AGE ENCRYPTED FILE-----';
 const AGE_HEADER = 'age-encryption.org/v1';
 const AGE_RECIPIENT_PATTERN = /^age1[a-z0-9]+$/u;
-let nativeAge: NativeAge | undefined;
+const AGE_X25519_RECIPIENT_PATTERN = /^age1(?!pq1|tag1|tagpq1)[a-z0-9]+$/u;
+let nativeAge: AgeCodec | undefined;
 
 type DecodedAge = { bytes: Buffer; mode: 'x25519' } | { bytes: Buffer; mode: 'passphrase'; matchedPassphrase: string };
 
@@ -32,7 +34,7 @@ export async function decodeAge(
   bytes: Buffer,
   unlock: PortableSpaceUnlock | undefined,
   sync: SyncService,
-  codecLoader: () => NativeAge = loadNativeAge,
+  codecLoader: () => AgeCodec = loadNativeAge,
   readOnly = false,
 ): Promise<DecodedAge> {
   const ciphertext = dearmorAge(bytes);
@@ -101,7 +103,7 @@ export async function encodeAge(
   encryption: PortableSpaceEncryption | undefined,
   roster: string[],
   sync: SyncService,
-  codecLoader: () => NativeAge = loadNativeAge,
+  codecLoader: () => AgeCodec = loadNativeAge,
 ): Promise<{ readonly bytes: Buffer; readonly mode: AgeMode; readonly recipients: string[] }> {
   const native = codecLoader();
   if (encryption?.mode === 'passphrase') {
@@ -127,7 +129,7 @@ export async function encodeAge(
     throw new Error('Portable age recipient is required');
   }
   try {
-    const encrypted = native.encryptMultiRecipient(bytes, normalized);
+    const encrypted = await native.encryptMultiRecipient(bytes, normalized);
     return { bytes: Buffer.from(encrypted), mode: 'x25519', recipients: normalized };
   } catch {
     throw new Error('Unable to encrypt portable age archive');
@@ -230,16 +232,16 @@ function extractIdentities(value: string): string[] {
   return identities;
 }
 
-async function tryDecryptIdentity(native: NativeAge, ciphertext: Buffer, identity: string): Promise<Buffer | undefined> {
+async function tryDecryptIdentity(native: AgeCodec, ciphertext: Buffer, identity: string): Promise<Buffer | undefined> {
   try {
-    const plaintext = native.decryptIdentity(ciphertext, identity);
+    const plaintext = await native.decryptIdentity(ciphertext, identity);
     return plaintext instanceof Uint8Array ? Buffer.from(plaintext) : undefined;
   } catch {
     return undefined;
   }
 }
 
-async function tryDecryptPassphrase(native: NativeAge, ciphertext: Buffer, passphrase: string): Promise<Buffer | undefined> {
+async function tryDecryptPassphrase(native: AgeCodec, ciphertext: Buffer, passphrase: string): Promise<Buffer | undefined> {
   try {
     const plaintext = await native.ageDecrypt(ciphertext, passphrase);
     return plaintext instanceof Uint8Array ? Buffer.from(plaintext) : undefined;
@@ -248,7 +250,73 @@ async function tryDecryptPassphrase(native: NativeAge, ciphertext: Buffer, passp
   }
 }
 
-function loadNativeAge(): NativeAge {
+/** Creates a pure-JS `age-encryption` codec supporting X25519 multi-recipient and scrypt passphrase modes. */
+export function createJsAgeCodec(): AgeCodec {
+  return {
+    async ageEncrypt(plaintext: Uint8Array, passphrase: string): Promise<Uint8Array> {
+      if (passphrase.length === 0) {
+        throw new Error('Age passphrase must not be empty');
+      }
+      const encrypter = new Encrypter();
+      encrypter.setPassphrase(passphrase);
+      return Buffer.from(await encrypter.encrypt(plaintext));
+    },
+    async ageDecrypt(ciphertext: Uint8Array, passphrase: string): Promise<Uint8Array> {
+      if (passphrase.length === 0) {
+        throw new Error('Age passphrase must not be empty');
+      }
+      const decrypter = new Decrypter();
+      decrypter.addPassphrase(passphrase);
+      return Buffer.from(await decrypter.decrypt(ciphertext));
+    },
+    async encryptMultiRecipient(plaintext: Uint8Array, recipients: readonly string[]): Promise<Uint8Array> {
+      if (recipients.length === 0) {
+        throw new Error('At least one age X25519 recipient is required');
+      }
+      const encrypter = new Encrypter();
+      for (const raw of recipients) {
+        const trimmed = raw.trim();
+        if (!AGE_X25519_RECIPIENT_PATTERN.test(trimmed)) {
+          throw new Error('Invalid age X25519 recipient');
+        }
+        encrypter.addRecipient(trimmed);
+      }
+      return Buffer.from(await encrypter.encrypt(plaintext));
+    },
+    async decryptIdentity(ciphertext: Uint8Array, identity: string): Promise<Uint8Array> {
+      const trimmed = identity.trim();
+      if (!trimmed.startsWith('AGE-SECRET-KEY-1')) {
+        throw new Error('Invalid age X25519 identity');
+      }
+      const decrypter = new Decrypter();
+      decrypter.addIdentity(trimmed);
+      return Buffer.from(await decrypter.decrypt(ciphertext));
+    },
+  };
+}
+
+function isAgeCodec(candidate: unknown): candidate is AgeCodec {
+  if (typeof candidate !== 'object' || candidate === null) return false;
+  const codec = candidate as Partial<AgeCodec>;
+  return (
+    typeof codec.ageEncrypt === 'function' &&
+    typeof codec.ageDecrypt === 'function' &&
+    typeof codec.encryptMultiRecipient === 'function' &&
+    typeof codec.decryptIdentity === 'function'
+  );
+}
+
+/** Loads `@kiki/auth-native` when available and automatically falls back to pure-JS `age-encryption`. */
+export function loadNativeAge(moduleLoader?: (specifier: string) => unknown): AgeCodec {
+  if (moduleLoader !== undefined) {
+    try {
+      const loaded = moduleLoader('@kiki/auth-native');
+      if (isAgeCodec(loaded)) return loaded;
+    } catch {
+      return createJsAgeCodec();
+    }
+    return createJsAgeCodec();
+  }
   if (nativeAge !== undefined) return nativeAge;
   const req = createRequire(import.meta.url);
   let loaded: unknown;
@@ -259,19 +327,10 @@ function loadNativeAge(): NativeAge {
     try {
       loaded = req('@kiki/auth-native');
     } catch {
-      throw new TypeError('Portable age codec is unavailable');
+      loaded = undefined;
     }
   }
-  const candidate = loaded as Partial<NativeAge>;
-  if (
-    typeof candidate.ageEncrypt !== 'function' ||
-    typeof candidate.ageDecrypt !== 'function' ||
-    typeof candidate.encryptMultiRecipient !== 'function' ||
-    typeof candidate.decryptIdentity !== 'function'
-  ) {
-    throw new TypeError('Portable age codec is unavailable');
-  }
-  nativeAge = candidate as NativeAge;
+  nativeAge = isAgeCodec(loaded) ? loaded : createJsAgeCodec();
   return nativeAge;
 }
 

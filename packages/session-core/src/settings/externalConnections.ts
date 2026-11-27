@@ -2,11 +2,20 @@ import type { Klient, HttpRestFacade, HttpRestPluginMarketplaceEntry } from '@ki
 import {
   cloudflareStatusSchema, cloudflareSettingsPatchSchema, cloudflareTunnelsSchema,
   cloudflareAccountsSchema, cloudflareSetupSchema,
+  relayStatusSchema, relaySettingsPatchSchema, relayNodeCreateInputSchema,
+  relayNodePatchInputSchema, relaySubscriptionCreateInputSchema,
+  relayProbeInputSchema, relayProbeResultSchema, relayDeployProxyTargetSchema,
+  generateRelayDeployGuide,
   type CloudflareStatus, type CloudflareSettingsPatch, type PluginInstallPlan,
+  type RelayStatus, type RelaySettingsPatch, type RelayNodeCreateInput,
+  type RelayNodePatchInput, type RelaySubscriptionCreateInput,
+  type RelayProbeResult, type RelayDeployProxyTarget, type RelayDeployGuide,
 } from '@kiki/protocol';
 
 export const CLOUDFLARE_PLUGIN_ID = 'kiki-cloudflare';
 export const CLOUDFLARE_PANEL_ID = 'cloudflare';
+export const RELAY_PLUGIN_ID = 'kiki-relay';
+export const RELAY_PANEL_ID = 'relay';
 
 function digest(sha256: string | undefined): { readonly sha256: string } | Record<string, never> {
   const value = sha256?.trim();
@@ -97,3 +106,121 @@ export function createCloudflareConnection(client: ExternalConnectionClient) {
 }
 
 export type CloudflareConnection = ReturnType<typeof createCloudflareConnection>;
+
+export type RelayConnectionSnapshot =
+  | { readonly state: 'not-installed'; readonly catalog?: HttpRestPluginMarketplaceEntry }
+  | { readonly state: 'disabled' | 'invalid'; readonly source: string; readonly version?: string; readonly errors: readonly string[] }
+  | { readonly state: 'available'; readonly source: string; readonly version?: string; readonly status: RelayStatus };
+
+/** Projects online Home and Standby relay stream URLs ordered by slot priority. */
+export function relayConnectionAddresses(status: RelayStatus): readonly string[] {
+  const ordered: string[] = [];
+  const pushNode = (nodeId: string | undefined) => {
+    if (nodeId === undefined) return;
+    const node = status.nodes.find((entry) => entry.id === nodeId);
+    if (node?.connected && node.publishedStreamUrl && !ordered.includes(node.publishedStreamUrl)) {
+      ordered.push(node.publishedStreamUrl);
+    }
+  };
+  pushNode(status.homeNodeId);
+  for (const id of status.standbyNodeIds) pushNode(id);
+  return ordered;
+}
+
+/** Manages the `kiki-relay` App-lifecycle plugin without creating or resuming a session. */
+export function createRelayConnection(client: ExternalConnectionClient) {
+  const plugins = client.rest?.plugins;
+  if (plugins === undefined) throw new Error('External connection management requires an HTTP connection to Kiki.');
+  const call = async (action: string, args: unknown = {}) =>
+    (await plugins.panelBridge(RELAY_PLUGIN_ID, RELAY_PANEL_ID, { method: 'plugin.call', action, args })).result;
+  const status = async () => relayStatusSchema.parse(await call('status'));
+  return {
+    async read(): Promise<RelayConnectionSnapshot> {
+      const installed = (await client.global.plugins.list()).find((item) => item.id === RELAY_PLUGIN_ID);
+      if (installed === undefined) {
+        const catalog = (await plugins.marketplace()).entries.find((item) => item.id === RELAY_PLUGIN_ID);
+        return { state: 'not-installed', catalog };
+      }
+      const info = await plugins.info(RELAY_PLUGIN_ID);
+      const source = info.originalSource ?? info.root;
+      if (info.state !== 'ok' || !info.enabled) {
+        return {
+          state: info.state !== 'ok' ? 'invalid' : 'disabled',
+          source,
+          version: info.version,
+          errors: info.diagnostics.filter((item) => item.severity === 'error').map((item) => item.message),
+        };
+      }
+      return { state: 'available', source, version: info.version, status: await status() };
+    },
+    status,
+    async previewInstall(input: string | { readonly source: string; readonly sha256?: string }): Promise<PluginInstallPlan> {
+      const source = typeof input === 'string' ? input : input.source;
+      const sha256 = typeof input === 'string' ? undefined : input.sha256;
+      const plan = await plugins.preview({ source, ...digest(sha256) });
+      if (plan.id !== RELAY_PLUGIN_ID) throw new Error('The selected package is not the Kiki Relay plugin.');
+      return plan;
+    },
+    async install(input: { source: string; sha256?: string; plan: PluginInstallPlan; consent: true }) {
+      if (input.consent !== true || input.plan.id !== RELAY_PLUGIN_ID) {
+        throw new Error('Review and approve the Kiki Relay plugin installation first.');
+      }
+      const result = await plugins.install({
+        source: input.source,
+        ...digest(input.sha256),
+        fingerprint: input.plan.fingerprint,
+        consent: true,
+      });
+      if (result.id !== RELAY_PLUGIN_ID) throw new Error('The installed package is not the Kiki Relay plugin.');
+      await plugins.setEnabled(RELAY_PLUGIN_ID, true);
+      return result;
+    },
+    async enable() {
+      await plugins.setEnabled(RELAY_PLUGIN_ID, true);
+      return status();
+    },
+    async configure(values: RelaySettingsPatch) {
+      return relayStatusSchema.parse(await call('configure', { values: relaySettingsPatchSchema.parse(values) }));
+    },
+    async addNode(input: RelayNodeCreateInput) {
+      return relayStatusSchema.parse(await call('addNode', relayNodeCreateInputSchema.parse(input)));
+    },
+    async updateNode(id: string, patch: RelayNodePatchInput) {
+      return relayStatusSchema.parse(await call('updateNode', { id, patch: relayNodePatchInputSchema.parse(patch) }));
+    },
+    async removeNode(id: string) {
+      return relayStatusSchema.parse(await call('removeNode', { id }));
+    },
+    async addSubscription(input: RelaySubscriptionCreateInput) {
+      return relayStatusSchema.parse(await call('addSubscription', relaySubscriptionCreateInputSchema.parse(input)));
+    },
+    async refreshSubscription(id: string) {
+      return relayStatusSchema.parse(await call('refreshSubscription', { id }));
+    },
+    async removeSubscription(id: string) {
+      return relayStatusSchema.parse(await call('removeSubscription', { id }));
+    },
+    async probe(url: string): Promise<RelayProbeResult> {
+      return relayProbeResultSchema.parse(await call('probe', relayProbeInputSchema.parse({ url })));
+    },
+    async startLocalServer() {
+      return relayStatusSchema.parse(await call('startLocalServer'));
+    },
+    async stopLocalServer() {
+      return relayStatusSchema.parse(await call('stopLocalServer'));
+    },
+    deployGuide(options?: {
+      readonly publicHost?: string;
+      readonly basePath?: string;
+      readonly port?: number;
+      readonly proxyTarget?: RelayDeployProxyTarget;
+    }): RelayDeployGuide {
+      const proxyTarget = options?.proxyTarget === undefined
+        ? undefined
+        : relayDeployProxyTargetSchema.parse(options.proxyTarget);
+      return generateRelayDeployGuide({ ...options, proxyTarget });
+    },
+  };
+}
+
+export type RelayConnection = ReturnType<typeof createRelayConnection>;

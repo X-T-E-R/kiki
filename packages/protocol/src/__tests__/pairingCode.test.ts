@@ -1,5 +1,25 @@
 import { describe, expect, it } from 'vitest';
-import { connectionHandshakeSchema, connectionPairInputSchema, formatPairingUri, isDirectConnectionHost, normalizePairingCode, pairCodeCreateOutputSchema, parsePairingUri, remoteConnectionSchema } from '../rest/connections';
+import {
+  classifyRelayInput,
+  connectionHandshakeSchema,
+  connectionPairInputSchema,
+  extractRelayTargetFingerprint,
+  formatPairingUri,
+  formatRelayShareUri,
+  generateRelayDeployGuide,
+  isDirectConnectionHost,
+  isValidRelaySubscriptionUrl,
+  normalizePairingCode,
+  normalizeRelayBaseUrl,
+  normalizeRelayEndpoint,
+  pairCodeCreateOutputSchema,
+  parsePairingUri,
+  parseRelayShareUri,
+  readConnectInput,
+  readScanPayload,
+  relaySubscriptionCreateInputSchema,
+  remoteConnectionSchema,
+} from '../index';
 
 describe('pairing code', () => {
   it('folds case and an optional hyphen into XXXX-XXXX', () => {
@@ -90,5 +110,111 @@ describe('pairing code', () => {
     expect(remoteConnectionSchema.parse(remote)).toEqual(remote);
     expect(remoteConnectionSchema.parse({ ...remote, pinnedFingerprint: fingerprint, fingerprintToVerify: fingerprint })).toEqual({ ...remote, pinnedFingerprint: fingerprint, fingerprintToVerify: fingerprint });
     expect(() => remoteConnectionSchema.parse({ ...remote, fingerprintToVerify: 'A'.repeat(64) })).toThrow();
+  });
+
+  it('preserves multi-endpoint & relay= candidates in kiki://pair and parses kiki-relay:// share URIs', () => {
+    const fp = '0123456789abcdef'.repeat(4);
+    const r1 = `wss://relay-a.example.com/kiki-relay/v1/stream?target=${fp}&rt=p.1800000000.${'a'.repeat(64)}`;
+    const r2 = `wss://relay-b.example.com/v1/stream?target=${fp}&rt=p.1800000000.${'b'.repeat(64)}`;
+    const multiUri = formatPairingUri({
+      endpoint: 'https://192.168.1.40:58627',
+      endpoints: ['https://192.168.1.40:58627', 'https://100.90.10.2:58627'],
+      relayEndpoints: [r1, r2],
+      code: 'k9f27x4m',
+      fingerprint: fp,
+    });
+    const parsed = parsePairingUri(multiUri);
+    expect(parsed).toEqual({
+      endpoint: 'https://192.168.1.40:58627',
+      endpoints: ['https://192.168.1.40:58627', 'https://100.90.10.2:58627'],
+      relayEndpoints: [r1, r2],
+      code: 'K9F2-7X4M',
+      fingerprint: fp,
+    });
+    expect(() =>
+      formatPairingUri({
+        endpoint: 'https://192.168.1.40:58627',
+        relayEndpoints: [r1],
+        code: 'k9f27x4m',
+      }),
+    ).toThrow(/fingerprint/i);
+    expect(normalizeRelayEndpoint('ws://relay.example.com/v1/stream')).toBeUndefined();
+    expect(normalizeRelayEndpoint('ws://127.0.0.1:18787/v1/stream?target=' + fp)).toBe(
+      `ws://127.0.0.1:18787/v1/stream?target=${fp}`,
+    );
+    expect(extractRelayTargetFingerprint(r1)).toBe(fp);
+
+    const scanned = readScanPayload(multiUri);
+    expect(scanned).toEqual({
+      ok: true,
+      kind: 'pair',
+      origin: 'https://192.168.1.40:58627',
+      endpoint: 'https://192.168.1.40:58627',
+      endpoints: ['https://192.168.1.40:58627', 'https://100.90.10.2:58627'],
+      relayEndpoints: [r1, r2],
+      code: 'K9F2-7X4M',
+      entry: 'https://192.168.1.40:58627/',
+      fingerprint: fp,
+    });
+
+    const manualRelay = readConnectInput(r1, 'k9f27x4m');
+    expect(manualRelay).toEqual({
+      ok: true,
+      kind: 'pair',
+      origin: 'https://relay-a.example.com',
+      endpoint: r1,
+      relayEndpoints: [r1],
+      code: 'K9F2-7X4M',
+      entry: 'https://relay-a.example.com/',
+      fingerprint: fp,
+    });
+
+    const shareUri = formatRelayShareUri({
+      url: 'wss://relay.example.com:443/kiki-relay',
+      label: 'HK Edge',
+      token: 'secret-host-token',
+      role: 'backup-only',
+    });
+    expect(shareUri).toBe(
+      'kiki-relay://relay.example.com/kiki-relay?name=HK+Edge&token=secret-host-token&role=backup-only',
+    );
+    expect(parseRelayShareUri(shareUri)).toEqual({
+      url: 'wss://relay.example.com/kiki-relay',
+      label: 'HK Edge',
+      token: 'secret-host-token',
+      role: 'backup-only',
+      insecure: false,
+    });
+    expect(parseRelayShareUri('kiki-relay://relay.example.com/kiki-relay?insecure=1&token=leak')).toBeUndefined();
+    expect(parseRelayShareUri('kiki-relay://127.0.0.1:9440/kiki-relay?insecure=1&token=local-tok')?.url).toBe(
+      'ws://127.0.0.1:9440/kiki-relay',
+    );
+    expect(normalizeRelayBaseUrl('ws://relay.example.com/kiki-relay')).toBeUndefined();
+    expect(normalizeRelayBaseUrl('https://relay.example.com/kiki-relay/v1/pool')).toBe(
+      'wss://relay.example.com/kiki-relay',
+    );
+    expect(classifyRelayInput(shareUri).kind).toBe('share-uri');
+    expect(classifyRelayInput('https://team.example.com/relays.json')).toEqual({
+      kind: 'subscription-url',
+      url: 'https://team.example.com/relays.json',
+    });
+    expect(classifyRelayInput('http://team.example.com/relays.json').kind).toBe('invalid');
+    expect(isValidRelaySubscriptionUrl('https://team.example.com/relays.json')).toBe(true);
+    expect(isValidRelaySubscriptionUrl('http://team.example.com/relays.json')).toBe(false);
+    expect(isValidRelaySubscriptionUrl('http://127.0.0.1:19440/relays.json')).toBe(true);
+    expect(relaySubscriptionCreateInputSchema.safeParse({ url: 'http://team.example.com/relays.json' }).success).toBe(false);
+    expect(relaySubscriptionCreateInputSchema.safeParse({ url: 'https://team.example.com/relays.json' }).success).toBe(true);
+    const guide = generateRelayDeployGuide({ publicHost: 'relay.example.com', proxyTarget: 'nginx' });
+    expect(guide.port).toBe(9440);
+    expect(guide.proxySnippet).toContain('proxy_http_version 1.1;');
+    expect(guide.proxySnippet).toContain('proxy_read_timeout 3600s;');
+    expect(guide.npxCommand).toContain('node server/kiki-relay-server.mjs');
+    expect(guide.npxCommand).toContain('RELAY_SECRET=');
+    expect(guide.npxCommand).toContain('RELAY_HOST_TOKEN=');
+    expect(guide.dockerCommand).toContain('docker build -f server/Dockerfile');
+    expect(guide.dockerCommand).toContain('RELAY_SECRET=');
+    expect(guide.dockerComposeYaml).toContain('RELAY_SECRET: "${RELAY_SECRET:?Set RELAY_SECRET}"');
+    expect(guide.dockerCommand).not.toContain('ghcr.io');
+    expect(guide.npxCommand).not.toContain('@kiki/relay-server');
   });
 });

@@ -57,6 +57,7 @@ const MACHINE_ONLY_DOMAINS = new Set([
   'log',
   'gateway',
   'worktrees',
+  'relay',
 ]);
 
 const MACHINE_KEY_PATTERN =

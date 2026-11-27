@@ -1,4 +1,5 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -10,6 +11,7 @@ import {
   CREDENTIALS_POOL_SECTION,
   bootstrap,
   classifyConfigSyncScope,
+  createJsAgeX25519Cipher,
   extractMachineLocalConfigLayer,
   extractPortableConfigLayer,
   loadNativeAgeX25519Cipher,
@@ -20,6 +22,7 @@ import {
   resolveProvidersWithCredentialPool,
   sealCredentialEntry,
   sealSyncedCredentialPool,
+  type AgeX25519Cipher,
   type CredentialsPoolSection,
   type ProvidersSection,
 } from '#/index';
@@ -145,11 +148,11 @@ describe('credential pool, X25519 envelopes, and 3-layer config.local.toml', () 
     }
   });
 
-  it('seals only sync_policy="synced" entries with X25519 multi-recipient envelopes and merges conflict-free', () => {
+  it('seals only sync_policy="synced" entries with X25519 multi-recipient envelopes and merges conflict-free', async () => {
     const cipher = loadNativeAgeX25519Cipher();
-    const deviceA = cipher.generateX25519Keypair();
-    const deviceB = cipher.generateX25519Keypair();
-    const revokedDevice = cipher.generateX25519Keypair();
+    const deviceA = await cipher.generateX25519Keypair();
+    const deviceB = await cipher.generateX25519Keypair();
+    const revokedDevice = await cipher.generateX25519Keypair();
 
     const poolOnA: CredentialsPoolSection = {
       shared_api: {
@@ -171,21 +174,23 @@ describe('credential pool, X25519 envelopes, and 3-layer config.local.toml', () 
       },
     };
 
-    expect(() =>
+    await expect(
       sealCredentialEntry('oauth_rotating', poolOnA['oauth_rotating']!, [deviceA.recipient], cipher),
-    ).toThrow(/sync_policy='machine'/);
+    ).rejects.toThrow(/sync_policy='machine'/);
 
-    const sealed = sealSyncedCredentialPool(poolOnA, [deviceA.recipient, deviceB.recipient], {
+    const sealed = await sealSyncedCredentialPool(poolOnA, [deviceA.recipient, deviceB.recipient], {
       cipher,
     });
     expect(sealed.envelopes).toHaveLength(1);
     expect(sealed.envelopes[0]?.credentialId).toBe('shared_api');
     expect(sealed.skipped.map((s) => s.credentialId).sort()).toEqual(['env_only', 'oauth_rotating']);
 
-    const openedOnB = openCredentialEnvelope(sealed.envelopes[0]!, deviceB.identity, cipher);
+    const openedOnB = await openCredentialEnvelope(sealed.envelopes[0]!, deviceB.identity, cipher);
     expect(openedOnB.credentialId).toBe('shared_api');
     expect(openedOnB.entry.apiKey).toBe('sk-synced-v2');
-    expect(() => openCredentialEnvelope(sealed.envelopes[0]!, revokedDevice.identity, cipher)).toThrow();
+    await expect(
+      openCredentialEnvelope(sealed.envelopes[0]!, revokedDevice.identity, cipher),
+    ).rejects.toThrow();
 
     const poolOnB: CredentialsPoolSection = {
       shared_api: {
@@ -210,7 +215,7 @@ describe('credential pool, X25519 envelopes, and 3-layer config.local.toml', () 
       },
     };
 
-    const pinnedEnvelopeFromA = sealCredentialEntry(
+    const pinnedEnvelopeFromA = await sealCredentialEntry(
       'pinned_local',
       {
         kind: 'api_key',
@@ -223,7 +228,7 @@ describe('credential pool, X25519 envelopes, and 3-layer config.local.toml', () 
       cipher,
     );
 
-    const merged = mergeCredentialEnvelopes(
+    const merged = await mergeCredentialEnvelopes(
       poolOnB,
       [sealed.envelopes[0]!, pinnedEnvelopeFromA],
       deviceB.identity,
@@ -247,6 +252,82 @@ describe('credential pool, X25519 envelopes, and 3-layer config.local.toml', () 
     );
     expect(resolvedProviders['p1']?.apiKey).toBe('sk-synced-v2');
     expect(resolvedProviders['p2']?.apiKey).toBe('sk-synced-v2');
+  });
+
+  it('falls back to pure-JS age-encryption when @kiki/auth-native is missing and interoperates with Rust across stream chunk boundaries', async () => {
+    const fallbackCipher = loadNativeAgeX25519Cipher(() => {
+      const err = new Error("Cannot find module '@kiki/auth-native'") as NodeJS.ErrnoException;
+      err.code = 'MODULE_NOT_FOUND';
+      throw err;
+    });
+    const fallbackKey = await fallbackCipher.generateX25519Keypair();
+    expect(fallbackKey.identity).toMatch(/^AGE-SECRET-KEY-1[A-Z0-9]+$/);
+    expect(fallbackKey.recipient).toMatch(/^age1[a-z0-9]+$/);
+    expect(await fallbackCipher.recipientFromIdentity(`  ${fallbackKey.identity}\n`)).toBe(
+      fallbackKey.recipient,
+    );
+
+    const fallbackEnvelope = await sealCredentialEntry(
+      'android_bionic_cred',
+      {
+        kind: 'api_key',
+        syncPolicy: 'synced',
+        apiKey: 'sk-bionic-pure-js',
+        updatedAt: '2026-11-27T00:00:00.000Z',
+        revision: 'rev-js-1',
+      },
+      [`  ${fallbackKey.recipient}  `],
+      fallbackCipher,
+    );
+    const fallbackOpened = await openCredentialEnvelope(
+      fallbackEnvelope,
+      ` ${fallbackKey.identity}\n`,
+      fallbackCipher,
+    );
+    expect(fallbackOpened.entry.apiKey).toBe('sk-bionic-pure-js');
+
+    const req = createRequire(import.meta.url);
+    let nativeRaw: unknown;
+    try {
+      const oauthEntry = req.resolve('@kiki/oauth');
+      nativeRaw = createRequire(oauthEntry)('@kiki/auth-native');
+    } catch {
+      nativeRaw = req('@kiki/auth-native');
+    }
+    const rustCipher = nativeRaw as AgeX25519Cipher;
+    const jsCipher = createJsAgeX25519Cipher();
+
+    const rustKey = await rustCipher.generateX25519Keypair();
+    const jsKey = await jsCipher.generateX25519Keypair();
+    expect(await jsCipher.recipientFromIdentity(rustKey.identity)).toBe(rustKey.recipient);
+    expect(await rustCipher.recipientFromIdentity(jsKey.identity)).toBe(jsKey.recipient);
+
+    for (const byteLength of [0, 65535, 65536, 65537]) {
+      const expected = Buffer.alloc(byteLength);
+      for (let i = 0; i < byteLength; i += 1) {
+        expected[i] = (i * 131 + 17) & 0xff;
+      }
+
+      const rustCiphertext = Buffer.from(
+        await rustCipher.encryptMultiRecipient(expected, [rustKey.recipient, jsKey.recipient]),
+      );
+      expect(Buffer.from(await jsCipher.decryptIdentity(rustCiphertext, jsKey.identity))).toEqual(
+        expected,
+      );
+      expect(Buffer.from(await jsCipher.decryptIdentity(rustCiphertext, rustKey.identity))).toEqual(
+        expected,
+      );
+
+      const jsCiphertext = Buffer.from(
+        await jsCipher.encryptMultiRecipient(expected, [rustKey.recipient, jsKey.recipient]),
+      );
+      expect(Buffer.from(await rustCipher.decryptIdentity(jsCiphertext, rustKey.identity))).toEqual(
+        expected,
+      );
+      expect(Buffer.from(await rustCipher.decryptIdentity(jsCiphertext, jsKey.identity))).toEqual(
+        expected,
+      );
+    }
   });
 
   it('merges config.local.toml sidecar overrides with origin="local" and enforces fail-closed syncScope', async () => {

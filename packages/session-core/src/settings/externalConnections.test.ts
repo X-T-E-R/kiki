@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { CloudflareStatus } from '@kiki/protocol';
-import { createCloudflareConnection, cloudflareConnectionAddress, type ExternalConnectionClient } from './externalConnections';
+import type { CloudflareStatus, RelayStatus } from '@kiki/protocol';
+import {
+  createCloudflareConnection,
+  cloudflareConnectionAddress,
+  createRelayConnection,
+  relayConnectionAddresses,
+  type ExternalConnectionClient,
+} from './externalConnections';
 
 const status: CloudflareStatus = {
   schemaVersion: 1, dependency: { state: 'ready', path: 'cloudflared', version: '2026.10.0', installable: true },
@@ -113,5 +119,88 @@ describe('Cloudflare external connection', () => {
     f.client.global.plugins.list = async () => [f.info];
     expect(await f.api.read()).toMatchObject({ state: 'disabled', source: '/fixture/source' });
     expect(f.plugins.panelBridge).not.toHaveBeenCalled();
+  });
+});
+
+describe('Kiki Relay external connection', () => {
+  const fp = '0123456789abcdef'.repeat(4);
+  const relayStatus: RelayStatus = {
+    schemaVersion: 1,
+    hostFingerprint: fp,
+    inboundEnabled: true,
+    homeNodeId: 'node-home',
+    standbyNodeIds: ['node-standby'],
+    nodes: [
+      {
+        id: 'node-home',
+        label: 'Edge A',
+        url: 'wss://relay-a.example.test',
+        role: 'auto',
+        enabled: true,
+        tokenConfigured: true,
+        slot: 'home',
+        connected: true,
+        rttMs: 18,
+        publishedStreamUrl: `wss://relay-a.example.test/v1/stream?target=${fp}`,
+      },
+      {
+        id: 'node-standby',
+        label: 'Edge B',
+        url: 'wss://relay-b.example.test',
+        role: 'auto',
+        enabled: true,
+        tokenConfigured: false,
+        slot: 'standby',
+        connected: true,
+        rttMs: 31,
+        publishedStreamUrl: `wss://relay-b.example.test/v1/stream?target=${fp}`,
+      },
+    ],
+    subscriptions: [],
+  };
+
+  function relayFixture() {
+    const info = {
+      id: 'kiki-relay', displayName: 'Kiki Relay', enabled: true, globalEnabled: true, state: 'ok' as const,
+      skillCount: 0, mcpServerCount: 0, enabledMcpServerCount: 0, hookCount: 0, commandCount: 1,
+      hasErrors: false, source: 'local-path' as const, originalSource: '/fixture/relay', root: '/fixture/managed-relay',
+      installedAt: '', mcpServers: [], diagnostics: [],
+    };
+    const plan = { id: info.id, fingerprint: 'f'.repeat(64), changes: [], consentRequired: true, contributions: [], contextTokens: 0, unsupported: [] };
+    const panelBridge = vi.fn(async () => ({ result: relayStatus }));
+    const plugins = {
+      marketplace: vi.fn(async () => ({ configured: true, entries: [] })),
+      preview: vi.fn(async () => plan),
+      install: vi.fn(async () => info),
+      info: vi.fn(async () => info),
+      setEnabled: vi.fn(async () => ({ ok: true as const })),
+      installPrerequisite: vi.fn(async () => ({ ok: true as const })),
+      panelBridge,
+    };
+    const client: ExternalConnectionClient = {
+      global: { plugins: { list: vi.fn(async () => [info]) } },
+      rest: { plugins },
+    };
+    return { client, plugins, plan, info, api: createRelayConnection(client) };
+  }
+
+  it('reads relay status, projects Home+Standby stream URLs, and forwards node/subscription RPCs', async () => {
+    const f = relayFixture();
+    const snap = await f.api.read();
+    expect(snap).toMatchObject({ state: 'available', source: '/fixture/relay', status: relayStatus });
+    expect(relayConnectionAddresses(relayStatus)).toEqual([
+      `wss://relay-a.example.test/v1/stream?target=${fp}`,
+      `wss://relay-b.example.test/v1/stream?target=${fp}`,
+    ]);
+
+    await f.api.addNode({ uri: 'kiki-relay://relay.example.com/kiki-relay?name=Lab&token=tok123' });
+    await f.api.addSubscription({ url: 'https://relay.example.com/relays.json' });
+    expect(f.plugins.panelBridge.mock.calls.slice(1)).toEqual([
+      ['kiki-relay', 'relay', { method: 'plugin.call', action: 'addNode', args: { uri: 'kiki-relay://relay.example.com/kiki-relay?name=Lab&token=tok123' } }],
+      ['kiki-relay', 'relay', { method: 'plugin.call', action: 'addSubscription', args: { url: 'https://relay.example.com/relays.json' } }],
+    ]);
+
+    const guide = f.api.deployGuide({ publicHost: 'relay.example.com', proxyTarget: 'caddy' });
+    expect(guide.proxySnippet).toContain('reverse_proxy 127.0.0.1:9440');
   });
 });

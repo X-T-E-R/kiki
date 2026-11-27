@@ -7,7 +7,7 @@ import { isLegacyTlsError, peerFetch } from './peerTls';
 import { hostname, networkInterfaces } from 'node:os';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { bridgeGrantSchema, connectionIdentitySchema, isDirectConnectionHost, meshCapabilitySchema, normalizePairingCode, parsePairingUri, peerTrustTierSchema, type BridgeGrant, type BridgeOperation, type ConnectionIdentity, type ConnectionPairRequest, type RemoteConnection, type SpacePlatform } from '@kiki/protocol';
+import { bridgeGrantSchema, connectionIdentitySchema, extractRelayTargetFingerprint, isDirectConnectionHost, meshCapabilitySchema, normalizePairingCode, normalizeRelayEndpoint, parsePairingUri, peerTrustTierSchema, type BridgeGrant, type BridgeOperation, type ConnectionIdentity, type ConnectionPairRequest, type RemoteConnection, type SpacePlatform } from '@kiki/protocol';
 import { readBoundedJsonBody } from '@kiki/klient/transports/http/bounded-body';
 import { AdmissionError } from './admission';
 import { PairingBridgeRetirementError, validateEndpoint, type RemoteConnectionManager } from './manager';
@@ -16,6 +16,7 @@ import { parseCcpEndpoint, type CcpPairingPrepared } from '../ccpTunnel/connecto
 const claimedSchema = z.object({
   target: connectionIdentitySchema, targetLabel: z.string().max(128), grantId: z.string().uuid(), revision: z.number().int().positive(),
   peerToken: z.string().min(32).max(128), revokedBridgeIds: z.array(z.string().uuid()).max(1000).optional(), bridge: z.array(z.object({ grant: bridgeGrantSchema, credential: z.string().min(32).max(128) }).strict()).optional(),
+  relayEndpoints: z.array(z.string().min(1).max(2048)).max(16).optional(),
   trustTier: peerTrustTierSchema.optional(),
   meshCapabilities: z.array(meshCapabilitySchema).optional(),
   x25519Recipient: z.string().regex(/^age1[a-z0-9]+$/).optional(),
@@ -31,10 +32,26 @@ export interface PairingHooks {
   endpoints(): Promise<readonly string[]>;
   loopbackEndpoint?(): string | undefined;
   x25519Recipient?(): string | undefined;
+  relayPairingEndpoints?(expiresAtMs: number): Promise<readonly string[]>;
+  relayGrantEndpoints?(grantId: string): readonly string[];
 }
 export class PairingRateLimit {
   private readonly hits = new Map<string, number[]>();
+  private lastPruneAt = 0;
   allow(ip: string, now = Date.now()): boolean {
+    if (this.hits.size > 1024 || now - this.lastPruneAt >= 60_000) {
+      this.lastPruneAt = now;
+      for (const [key, stamps] of this.hits) {
+        const fresh = stamps.filter((at) => now - at < 60_000);
+        if (fresh.length === 0) this.hits.delete(key);
+        else this.hits.set(key, fresh);
+      }
+      while (this.hits.size >= 4096) {
+        const oldest = this.hits.keys().next().value;
+        if (oldest === undefined) break;
+        this.hits.delete(oldest);
+      }
+    }
     const recent = (this.hits.get(ip) ?? []).filter((at) => now - at < 60_000);
     if (recent.length >= 5) { this.hits.set(ip, recent); return false; }
     recent.push(now); this.hits.set(ip, recent); return true;
@@ -294,17 +311,78 @@ export async function pairOutbound(manager: RemoteConnectionManager, input: Conn
       explicitFingerprint = ccpPrepared.fingerprint;
     }
     const parsedUri = ccpSpec !== undefined ? undefined : parsePairingUri(rawEndpoint);
-    let endpoint = normalizeEndpoint(parsedUri?.endpoint ?? rawEndpoint);
-    const secure = new URL(endpoint);
-    const port = secure.port || (secure.protocol === 'http:' ? '80' : '443');
-    secure.protocol = 'https:'; secure.port = port;
-    explicitFingerprint = parsedUri?.fingerprint ?? explicitFingerprint;
+    const primaryTarget = parsedUri?.endpoint ?? rawEndpoint;
+    const rawAsRelay = ccpSpec === undefined ? normalizeRelayEndpoint(primaryTarget) : undefined;
+    const relayCandidates: string[] = [];
+    const pushRelay = (candidate: string | undefined) => {
+      if (candidate === undefined) return;
+      const normalized = normalizeRelayEndpoint(candidate);
+      if (normalized !== undefined && !relayCandidates.includes(normalized)) {
+        relayCandidates.push(normalized);
+      }
+    };
+    pushRelay(rawAsRelay);
+    for (const item of parsedUri?.relayEndpoints ?? []) pushRelay(item);
+    for (const item of input.relayEndpoints ?? []) pushRelay(item);
+
+    const directNormalized: string[] = [];
+    const pushDirect = (candidate: string | undefined) => {
+      if (candidate === undefined || normalizeRelayEndpoint(candidate) !== undefined) return;
+      const normalized = normalizeEndpoint(candidate);
+      if (!directNormalized.includes(normalized)) directNormalized.push(normalized);
+    };
+    if (rawAsRelay === undefined) {
+      pushDirect(primaryTarget);
+    }
+    for (const item of parsedUri?.endpoints ?? []) pushDirect(item);
+    for (const item of input.endpoints ?? []) pushDirect(item);
+
+    const toSecureOrigin = (rawUrl: string): string => {
+      const u = new URL(rawUrl);
+      const port = u.port || (u.protocol === 'http:' ? '80' : '443');
+      u.protocol = 'https:';
+      u.port = port;
+      return u.origin;
+    };
+
+    const relayDerivedFp = rawAsRelay !== undefined
+      ? extractRelayTargetFingerprint(rawAsRelay)
+      : relayCandidates.length > 0
+        ? extractRelayTargetFingerprint(relayCandidates[0]!)
+        : undefined;
+    explicitFingerprint = parsedUri?.fingerprint ?? explicitFingerprint ?? relayDerivedFp;
+    if (
+      explicitFingerprint !== undefined &&
+      relayDerivedFp !== undefined &&
+      explicitFingerprint !== relayDerivedFp
+    ) {
+      throw new AdmissionError(409, 'identity_changed');
+    }
+
+    let endpoint: string;
+    let secureOrigin: string;
+    if (directNormalized.length > 0) {
+      endpoint = directNormalized[0]!;
+      secureOrigin = toSecureOrigin(endpoint);
+    } else if (relayCandidates.length > 0) {
+      const rParsed = new URL(relayCandidates[0]!);
+      const synthetic = `https://${rParsed.host}`;
+      endpoint = synthetic;
+      secureOrigin = synthetic;
+    } else {
+      throw new AdmissionError(400, 'invalid_connection_endpoint');
+    }
+
     const previous = manager.list().find((entry) =>
       ccpSpec !== undefined
         ? entry.transport?.kind === 'ccp_tunnel' && entry.transport.runtimeId === ccpSpec.runtimeId && entry.pinnedFingerprint !== undefined
-        : entry.transport === undefined && entry.endpoint === secure.origin && entry.pinnedFingerprint !== undefined,
+        : entry.transport === undefined && entry.endpoint === secureOrigin && entry.pinnedFingerprint !== undefined,
     );
     const fingerprint = explicitFingerprint ?? previous?.pinnedFingerprint;
+    if (relayCandidates.length > 0 && fingerprint === undefined) {
+      throw new AdmissionError(409, 'connection_requires_tls');
+    }
+    const secureDirectCandidates = directNormalized.map(toSecureOrigin);
     let pinnedFingerprint: string | undefined;
     const code = normalizePairingCode(parsedUri?.code ?? rawCode ?? '');
     if (code === undefined) throw new AdmissionError(401, 'invalid_pairing_code');
@@ -313,6 +391,10 @@ export async function pairOutbound(manager: RemoteConnectionManager, input: Conn
     const backgroundSummary = includeGui ? (input.backgroundSummary ?? true) : false;
     const sourceWorkspaces = hooks === undefined || !requestBridge ? [] : await hooks.workspaces();
     const localRecipient = hooks?.x25519Recipient?.();
+    const useHappyEyeballs = relayCandidates.length > 0 || secureDirectCandidates.length > 1;
+    const pairingCandidates = useHappyEyeballs
+      ? { directEndpoints: secureDirectCandidates, relayEndpoints: relayCandidates }
+      : undefined;
     const init: RequestInit = {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-kiki-pairing-rotation': '1', 'x-kiki-mesh-metadata': '1', 'x-kiki-bridge-ceiling': '1' },
@@ -328,13 +410,19 @@ export async function pairOutbound(manager: RemoteConnectionManager, input: Conn
       signal: AbortSignal.timeout(15000),
     };
     const original = endpoint;
-    const direct = isDirectConnectionHost(new URL(endpoint).hostname);
+    const direct = directNormalized.length > 0 && isDirectConnectionHost(new URL(endpoint).hostname);
     let response: Response;
     if (fingerprint !== undefined || original.startsWith('https:') || (direct && original.startsWith('http:'))) {
-      endpoint = secure.origin;
-      try { response = await peerFetch(endpoint + '/api/remote-connections/pair/claim', init, fingerprint, (actual) => { pinnedFingerprint = actual; }); }
-      catch (error) {
-        if (fingerprint !== undefined || !original.startsWith('http:') || !isLegacyTlsError(error)) throw error;
+      endpoint = secureOrigin;
+      try {
+        response = await peerFetch(
+          endpoint + '/api/remote-connections/pair/claim',
+          pairingCandidates === undefined ? init : { ...init, candidates: pairingCandidates },
+          fingerprint,
+          (actual) => { pinnedFingerprint = actual; },
+        );
+      } catch (error) {
+        if (fingerprint !== undefined || relayCandidates.length > 0 || !original.startsWith('http:') || !isLegacyTlsError(error)) throw error;
         endpoint = original;
         response = await peerFetch(endpoint + '/api/remote-connections/pair/claim', init);
       }
@@ -342,10 +430,20 @@ export async function pairOutbound(manager: RemoteConnectionManager, input: Conn
     const envelope = await readBoundedJsonBody(response, 65536).catch(() => undefined) as { code?: number; msg?: string; data?: unknown } | undefined;
     if (!response.ok || envelope?.code !== 0) throw new AdmissionError(response.ok ? 409 : response.status, typeof envelope?.msg === 'string' ? envelope.msg : 'invalid_pairing_code');
     const claimed = claimedSchema.parse(envelope.data);
+    const durableRelays = (claimed.relayEndpoints ?? [])
+      .map((item) => normalizeRelayEndpoint(item))
+      .filter((item): item is string => item !== undefined);
+    const persistedRelayEndpoints = durableRelays.length > 0 ? durableRelays : relayCandidates;
+    const persistedDirectEndpoints =
+      ccpPrepared !== undefined
+        ? undefined
+        : secureDirectCandidates.length > 1 || (directNormalized.length === 0 && persistedRelayEndpoints.length > 0)
+          ? secureDirectCandidates
+          : undefined;
     const bridges = claimed.bridge ?? [];
     if (!includeGui && bridges.length === 0) {
       const credential = { ownerToken: claimed.peerToken, grant: claimed.peerToken, grantId: claimed.grantId, revision: claimed.revision };
-      await manager.cancelClaim(endpoint, claimed.target, credential, pinnedFingerprint).catch(() => undefined);
+      await manager.cancelClaim(endpoint, claimed.target, credential, pinnedFingerprint, pairingCandidates).catch(() => undefined);
       throw new AdmissionError(409, 'bridge_operation_denied');
     }
     const id = randomUUID();
@@ -354,7 +452,28 @@ export async function pairOutbound(manager: RemoteConnectionManager, input: Conn
       ? undefined
       : { kind: 'ccp_tunnel' as const, runtimeId: ccpPrepared.runtimeId, remoteTlsPort: ccpPrepared.remoteTlsPort };
     const storedEndpoint = ccpTransport === undefined ? endpoint : `ccp://${encodeURIComponent(ccpTransport.runtimeId)}`;
-    const record: RemoteConnection = { id, label: input.label?.trim() || claimed.targetLabel, endpoint: storedEndpoint, ...(ccpTransport === undefined ? {} : { transport: ccpTransport }), pinnedFingerprint, fingerprintToVerify: fingerprint === undefined ? pinnedFingerprint : undefined, target: claimed.target, credentialRef: id, enabled: true, purposes, backgroundSummary, state: 'online', lastConnectedAt: Date.now(), activeLeases: 0, ...(claimed.trustTier === undefined ? {} : { trustTier: claimed.trustTier }), ...(input.trusted === true ? { localTrusted: true } : {}), ...(claimed.meshCapabilities === undefined ? {} : { meshCapabilities: claimed.meshCapabilities }), ...(claimed.x25519Recipient === undefined ? {} : { x25519Recipient: claimed.x25519Recipient }) };
+    const record: RemoteConnection = {
+      id,
+      label: input.label?.trim() || claimed.targetLabel,
+      endpoint: storedEndpoint,
+      ...(persistedDirectEndpoints === undefined ? {} : { endpoints: persistedDirectEndpoints }),
+      ...(ccpTransport === undefined && persistedRelayEndpoints.length > 0 ? { relayEndpoints: persistedRelayEndpoints } : {}),
+      ...(ccpTransport === undefined ? {} : { transport: ccpTransport }),
+      pinnedFingerprint,
+      fingerprintToVerify: fingerprint === undefined ? pinnedFingerprint : undefined,
+      target: claimed.target,
+      credentialRef: id,
+      enabled: true,
+      purposes,
+      backgroundSummary,
+      state: 'online',
+      lastConnectedAt: Date.now(),
+      activeLeases: 0,
+      ...(claimed.trustTier === undefined ? {} : { trustTier: claimed.trustTier }),
+      ...(input.trusted === true ? { localTrusted: true } : {}),
+      ...(claimed.meshCapabilities === undefined ? {} : { meshCapabilities: claimed.meshCapabilities }),
+      ...(claimed.x25519Recipient === undefined ? {} : { x25519Recipient: claimed.x25519Recipient }),
+    };
     let saved: RemoteConnection | undefined;
     try {
       saved = await manager.storePeer(
@@ -373,7 +492,7 @@ export async function pairOutbound(manager: RemoteConnectionManager, input: Conn
     } catch (error) {
       if (saved === undefined && !(error instanceof PairingBridgeRetirementError)) {
         const credential = { ownerToken: claimed.peerToken, grant: claimed.peerToken, grantId: claimed.grantId, revision: claimed.revision };
-        await manager.cancelClaim(endpoint, claimed.target, credential, pinnedFingerprint);
+        await manager.cancelClaim(endpoint, claimed.target, credential, pinnedFingerprint, pairingCandidates);
       }
       throw error;
     }

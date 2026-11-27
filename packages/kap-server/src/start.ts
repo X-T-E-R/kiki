@@ -63,6 +63,7 @@ import { historyDirectorySeed } from './services/history/historyDirectory';
 import { HistoryNavigation } from './services/history/historyNavigation';
 import './services/historyTools';
 import { NotificationService } from './services/notifications/notificationService';
+import { RelayTunnelService } from './services/relayTunnel/relayTunnelService';
 import { EXTERNAL_DELEGATION_FLAG_ID } from '@kiki/agent-core-v2/session/externalDelegation/flag';
 import {
   createKimiDefaultHeaders,
@@ -1801,9 +1802,6 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     await meshService.close();
   });
   const pairingHooks: { current?: PairingHooks } = {};
-  const wssBroker = registerRemoteConnectionRoutes(app, admission, remoteConnections, registration.serverId, () => authTokenService.getToken(), sshRemote, pairingHooks, web, () => (peerListeners?.urls().length || peerListeners?.loopbackUrl() !== undefined) ? peerTls?.tlsFingerprint : undefined, mintPanelDocument, () => syncService.peekDeviceRecipient());
-  threadBridge = await registerSpaceThreadBridge(app, core, admission, remoteConnections, transcriptService, shutdownController.signal, peerBridgeRegistry);
-  const pairedBridge = threadBridge;
   const connectionEvents = core.accessor.get(IEventService);
   let connectionsRevision = 0;
   const publishConnectionsChanged = (
@@ -1817,6 +1815,21 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       ...(connectionId === undefined ? {} : { connection_id: connectionId }),
     },
   }));
+  const relayTunnel = new RelayTunnelService({
+    configService: core.accessor.get(IConfigService),
+    identity: peerTls,
+    isInboundEnabled: () => admission.status().enabled,
+    ensurePeerLoopback: async () => {
+      await peerListeners?.ensure();
+      return peerListeners?.loopbackUrl();
+    },
+    getLoopbackUrl: () => peerListeners?.loopbackUrl(),
+    onDidChange: () => publishConnectionsChanged('updated'),
+  });
+  app.addHook('preClose', async () => { await relayTunnel.close(); });
+  const wssBroker = registerRemoteConnectionRoutes(app, admission, remoteConnections, registration.serverId, () => authTokenService.getToken(), sshRemote, pairingHooks, web, () => (peerListeners?.urls().length || peerListeners?.loopbackUrl() !== undefined) ? peerTls?.tlsFingerprint : undefined, mintPanelDocument, () => syncService.peekDeviceRecipient(), peerRequests, relayTunnel);
+  threadBridge = await registerSpaceThreadBridge(app, core, admission, remoteConnections, transcriptService, shutdownController.signal, peerBridgeRegistry);
+  const pairedBridge = threadBridge;
   const connectionChangeSubscriptions = [
     remoteConnections.onDidChange((change) => publishConnectionsChanged(change.reason, change.connection_id)),
     admission.onDidPersistChange((change) => publishConnectionsChanged(change.reason, change.grantId)),
@@ -1834,6 +1847,8 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     enableThreads: () => pairedBridge.enableThreads(),
     x25519Recipient: () => syncService.peekDeviceRecipient(),
     loopbackEndpoint: () => peerListeners?.loopbackUrl(),
+    relayPairingEndpoints: (expiresAtMs) => relayTunnel.mintPairingEndpoints(expiresAtMs),
+    relayGrantEndpoints: (grantId) => relayTunnel.mintGrantEndpoints(grantId),
     endpoints: async () => {
       const urls = [...await (peerListeners?.ensure() ?? Promise.resolve([]))];
       const status = web.status();
@@ -2052,12 +2067,16 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   const boundPort = typeof address === 'object' && address !== null ? address.port : port;
   unmanagedSwitchOwner?.update({ port: boundPort });
   if (peerTls !== undefined) peerListeners = new PeerListeners(app, boundPort, peerRequests, true, peerTls);
-  peerAdmissionHook = admission.onDidChange((change) => change.enabled ? peerListeners?.ensure().then(() => undefined) : undefined);
+  peerAdmissionHook = admission.onDidChange((change) => {
+    if (change.enabled) void peerListeners?.ensure().catch(() => undefined);
+    void relayTunnel.reconcileNow().catch(() => undefined);
+  });
 
   await preparing(registration.update({ port: boundPort }));
   try {
     await preparing(web.ready());
     if (admission.status().enabled && peerListeners !== undefined) await preparing(peerListeners.ensure());
+    await preparing(relayTunnel.start());
     continuation?.signal.throwIfAborted();
   }
   catch (error) { if (startup === undefined) await close(); throw error; }

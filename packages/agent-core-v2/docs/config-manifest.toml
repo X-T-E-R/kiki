@@ -8,7 +8,7 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (64 sections · 2 overlay(s))
+# Index (65 sections · 2 overlay(s))
 #   agentExecutorDisplay            src/app/agentExecutor/executorOverrides.ts
 #   agentExecutorInstances          src/app/agentExecutor/executorInstances.ts
 #   agentExecutorOverrides          src/app/agentExecutor/executorOverrides.ts
@@ -55,6 +55,7 @@
 #   prompt                          src/app/prompt/configSection.ts
 #   providers                       src/app/kosongConfig/configSection.ts
 #   recipes                         src/app/recipes/configSection.ts
+#   relay                           src/app/relay/configSection.ts
 #   requestCompression              src/app/kosongConfig/configSection.ts
 #   requestGovernance               src/app/requestGovernance/configSection.ts
 #   requestIdentity                 src/app/kosongConfig/configSection.ts
@@ -1020,6 +1021,17 @@ enter_approval_timeout_ms = 60000
 
 [recipes]
 markets = []
+
+# ##########################################################################
+# relay
+#   owner: src/app/relay/configSection.ts
+#   scope: core
+#   hooks: custom fromToml · custom toToml
+# ##########################################################################
+
+[relay]
+nodes = []
+subscriptions = []
 
 # ##########################################################################
 # requestCompression (config.toml: request_compression)

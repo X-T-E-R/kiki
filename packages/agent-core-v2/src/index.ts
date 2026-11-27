@@ -242,6 +242,7 @@ export * from '#/_base/utils/workdir-slug';
 export * from '#/app/ssh/sshService';
 export * from '#/app/browser/browserConfig';
 export * from '#/app/computer/configSection';
+export * from '#/app/relay/configSection';
 export * from '#/app/browser/browserConnectionStore';
 export * from '#/app/browser/browser';
 export * from '#/app/browser/browserSetup';

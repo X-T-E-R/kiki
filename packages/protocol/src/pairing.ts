@@ -33,6 +33,8 @@ export type TargetParseResult =
 
 export interface ParsedPairingUri {
   readonly endpoint: string;
+  readonly endpoints?: readonly string[];
+  readonly relayEndpoints?: readonly string[];
   readonly code: string;
   readonly fingerprint?: string;
 }
@@ -43,6 +45,8 @@ export type ScanPayloadResult =
       readonly kind: 'pair';
       readonly origin: string;
       readonly endpoint: string;
+      readonly endpoints?: readonly string[];
+      readonly relayEndpoints?: readonly string[];
       readonly code: string;
       readonly entry: string;
       readonly fingerprint?: string;
@@ -64,6 +68,8 @@ export type ConnectInputResult =
       readonly kind: 'pair';
       readonly origin: string;
       readonly endpoint: string;
+      readonly endpoints?: readonly string[];
+      readonly relayEndpoints?: readonly string[];
       readonly code: string;
       readonly entry: string;
       readonly fingerprint?: string;
@@ -85,6 +91,8 @@ export type PastePayloadResult =
       readonly kind: 'pair';
       readonly origin: string;
       readonly endpoint: string;
+      readonly endpoints?: readonly string[];
+      readonly relayEndpoints?: readonly string[];
       readonly code: string;
       readonly entry: string;
       readonly fingerprint?: string;
@@ -106,6 +114,8 @@ export type PairInputResult =
       readonly kind: 'pair';
       readonly origin: string;
       readonly endpoint: string;
+      readonly endpoints?: readonly string[];
+      readonly relayEndpoints?: readonly string[];
       readonly code: string;
       readonly entry: string;
       readonly fingerprint?: string;
@@ -496,23 +506,106 @@ export function normalizePairingEndpoint(raw: string): string | undefined {
   }
 }
 
+export function normalizeRelayEndpoint(raw: string): string | undefined {
+  const trimmed = String(raw ?? '').trim();
+  if (!/^wss?:\/\//i.test(trimmed)) return undefined;
+  try {
+    const parsed = new URL(trimmed);
+    const protocol = parsed.protocol.toLowerCase();
+    if (protocol !== 'wss:' && protocol !== 'ws:') return undefined;
+    if (parsed.username !== '' || parsed.password !== '' || parsed.hash !== '') return undefined;
+    if (!isValidTargetHostname(parsed.hostname)) return undefined;
+    if (protocol === 'ws:' && !isDirectConnectionHost(parsed.hostname) && !isLoopbackHost(parsed.hostname)) {
+      return undefined;
+    }
+    const pathname = parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/+$/, '');
+    const defaultPort = (protocol === 'wss:' && parsed.port === '443') || (protocol === 'ws:' && parsed.port === '80');
+    const host = defaultPort ? parsed.hostname.toLowerCase() : parsed.host.toLowerCase();
+    return `${protocol}//${host}${pathname}${parsed.search}`;
+  } catch {
+    return undefined;
+  }
+}
+
+export function extractRelayTargetFingerprint(raw: string): string | undefined {
+  const normalized = normalizeRelayEndpoint(raw);
+  if (normalized === undefined) return undefined;
+  try {
+    const parsed = new URL(normalized);
+    const queryTarget = normalizeTlsFingerprint(parsed.searchParams.get('target'));
+    if (queryTarget !== undefined) return queryTarget;
+    const connectMatch = /\/v1\/connect\/([a-f0-9]{64})$/i.exec(parsed.pathname);
+    if (connectMatch !== null) return connectMatch[1]!.toLowerCase();
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function relayDisplayOrigin(relayUrl: string): string | undefined {
+  try {
+    const parsed = new URL(relayUrl);
+    const scheme = parsed.protocol === 'ws:' ? 'http:' : 'https:';
+    return `${scheme}//${parsed.host}`;
+  } catch {
+    return undefined;
+  }
+}
+
 export function formatPairingUri(input: {
   readonly endpoint: string;
+  readonly endpoints?: readonly string[];
+  readonly relayEndpoints?: readonly string[];
   readonly code: string;
   readonly fingerprint?: string;
 }): string {
-  const endpoint = normalizePairingEndpoint(input?.endpoint ?? '');
   const code = normalizePairingCode(input?.code ?? '');
   const fingerprint = input?.fingerprint;
   if (
-    endpoint === undefined ||
     code === undefined ||
     (fingerprint !== undefined && !TLS_FINGERPRINT_PATTERN.test(fingerprint))
   ) {
     throw new Error('Invalid pairing URI payload');
   }
-  const payload = `endpoint=${encodeURIComponent(endpoint)}&code=${encodeURIComponent(code)}`;
-  return `${PAIRING_URI_PREFIX}?${payload}${fingerprint === undefined ? '' : `&fp=${encodeURIComponent(fingerprint)}`}`;
+  const directCandidates: string[] = [];
+  const primaryDirect = normalizePairingEndpoint(input?.endpoint ?? '');
+  if (primaryDirect !== undefined) directCandidates.push(primaryDirect);
+  for (const extra of input?.endpoints ?? []) {
+    const normalized = normalizePairingEndpoint(extra);
+    if (normalized !== undefined && !directCandidates.includes(normalized)) {
+      directCandidates.push(normalized);
+    }
+  }
+  const relayCandidates: string[] = [];
+  const primaryAsRelay = primaryDirect === undefined ? normalizeRelayEndpoint(input?.endpoint ?? '') : undefined;
+  if (primaryAsRelay !== undefined) relayCandidates.push(primaryAsRelay);
+  for (const rawRelay of input?.relayEndpoints ?? []) {
+    const normalized = normalizeRelayEndpoint(rawRelay);
+    if (normalized === undefined) {
+      throw new Error('Invalid pairing URI relay endpoint');
+    }
+    if (!relayCandidates.includes(normalized)) {
+      relayCandidates.push(normalized);
+    }
+  }
+  if (relayCandidates.length > 0 && fingerprint === undefined) {
+    throw new Error('Relay pairing URI requires a TLS SPKI fingerprint');
+  }
+  if (directCandidates.length === 0 && relayCandidates.length === 0) {
+    throw new Error('Invalid pairing URI payload');
+  }
+  const parts: string[] = [];
+  for (const ep of directCandidates) {
+    parts.push(`endpoint=${encodeURIComponent(ep)}`);
+  }
+  for (const relay of relayCandidates) {
+    parts.push(`relay=${encodeURIComponent(relay)}`);
+  }
+  parts.push(`code=${encodeURIComponent(code)}`);
+  if (fingerprint !== undefined) {
+    parts.push(`fp=${encodeURIComponent(fingerprint)}`);
+  }
+  return `${PAIRING_URI_PREFIX}?${parts.join('&')}`;
 }
 
 export function parsePairingUri(raw: string): ParsedPairingUri | undefined {
@@ -534,17 +627,47 @@ export function parsePairingUri(raw: string): ParsedPairingUri | undefined {
     if (!((host === 'pair' && (path === '' || path === '/')) || (host === '' && path === '/pair'))) {
       return undefined;
     }
-    const endpoint = normalizePairingEndpoint(url.searchParams.get('endpoint') ?? '');
+    const rawEndpoints = url.searchParams.getAll('endpoint');
+    const endpoints: string[] = [];
+    for (const candidate of rawEndpoints) {
+      const normalized = normalizePairingEndpoint(candidate);
+      if (normalized !== undefined && !endpoints.includes(normalized)) {
+        endpoints.push(normalized);
+      }
+    }
     const code = normalizePairingCode(url.searchParams.get('code') ?? '');
     const fingerprint = url.searchParams.get('fp') ?? undefined;
-    if (
-      endpoint === undefined ||
-      code === undefined ||
-      (fingerprint !== undefined && !TLS_FINGERPRINT_PATTERN.test(fingerprint))
-    ) {
+    if (code === undefined || (fingerprint !== undefined && !TLS_FINGERPRINT_PATTERN.test(fingerprint))) {
       return undefined;
     }
-    return fingerprint === undefined ? { endpoint, code } : { endpoint, code, fingerprint };
+    const relayEndpoints: string[] = [];
+    if (fingerprint !== undefined) {
+      for (const candidate of url.searchParams.getAll('relay')) {
+        const normalized = normalizeRelayEndpoint(candidate);
+        if (normalized !== undefined && !relayEndpoints.includes(normalized)) {
+          relayEndpoints.push(normalized);
+        }
+      }
+      if (endpoints.length === 0) {
+        for (const candidate of rawEndpoints) {
+          const asRelay = normalizeRelayEndpoint(candidate);
+          if (asRelay !== undefined && !relayEndpoints.includes(asRelay)) {
+            relayEndpoints.push(asRelay);
+          }
+        }
+      }
+    }
+    const endpoint = endpoints[0] ?? (fingerprint !== undefined ? relayEndpoints[0] : undefined);
+    if (endpoint === undefined) {
+      return undefined;
+    }
+    return {
+      endpoint,
+      code,
+      ...(endpoints.length > 1 ? { endpoints } : {}),
+      ...(relayEndpoints.length > 0 ? { relayEndpoints } : {}),
+      ...(fingerprint === undefined ? {} : { fingerprint }),
+    };
   } catch {
     return undefined;
   }
@@ -555,27 +678,37 @@ export function readScanPayload(raw: string): ScanPayloadResult {
   if (text === '') return { ok: false, reason: 'invalid_qr' };
   const pair = parsePairingUri(text);
   if (pair !== undefined) {
+    const asRelay = normalizeRelayEndpoint(pair.endpoint);
+    if (asRelay !== undefined) {
+      if (pair.fingerprint === undefined) return { ok: false, reason: 'invalid_qr' };
+      const display = relayDisplayOrigin(asRelay);
+      if (display === undefined) return { ok: false, reason: 'invalid_qr' };
+      return {
+        ok: true,
+        kind: 'pair',
+        origin: display,
+        endpoint: asRelay,
+        ...(pair.relayEndpoints === undefined ? { relayEndpoints: [asRelay] } : { relayEndpoints: pair.relayEndpoints }),
+        code: pair.code,
+        entry: `${display}/`,
+        fingerprint: pair.fingerprint,
+      };
+    }
     const resolvedEndpoint = upgradeEndpointForTlsPin(pair.endpoint, pair.fingerprint);
     const target = readTarget(resolvedEndpoint);
     if (!target.ok) return { ok: false, reason: 'invalid_qr' };
-    return pair.fingerprint !== undefined
-      ? {
-          ok: true,
-          kind: 'pair',
-          origin: target.origin,
-          endpoint: resolvedEndpoint,
-          code: pair.code,
-          entry: `${target.origin}/`,
-          fingerprint: pair.fingerprint,
-        }
-      : {
-          ok: true,
-          kind: 'pair',
-          origin: target.origin,
-          endpoint: resolvedEndpoint,
-          code: pair.code,
-          entry: `${target.origin}/`,
-        };
+    const upgradedEndpoints = pair.endpoints?.map((item) => upgradeEndpointForTlsPin(item, pair.fingerprint));
+    return {
+      ok: true,
+      kind: 'pair',
+      origin: target.origin,
+      endpoint: resolvedEndpoint,
+      ...(upgradedEndpoints !== undefined && upgradedEndpoints.length > 1 ? { endpoints: upgradedEndpoints } : {}),
+      ...(pair.relayEndpoints !== undefined && pair.relayEndpoints.length > 0 ? { relayEndpoints: pair.relayEndpoints } : {}),
+      code: pair.code,
+      entry: `${target.origin}/`,
+      ...(pair.fingerprint === undefined ? {} : { fingerprint: pair.fingerprint }),
+    };
   }
   if (!/^https?:\/\//i.test(text)) {
     return { ok: false, reason: 'invalid_qr' };
@@ -638,26 +771,38 @@ export function readConnectInput(rawAddress: string, rawCode = ''): ConnectInput
       if (overrideCode === undefined) return { ok: false, reason: 'invalid_code' };
       const endpoint = scanned.kind === 'pair' ? scanned.endpoint : scanned.origin;
       const fingerprint = scanned.kind === 'pair' ? scanned.fingerprint : undefined;
-      return fingerprint !== undefined
-        ? {
-            ok: true,
-            kind: 'pair',
-            origin: scanned.origin,
-            endpoint,
-            code: overrideCode,
-            entry: `${scanned.origin}/`,
-            fingerprint,
-          }
-        : {
-            ok: true,
-            kind: 'pair',
-            origin: scanned.origin,
-            endpoint,
-            code: overrideCode,
-            entry: `${scanned.origin}/`,
-          };
+      return {
+        ok: true,
+        kind: 'pair',
+        origin: scanned.origin,
+        endpoint,
+        ...(scanned.kind === 'pair' && scanned.endpoints !== undefined ? { endpoints: scanned.endpoints } : {}),
+        ...(scanned.kind === 'pair' && scanned.relayEndpoints !== undefined ? { relayEndpoints: scanned.relayEndpoints } : {}),
+        code: overrideCode,
+        entry: `${scanned.origin}/`,
+        ...(fingerprint === undefined ? {} : { fingerprint }),
+      };
     }
     return scanned;
+  }
+  const relayOnly = normalizeRelayEndpoint(addressText);
+  if (relayOnly !== undefined) {
+    if (codeText === '') return { ok: false, reason: 'scheme' };
+    const code = normalizePairingCode(codeText);
+    if (code === undefined) return { ok: false, reason: 'invalid_code' };
+    const display = relayDisplayOrigin(relayOnly);
+    if (display === undefined) return { ok: false, reason: 'invalid' };
+    const fingerprint = extractRelayTargetFingerprint(relayOnly);
+    return {
+      ok: true,
+      kind: 'pair',
+      origin: display,
+      endpoint: relayOnly,
+      relayEndpoints: [relayOnly],
+      code,
+      entry: `${display}/`,
+      ...(fingerprint === undefined ? {} : { fingerprint }),
+    };
   }
   const target = readTarget(addressText);
   if (!target.ok) return target;

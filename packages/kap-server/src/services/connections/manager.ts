@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { closePinnedAgents, evictPinnedAgent, isIdempotentHttpMethod, isRetryableTransportError, peerFetch, requirePinnedTls, type PeerFetchInit } from './peerTls';
+import { clearPinnedCandidateRoutes, closePinnedAgents, evictPinnedAgent, isIdempotentHttpMethod, isRetryableTransportError, peerFetch, requirePinnedTls, setPinnedCandidateRoutes, type PeerFetchInit, type PinnedCandidateRoutes } from './peerTls';
 import { z } from 'zod';
 import { ConnectionSecretStore } from './secrets';
 import { join } from 'node:path';
@@ -110,7 +110,7 @@ export class PairingBridgeRetirementError extends AdmissionError {
   constructor() { super(500, 'connection_stored_bridge_retirement_failed'); }
 }
 const peerBundleSchema = z.object({ grant: bridgeGrantSchema, credential: z.string().min(32).max(128) }).strict();
-const peerGrantResultSchema = z.object({ peerToken: z.string().min(32).max(128), grantId: z.string().uuid(), revision: z.number().int().positive(), target: connectionIdentitySchema, targetLabel: z.string().max(128).optional(), bridge: z.array(peerBundleSchema).optional() }).strict();
+const peerGrantResultSchema = z.object({ peerToken: z.string().min(32).max(128), grantId: z.string().uuid(), revision: z.number().int().positive(), target: connectionIdentitySchema, targetLabel: z.string().max(128).optional(), relayEndpoints: z.array(z.string().min(1).max(2048)).max(16).optional(), bridge: z.array(peerBundleSchema).optional() }).strict();
 export interface SshPairBridge { sourceWorkspaces: readonly string[]; bridgeOperations?: readonly BridgeOperation[]; borrowTools?: boolean; install(connectionId: string, bundle: { grant: { id: string }; credential: string }, connectionGrantId?: string, borrowTools?: boolean): Promise<void> }
 export type ConnectionTransport = Pick<RemoteConnection, 'id' | 'endpoint' | 'target' | 'pinnedFingerprint'>;
 export interface ConnectionSshConnector {
@@ -231,10 +231,30 @@ export class RemoteConnectionManager {
       this.invalidateProof(connectionId);
     });
   }
+  private syncRecordCandidates(record: RemoteConnection): void {
+    if (record.transport !== undefined || record.pinnedFingerprint === undefined) return;
+    const directEndpoints = record.endpoints !== undefined ? record.endpoints : [record.endpoint];
+    const relayEndpoints = record.relayEndpoints ?? [];
+    setPinnedCandidateRoutes(record.endpoint, record.pinnedFingerprint, {
+      directEndpoints,
+      relayEndpoints,
+    });
+  }
   async ready(): Promise<void> {
     try {
       const raw = JSON.parse((await readPrivateFile(this.path)).toString('utf8')) as unknown[];
-      this.records = raw.map<RemoteConnection>((entry) => { const record = remoteConnectionSchema.parse(entry); return { ...record, endpoint: record.transport === undefined ? validateEndpoint(record.endpoint) : descriptorEndpoint(record.transport), state: record.state === 'online' ? 'offline' : record.state, activeLeases: 0, summary: record.summary === undefined ? undefined : { ...record.summary, stale: true } }; });
+      this.records = raw.map<RemoteConnection>((entry) => {
+        const record = remoteConnectionSchema.parse(entry);
+        const normalized: RemoteConnection = {
+          ...record,
+          endpoint: record.transport === undefined ? validateEndpoint(record.endpoint) : descriptorEndpoint(record.transport),
+          state: record.state === 'online' ? 'offline' : record.state,
+          activeLeases: 0,
+          summary: record.summary === undefined ? undefined : { ...record.summary, stale: true },
+        };
+        this.syncRecordCandidates(normalized);
+        return normalized;
+      });
       this.lastDiskPersistAt = Date.now();
     }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
@@ -373,6 +393,7 @@ export class RemoteConnectionManager {
           ccpTunnelProcess,
         );
       }
+      this.syncRecordCandidates(saved);
       for (const listener of this.changeListeners) listener({ reason: reason ?? (existing === undefined ? 'created' : 'updated'), connection_id: saved.id });
       return { ...saved };
     });
@@ -393,7 +414,15 @@ export class RemoteConnectionManager {
     }
   }
   async remove(id: string): Promise<void> {
-    await this.change(async () => { const record = this.get(id); this.stop(id); this.records = this.records.filter((entry) => entry !== record); await Promise.all(['gui', 'bridge'].map((purpose) => this.secrets.remove({ connectionId: record.credentialRef, purpose: purpose as 'gui' | 'bridge' }))); }, { reason: 'deleted', connection_id: id });
+    await this.change(async () => {
+      const record = this.get(id);
+      this.stop(id);
+      if (record.transport === undefined && record.pinnedFingerprint !== undefined) {
+        clearPinnedCandidateRoutes(record.endpoint, record.pinnedFingerprint);
+      }
+      this.records = this.records.filter((entry) => entry !== record);
+      await Promise.all(['gui', 'bridge'].map((purpose) => this.secrets.remove({ connectionId: record.credentialRef, purpose: purpose as 'gui' | 'bridge' })));
+    }, { reason: 'deleted', connection_id: id });
   }
   async enable(id: string, enabled: boolean): Promise<RemoteConnection> {
     return this.change(async () => { const record = this.get(id); record.enabled = enabled; if (!enabled) { this.stop(id); record.state = 'disabled'; } else { record.state = 'offline'; delete record.lastError; } return { ...record }; }, { reason: 'state_changed', connection_id: id });
@@ -418,6 +447,7 @@ export class RemoteConnectionManager {
       const record = this.get(id);
       record.pinnedFingerprint = record.pinnedFingerprint ?? record.fingerprintToVerify;
       delete record.fingerprintToVerify;
+      this.syncRecordCandidates(record);
       return { ...record };
     }, { reason: 'updated', connection_id: id });
   }
@@ -507,6 +537,7 @@ export class RemoteConnectionManager {
     for (const id of [...this.active.keys(), ...this.bridgeActive.keys()]) this.stop(id);
     this.verified.clear();
     this.failureStrikes.clear();
+    clearPinnedCandidateRoutes();
     closePinnedAgents();
     await this.ssh?.close();
     await this.ccpTunnel?.close();
@@ -785,7 +816,7 @@ export class RemoteConnectionManager {
       throw firstError;
     }
   }
-  async provePeer(endpoint: string, target: ConnectionIdentity, credential: { grant: string; grantId?: string }, signal?: AbortSignal, fingerprint?: string, expectedStatus: 'approved' | 'invited' = 'approved'): Promise<void> {
+  async provePeer(endpoint: string, target: ConnectionIdentity, credential: { grant: string; grantId?: string }, signal?: AbortSignal, fingerprint?: string, expectedStatus: 'approved' | 'invited' = 'approved', candidates?: PinnedCandidateRoutes): Promise<void> {
     requirePinnedTls(endpoint, fingerprint);
     const nonce = randomBytes(16).toString('hex');
     const key = createHash('sha256').update(credential.grant).digest('hex');
@@ -793,7 +824,11 @@ export class RemoteConnectionManager {
     const headers = new Headers({ 'x-kiki-handshake-nonce': nonce, 'x-kiki-handshake-proof': hmac(`kiki-handshake-req-v1:${nonce}`).toString('hex') });
     if (credential.grantId !== undefined) headers.set('x-kiki-handshake-grant', credential.grantId);
     const deadline = signal === undefined ? AbortSignal.timeout(15000) : AbortSignal.any([signal, AbortSignal.timeout(15000)]);
-    const response = await peerFetch(endpoint + '/api/remote-connections/handshake', { headers, signal: deadline }, fingerprint);
+    const response = await peerFetch(
+      endpoint + '/api/remote-connections/handshake',
+      candidates === undefined ? { headers, signal: deadline } : { headers, signal: deadline, candidates },
+      fingerprint,
+    );
     const envelope = await readBoundedJsonBody(response, 8192, deadline) as { code: number; data: unknown };
     const hello = connectionHandshakeSchema.safeParse(envelope.data);
     if (!hello.success) throw new AdmissionError(response.ok || response.status === 401 ? 502 : response.status, 'handshake_unavailable');
@@ -808,12 +843,12 @@ export class RemoteConnectionManager {
     if (status === 'inbound_disabled' || !hello.data.inboundEnabled) throw new AdmissionError(403, 'inbound_disabled');
     if (status !== expectedStatus) throw new AdmissionError(401, 'handshake_failed');
   }
-  async cancelClaim(endpoint: string, target: ConnectionIdentity, credential: Credential, fingerprint?: string): Promise<void> {
+  async cancelClaim(endpoint: string, target: ConnectionIdentity, credential: Credential, fingerprint?: string, candidates?: PinnedCandidateRoutes): Promise<void> {
     const signal = AbortSignal.timeout(15000);
-    await this.provePeer(endpoint, target, credential, signal, fingerprint);
-    await this.jsonRequest(endpoint + '/api/remote-connections/pair/cancel', { method: 'POST', headers: { authorization: `Bearer ${credential.ownerToken}`, 'x-kiki-connection-grant': credential.grant, 'content-type': 'application/json' }, body: JSON.stringify({ grantId: credential.grantId }), signal }, 8192, fingerprint);
+    await this.provePeer(endpoint, target, credential, signal, fingerprint, 'approved', candidates);
+    await this.jsonRequest(endpoint + '/api/remote-connections/pair/cancel', { method: 'POST', headers: { authorization: `Bearer ${credential.ownerToken}`, 'x-kiki-connection-grant': credential.grant, 'content-type': 'application/json' }, body: JSON.stringify({ grantId: credential.grantId }), signal, ...(candidates === undefined ? {} : { candidates }) }, 8192, fingerprint);
   }
-  private async jsonRequest(url: string, init: RequestInit, bytes: number, fingerprint?: string): Promise<unknown> {
+  private async jsonRequest(url: string, init: PeerFetchInit, bytes: number, fingerprint?: string): Promise<unknown> {
     const signal = init.signal === undefined || init.signal === null ? AbortSignal.timeout(15000) : AbortSignal.any([init.signal, AbortSignal.timeout(15000)]);
     const response = await peerFetch(url, { ...init, signal }, fingerprint);
     if (!response.ok) {

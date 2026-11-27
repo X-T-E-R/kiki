@@ -115,7 +115,7 @@ const CANONICAL_MEMORY_ID_PATTERN = /^m_[a-zA-Z0-9_]+$/;
 const MAX_SYNC_BUNDLE_WIRE_BYTES = 64 * 1024 * 1024;
 const MAX_SKILL_MD_PROBE_BYTES = 1024 * 1024;
 const HOME_ASSET_ROOT_FILES = ['AGENTS.md', 'SYSTEM.md'] as const;
-const HOME_ASSET_ROOT_DIRS = ['prompt', 'prompts', 'cognition', 'personas', 'agents'] as const;
+const HOME_ASSET_ROOT_DIRS = ['prompt', 'prompts', 'cognition', 'personas', 'agents', 'recipes'] as const;
 const HOME_ASSET_EXCLUDED_SEGMENT =
   /^(?:\.git|\.ssh|\.gnupg|node_modules|credentials|config\.local\.toml|server\.local-owner|\.env(?:\..*)?|secrets?|\.secrets?|.*\.(?:pem|key|pfx|sqlite(?:3)?(?:-wal|-shm)?|lock))$/i;
 const NOFOLLOW_FLAG = fsConstants.O_NOFOLLOW ?? 0;
@@ -149,7 +149,7 @@ export class SyncService {
     try {
       const raw = (await readPrivateFile(this.keyPath)).toString('utf8').trim();
       if (raw.startsWith('AGE-SECRET-KEY-1')) {
-        const recipient = this.cipher.recipientFromIdentity(raw);
+        const recipient = await this.cipher.recipientFromIdentity(raw);
         this.cachedKeypair = { identity: raw, recipient };
         return this.cachedKeypair;
       }
@@ -167,14 +167,14 @@ export class SyncService {
       try {
         const raw = (await readPrivateFile(this.keyPath)).toString('utf8').trim();
         if (raw.startsWith('AGE-SECRET-KEY-1')) {
-          const recipient = this.cipher.recipientFromIdentity(raw);
+          const recipient = await this.cipher.recipientFromIdentity(raw);
           this.cachedKeypair = { identity: raw, recipient };
           return this.cachedKeypair;
         }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       }
-      const generated = this.cipher.generateX25519Keypair();
+      const generated = await this.cipher.generateX25519Keypair();
       await writePrivateFile(this.keyPath, `${generated.identity}\n`);
       this.cachedKeypair = generated;
       return generated;
@@ -199,19 +199,42 @@ export class SyncService {
     readonly skipped: readonly { readonly credentialId: string; readonly reason: string }[];
   }> {
     const { userPool } = await this.readCredentialLayers();
+    const cipher = Object.keys(userPool).length === 0 ? this.resolvedCipher : this.cipher;
     return sealSyncedCredentialPool(userPool, input.recipients, {
       credentialIds: input.credentialIds,
-      cipher: this.cipher,
+      cipher,
     });
+  }
+
+  private computePoolRevision(pool: CredentialsPoolSection): string {
+    const digest = createHash('sha256')
+      .update(
+        JSON.stringify(
+          Object.entries(pool)
+            .map(([id, entry]): readonly [string, string, string] => [id, entry.revision ?? '', entry.updatedAt ?? ''])
+            .toSorted((left, right) => left[0].localeCompare(right[0])),
+        ),
+      )
+      .digest('hex')
+      .slice(0, 16);
+    return `cred:${digest}`;
   }
 
   mergeIncomingCredentials(
     envelopes: readonly EncryptedCredentialEnvelope[],
   ): Promise<SyncCredentialMergeReceipt> {
     const run = this.mergeChain.then(async () => {
-      const keypair = await this.ensureDeviceKeypair();
       const { userPool, localMachineIds } = await this.readCredentialLayers();
-      const result = mergeCredentialEnvelopes(
+      if (envelopes.length === 0) {
+        return {
+          appliedIds: [],
+          skippedIds: [],
+          conflictIds: [],
+          revision: this.computePoolRevision(userPool),
+        };
+      }
+      const keypair = await this.ensureDeviceKeypair();
+      const result = await mergeCredentialEnvelopes(
         userPool,
         envelopes,
         keypair.identity,
@@ -222,17 +245,7 @@ export class SyncService {
         await this.options.configService.ready;
         await this.options.configService.replace(CREDENTIALS_POOL_SECTION, result.merged, ConfigTarget.User);
       }
-      const revision = createHash('sha256')
-        .update(
-          JSON.stringify(
-            Object.entries(result.merged)
-              .map(([id, entry]): readonly [string, string, string] => [id, entry.revision ?? '', entry.updatedAt ?? ''])
-              .toSorted((left, right) => left[0].localeCompare(right[0])),
-          ),
-        )
-        .digest('hex')
-        .slice(0, 16);
-      const receipt = sanitizeCredentialMergeReceipt(result, `cred:${revision}`);
+      const receipt = sanitizeCredentialMergeReceipt(result, this.computePoolRevision(result.merged));
       return {
         appliedIds: [...receipt.appliedIds],
         skippedIds: receipt.skippedIds.map((entry) => ({ credentialId: entry.credentialId, reason: entry.reason })),

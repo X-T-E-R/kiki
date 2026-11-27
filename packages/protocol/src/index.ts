@@ -122,6 +122,7 @@ export * from './rest/ssh-remote';
 export * from './rest/web-access';
 export * from './modelSteering';
 export * from './rest/cloudflare';
+export * from './rest/relay';
 export * from './storageMigration';
 export * from './rest/capability';
 export * from './rest/cron';

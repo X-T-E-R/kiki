@@ -2,9 +2,11 @@ import { z } from 'zod';
 import {
   PAIRING_CODE_ALPHABET,
   PAIRING_URI_PREFIX,
+  extractRelayTargetFingerprint,
   formatPairingUri,
   isDirectConnectionHost,
   normalizePairingCode,
+  normalizeRelayEndpoint,
   parsePairingUri,
 } from '../pairing';
 import { meshCapabilitySchema, peerTrustTierSchema } from './mesh';
@@ -12,9 +14,11 @@ import { meshCapabilitySchema, peerTrustTierSchema } from './mesh';
 export {
   PAIRING_CODE_ALPHABET,
   PAIRING_URI_PREFIX,
+  extractRelayTargetFingerprint,
   formatPairingUri,
   isDirectConnectionHost,
   normalizePairingCode,
+  normalizeRelayEndpoint,
   parsePairingUri,
 };
 
@@ -87,6 +91,7 @@ export const pairCodeCreateOutputSchema = /* @__PURE__ */ z.object({
   expiresAt: z.number().int().positive(),
   target: connectionIdentitySchema,
   suggestedEndpoints: z.array(z.string()),
+  relayEndpoints: z.array(z.string().min(1).max(2048)).max(16).optional(),
   loopbackEndpoint: z.string().optional(),
   tlsFingerprint: fingerprintSchema.optional(),
   bridgeOperations: bridgeOperationsSchema.optional(),
@@ -96,6 +101,8 @@ export const pairCodeCreateOutputSchema = /* @__PURE__ */ z.object({
 export type PairCodeCreateOutput = z.infer<typeof pairCodeCreateOutputSchema>;
 export const connectionPairInputSchema = /* @__PURE__ */ z.object({
   endpoint: z.string().min(1).max(2048),
+  endpoints: z.array(z.string().min(1).max(2048)).max(16).optional(),
+  relayEndpoints: z.array(z.string().min(1).max(2048)).max(16).optional(),
   code: z.string().min(8).max(16).optional(),
   label: z.string().max(128).optional(),
   backgroundSummary: z.boolean().optional(),
@@ -160,7 +167,10 @@ export const spaceSummarySchema = /* @__PURE__ */ z.object({
 });
 export type SpaceSummary = z.infer<typeof spaceSummarySchema>;
 export const remoteConnectionSchema = /* @__PURE__ */ z.object({
-  id: z.string().uuid(), label: z.string(), endpoint: z.string(), target: connectionIdentitySchema,
+  id: z.string().uuid(), label: z.string(), endpoint: z.string(),
+  endpoints: z.array(z.string().min(1).max(2048)).max(16).optional(),
+  relayEndpoints: z.array(z.string().min(1).max(2048)).max(16).optional(),
+  target: connectionIdentitySchema,
   credentialRef: z.string(), enabled: z.boolean(), backgroundSummary: z.boolean(),
   purposes: z.array(z.enum(['gui', 'bridge'])), transport: connectionTransportSchema.optional(),
   state: z.enum(['offline', 'online', 'authentication_required', 'identity_changed', 'disabled']),

@@ -134,6 +134,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "DELETE",
+      "/api/remote-connections/relays/nodes/{nodeId}",
+    ],
+    [
+      "DELETE",
+      "/api/remote-connections/relays/subscriptions/{subId}",
+    ],
+    [
+      "DELETE",
       "/api/request-identity/profiles/{id}",
     ],
     [
@@ -734,6 +742,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/remote-connections/relays",
+    ],
+    [
+      "GET",
       "/api/remote-connections/ssh/status",
     ],
     [
@@ -1195,6 +1207,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "PATCH",
       "/api/remote-connections/inbound/grants/{grantId}/trust",
+    ],
+    [
+      "PATCH",
+      "/api/remote-connections/relays/nodes/{nodeId}",
     ],
     [
       "PATCH",
@@ -1887,6 +1903,22 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/remote-connections/provision",
+    ],
+    [
+      "POST",
+      "/api/remote-connections/relays/nodes",
+    ],
+    [
+      "POST",
+      "/api/remote-connections/relays/probe",
+    ],
+    [
+      "POST",
+      "/api/remote-connections/relays/subscriptions",
+    ],
+    [
+      "POST",
+      "/api/remote-connections/relays/subscriptions/{subId}/refresh",
     ],
     [
       "POST",

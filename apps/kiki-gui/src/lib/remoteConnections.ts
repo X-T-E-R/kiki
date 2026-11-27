@@ -19,14 +19,14 @@
 import { useQuery } from '@tanstack/react-query';
 
 import type { ConnectionsFacade } from '@kiki/klient/http';
-import { formatPairingUri, isDirectConnectionHost, normalizePairingCode, parsePairingUri, type ConnectionIdentity, type RemoteConnection, type SpacePlatform, type SshRemoteProfile } from '@kiki/protocol';
+import { extractRelayTargetFingerprint, formatPairingUri, isDirectConnectionHost, normalizePairingCode, normalizeRelayEndpoint, parsePairingUri, type ConnectionIdentity, type RemoteConnection, type SpacePlatform, type SshRemoteProfile } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
 
 import type { KikiClient } from './client';
 import { isLocalOwnerRequiredError } from './peerAccess';
 import { readHomeViewRoute } from './spaceViewState';
 
-export { formatPairingUri, parsePairingUri };
+export { extractRelayTargetFingerprint, formatPairingUri, parsePairingUri };
 
 export const REMOTE_SPACE_PREFIX = 'remote:';
 const CONNECTION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -356,6 +356,11 @@ export function endpointIssue(raw: string): I18nKey | null {
   try {
     url = new URL(text);
   } catch {
+    return 'st.remote.endpoint.invalid';
+  }
+  if (url.protocol === 'ws:' || url.protocol === 'wss:') {
+    if (normalizeRelayEndpoint(text) !== undefined) return null;
+    if (url.protocol === 'ws:' && !isDirectConnectionHost(url.hostname)) return 'st.remote.endpoint.tls';
     return 'st.remote.endpoint.invalid';
   }
   if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.username !== '' || url.password !== '' ||

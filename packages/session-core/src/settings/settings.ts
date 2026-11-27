@@ -2321,6 +2321,7 @@ export const CONNECTION_SERVICES_SETTINGS_DEFAULT_TAB: ConnectionServicesSetting
 
 const CONNECTION_SERVICES_TAB_BY_CARD: Readonly<Record<string, ConnectionServicesSettingsTab>> = {
   'st-card-web-access': 'web',
+  'st-card-conn-relay': 'web',
   'st-card-conn-external': 'web',
   'st-card-inbound-connections': 'kiki',
   'st-card-external-clients': 'clients',
@@ -2752,6 +2753,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'connection', tab: 'current', cardId: 'st-card-conn-android', titleKey: 'st.conn.androidTitle', keywordKeys: ['st.conn.androidAccessibility', 'st.conn.androidOverlay', 'st.conn.androidBattery'], synonyms: ['android', '安卓', 'phone permission', '手机权限', 'accessibility', '无障碍', 'overlay', '悬浮窗', 'battery', '省电', '后台'] },
   { section: 'connection', tab: 'current', cardId: 'st-card-conn-disconnect', titleKey: 'st.conn.disconnectTitle', keywordKeys: ['st.conn.disconnectBody', 'sidebar.disconnect'] },
   { section: 'connection', tab: 'current', cardId: 'st-card-conn-log', titleKey: 'st.conn.logTitle', keywordKeys: ['st.conn.logBody', 'st.conn.logCopy'], synonyms: ['connection log', '连接日志', 'disconnect', '断线', 'heartbeat', '心跳', 'close code'] },
+  { section: 'connection-services', cardId: 'st-card-conn-relay', tab: 'web', titleKey: 'st.conn.relay.title', keywordKeys: ['st.conn.relay.intro', 'st.conn.relay.deployTitle'], synonyms: ['relay', 'kiki-relay', 'derp', '中转', '中继', '自建中转'] },
   { section: 'connection-services', cardId: 'st-card-conn-external', tab: 'web', titleKey: 'st.conn.ext.title', keywordKeys: ['st.conn.ext.intro', 'st.conn.ext.notInstalled'], synonyms: ['cloudflare', 'tunnel', '隧道', 'external connection', '外部连接'] },
   { section: 'connection-services', cardId: 'st-card-external-clients', tab: 'clients', titleKey: 'st.section.externalClients', keywordKeys: ['st.xc.localTitle', 'st.xc.remoteTitle', 'st.xc.listenerTitle', 'st.xc.authTitle', 'st.xc.intro', 'st.xc.workspace', 'st.xc.tools'], synonyms: ['external client', '外部客户端', 'mcp client', 'stdio client', 'connection services', '连接服务', 'remote access', '远程接入', 'ChatGPT', 'chatgpt', '客户端', 'client', '连接客户端', 'stdio', '反向', 'reverse mcp', '外部调用'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-auth', titleKey: 'st.connections.addTitle', keywordKeys: ['st.auth.signIn', 'st.account.signIn', 'st.connect.accountTitle'], synonyms: ['提供商', '供应商', 'provider', '认证', '登录', 'sign in', '账号', 'account', '订阅', 'subscription'] },

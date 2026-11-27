@@ -18,6 +18,7 @@ import { FeedbackLine, Hint, Toggle, type Feedback } from '../controls';
 import { Icon } from '../icons';
 import { SECONDARY_BUTTON } from '../ui';
 import { SettingField, SettingsBox } from './fields';
+import { RelayConnectionCard } from './RelayConnectionCard';
 import { SectionCard } from './SectionCard';
 
 /** Same rhythm as the settings row actions, sized for a glyph that sits on a text line. */
@@ -276,6 +277,7 @@ export function ExternalConnectionSection() {
 
   return (
     <div className="space-y-4">
+      <RelayConnectionCard targetClient={targetClient} />
       <SectionCard id="st-card-conn-external" title={t('st.conn.ext.title')}>
         <div className="space-y-4" data-conn-external>
           <p className="text-[12.5px] text-ink-soft">{t('st.conn.ext.intro')}</p>

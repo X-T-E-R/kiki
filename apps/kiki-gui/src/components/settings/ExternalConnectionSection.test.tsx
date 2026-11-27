@@ -36,7 +36,11 @@ const plugins = {
   installPrerequisite: vi.fn(async () => ({ ok: true as const })),
   panelBridge: vi.fn(async () => ({ result: {} })),
 };
-const client = { klient: { global: { plugins: { list } }, rest: { plugins } } };
+const requestApiJson = vi.fn<(...args: unknown[]) => Promise<unknown>>();
+const client: {
+  klient: { global: { plugins: { list: typeof list } }; rest: { plugins: typeof plugins } };
+  requestApiJson?: typeof requestApiJson;
+} = { klient: { global: { plugins: { list } }, rest: { plugins } } };
 
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({ client }),
@@ -52,6 +56,8 @@ beforeEach(() => {
   marketplace.mockClear();
   preview.mockClear();
   install.mockClear();
+  requestApiJson.mockReset();
+  delete client.requestApiJson;
   marketplace.mockResolvedValue({
     configured: true,
     entries: [{ id: 'kiki-cloudflare', tier: 'official' as const, displayName: 'Cloudflare Tunnel', source, sha256 }],
@@ -104,5 +110,106 @@ describe('External connection Cloudflare install', () => {
     });
     expect(preview).not.toHaveBeenCalled();
     expect(install).not.toHaveBeenCalled();
+  });
+});
+
+describe('External connection Encrypted Relay (kiki-relay)', () => {
+  it('adds a kiki-relay:// share link and renders Home + Standby RTT status alongside reverse-proxy snippets', async () => {
+    const emptyStatus = {
+      schemaVersion: 1 as const,
+      inboundEnabled: true,
+      standbyNodeIds: [],
+      nodes: [],
+      subscriptions: [],
+    };
+    const populatedStatus = {
+      schemaVersion: 1 as const,
+      inboundEnabled: true,
+      hostFingerprint: 'a'.repeat(64),
+      homeNodeId: 'relay-hk',
+      standbyNodeIds: ['relay-sg'],
+      nodes: [
+        {
+          id: 'relay-hk',
+          label: 'HK Edge',
+          url: 'wss://relay-hk.example.com/relay',
+          role: 'auto' as const,
+          enabled: true,
+          tokenConfigured: true,
+          slot: 'home' as const,
+          connected: true,
+          rttMs: 18,
+          publishedStreamUrl: `wss://relay-hk.example.com/relay/v1/stream?target=${'a'.repeat(64)}`,
+        },
+        {
+          id: 'relay-sg',
+          label: 'SG Backup',
+          url: 'wss://relay-sg.example.com',
+          role: 'auto' as const,
+          enabled: true,
+          tokenConfigured: false,
+          subscriptionId: 'sub-team',
+          slot: 'standby' as const,
+          connected: true,
+          rttMs: 41,
+          publishedStreamUrl: `wss://relay-sg.example.com/v1/stream?target=${'a'.repeat(64)}`,
+        },
+      ],
+      subscriptions: [
+        {
+          id: 'sub-team',
+          url: 'https://team.example.com/relays.json',
+          label: 'Lab Relays',
+          enabled: true,
+        },
+      ],
+    };
+
+    requestApiJson
+      .mockResolvedValueOnce(emptyStatus)
+      .mockResolvedValueOnce(populatedStatus)
+      .mockResolvedValueOnce(populatedStatus);
+    client.requestApiJson = requestApiJson;
+
+    const container = await render();
+    const input = await vi.waitFor(() => {
+      const found = container.querySelector<HTMLInputElement>('[data-conn-relay-input]');
+      expect(found).not.toBeNull();
+      return found!;
+    });
+    expect(container.querySelector('[data-conn-relay-empty]')?.textContent).toContain('No relay nodes configured');
+
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      setter.call(input, 'kiki-relay://relay-hk.example.com/relay?name=HK%20Edge&token=secret123');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const addButton = container.querySelector<HTMLButtonElement>('[data-conn-relay-add]')!;
+    await act(async () => { addButton.click(); });
+
+    await vi.waitFor(() => {
+      expect(requestApiJson).toHaveBeenCalledWith('POST', '/remote-connections/relays/nodes', {
+        body: { uri: 'kiki-relay://relay-hk.example.com/relay?name=HK%20Edge&token=secret123' },
+      });
+      expect(container.querySelector('[data-conn-relay-node="relay-hk"]')?.textContent).toContain('18 ms');
+      expect(container.querySelector('[data-conn-relay-node="relay-hk"]')?.textContent).toContain('Home');
+      expect(container.querySelector('[data-conn-relay-node="relay-sg"]')?.textContent).toContain('Standby');
+    });
+
+    const nginxTab = container.querySelector<HTMLButtonElement>('[data-conn-relay-proxy-tab="nginx"]')!;
+    await act(async () => { nginxTab.click(); });
+    expect(container.querySelector('[data-conn-relay-deploy-proxy]')?.textContent).toContain('proxy_buffering off;');
+
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      setter.call(input, 'https://team.example.com/relays.json');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => { addButton.click(); });
+    await vi.waitFor(() => {
+      expect(requestApiJson).toHaveBeenCalledWith('POST', '/remote-connections/relays/subscriptions', {
+        body: { url: 'https://team.example.com/relays.json' },
+      });
+    });
   });
 });

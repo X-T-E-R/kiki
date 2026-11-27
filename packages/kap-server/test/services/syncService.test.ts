@@ -1,11 +1,28 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { gunzipSync, gzipSync } from 'node:zlib';
+import { armor } from 'age-encryption';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { IConfigRegistry, IConfigService, IFileSystemStorageService, IMemoryStore } from '@kiki/agent-core-v2';
+import {
+  createJsAgeX25519Cipher,
+  loadNativeAgeX25519Cipher,
+  type AgeX25519Cipher,
+  type IConfigRegistry,
+  type IConfigService,
+  type IFileSystemStorageService,
+  type IMemoryStore,
+} from '@kiki/agent-core-v2';
 import { StorageError, StorageErrors } from '@kiki/agent-core-v2/persistence/interface/storage';
+import {
+  createJsAgeCodec,
+  decodeAge,
+  encodeAge,
+  loadNativeAge,
+  type AgeCodec,
+} from '../../src/services/portableSpace/ageCodec';
 import { SyncService } from '../../src/services/sync/syncService';
 import { exportSessionsTarGzStream, importSessionsTarGzStream } from '../../src/services/sync/sessionArchiveStream';
 import type { SessionLiveServices } from '../../src/services/portableSpace/liveSpace';
@@ -37,6 +54,7 @@ describe('SyncService home assets sync', () => {
     mkdirSync(join(sourceHome, 'personas'), { recursive: true });
     mkdirSync(join(sourceHome, 'agents', 'builtin'), { recursive: true });
     mkdirSync(join(sourceHome, 'agents', 'custom'), { recursive: true });
+    mkdirSync(join(sourceHome, 'recipes', 'daily-digest'), { recursive: true });
     mkdirSync(targetHome, { recursive: true });
     mkdirSync(osHome, { recursive: true });
 
@@ -52,6 +70,8 @@ describe('SyncService home assets sync', () => {
     writeFileSync(join(sourceHome, 'personas', 'nia.md'), 'persona body\n');
     writeFileSync(join(sourceHome, 'agents', 'custom', 'builder.md'), 'custom agent\n');
     writeFileSync(join(sourceHome, 'agents', 'builtin', 'default.md'), 'builtin agent\n');
+    writeFileSync(join(sourceHome, 'recipes', 'daily-digest', 'recipe.toml'), 'name = "daily-digest"\n');
+    writeFileSync(join(sourceHome, 'recipes', 'daily-digest', 'instructions.md'), 'digest steps\n');
     try {
       symlinkSync(outsideFile, join(sourceHome, 'prompt', 'linked.toml'));
     } catch {
@@ -112,6 +132,8 @@ describe('SyncService home assets sync', () => {
       'personas/nia.md',
       'prompt/custom.toml',
       'prompts/extra.md',
+      'recipes/daily-digest/instructions.md',
+      'recipes/daily-digest/recipe.toml',
       'SYSTEM.md',
     ]);
 
@@ -127,7 +149,7 @@ describe('SyncService home assets sync', () => {
     });
 
     expect(promptOverridePresentDuringConfigReplace).toBe(true);
-    expect(receipt.homeAssetsApplied).toBe(7);
+    expect(receipt.homeAssetsApplied).toBe(9);
     expect(receipt.homeAssetsSkipped).toBe(4);
     expect(readFileSync(join(targetHome, 'prompt', 'custom.toml'), 'utf8')).toBe('system_prompt = "clean"\n');
     expect(readFileSync(join(targetHome, 'prompts', 'extra.md'), 'utf8')).toBe('extra prompt\n');
@@ -136,6 +158,8 @@ describe('SyncService home assets sync', () => {
     expect(readFileSync(join(targetHome, 'SYSTEM.md'), 'utf8')).toBe('# System Prompt\n');
     expect(readFileSync(join(targetHome, 'personas', 'nia.md'), 'utf8')).toBe('persona body\n');
     expect(readFileSync(join(targetHome, 'agents', 'custom', 'builder.md'), 'utf8')).toBe('custom agent\n');
+    expect(readFileSync(join(targetHome, 'recipes', 'daily-digest', 'recipe.toml'), 'utf8')).toBe('name = "daily-digest"\n');
+    expect(readFileSync(join(targetHome, 'recipes', 'daily-digest', 'instructions.md'), 'utf8')).toBe('digest steps\n');
     expect(existsSync(join(targetHome, 'agents', 'builtin', 'default.md'))).toBe(false);
     expect(existsSync(join(targetHome, 'prompt', '.env'))).toBe(false);
     expect(existsSync(join(targetHome, 'prompt', 'secret.pem'))).toBe(false);
@@ -524,4 +548,207 @@ describe('SyncService home assets sync', () => {
     };
     await expect(readExportStream()).rejects.toThrow(/ENOENT|size changed/i);
   });
+
+  it('short-circuits empty mergeIncomingCredentials([]) without touching cipher or device key and supports pure-JS device key generation', async () => {
+    const sandbox = makeTempDir('kiki-sync-empty-creds-');
+    const emptyHome = join(sandbox, 'empty-home');
+    const jsHome = join(sandbox, 'js-home');
+    const osHome = join(sandbox, 'os-home');
+    mkdirSync(emptyHome, { recursive: true });
+    mkdirSync(jsHome, { recursive: true });
+    mkdirSync(osHome, { recursive: true });
+
+    const forbiddenCipher: AgeX25519Cipher = {
+      generateX25519Keypair() {
+        throw new Error('cipher must not be invoked for empty credential merge');
+      },
+      recipientFromIdentity() {
+        throw new Error('cipher must not be invoked for empty credential merge');
+      },
+      encryptMultiRecipient() {
+        throw new Error('cipher must not be invoked for empty credential merge');
+      },
+      decryptIdentity() {
+        throw new Error('cipher must not be invoked for empty credential merge');
+      },
+    };
+    const emptySync = new SyncService({
+      homeDir: emptyHome,
+      osHomeDir: osHome,
+      cipher: forbiddenCipher,
+    });
+
+    const mergeReceipt = await emptySync.mergeIncomingCredentials([]);
+    expect(mergeReceipt).toEqual({
+      appliedIds: [],
+      skippedIds: [],
+      conflictIds: [],
+      revision: expect.stringMatching(/^cred:[0-9a-f]{16}$/),
+    });
+    expect(existsSync(join(emptyHome, 'credentials', 'device-x25519.key'))).toBe(false);
+
+    const bundleReceipt = await emptySync.importSyncBundle({
+      format: 'kiki.sync-bundle.v1',
+      exportedAt: new Date().toISOString(),
+      credentialEnvelopes: [],
+    });
+    expect(bundleReceipt.credentials.appliedIds).toEqual([]);
+    expect(existsSync(join(emptyHome, 'credentials', 'device-x25519.key'))).toBe(false);
+
+    const fallbackCipher = loadNativeAgeX25519Cipher(() => {
+      const err = new Error("Cannot find module '@kiki/auth-native'") as NodeJS.ErrnoException;
+      err.code = 'MODULE_NOT_FOUND';
+      throw err;
+    });
+    const jsSyncWriter = new SyncService({
+      homeDir: jsHome,
+      osHomeDir: osHome,
+      cipher: fallbackCipher,
+    });
+    const publicKey = await jsSyncWriter.getDevicePublicKey();
+    expect(publicKey.recipient).toMatch(/^age1[a-z0-9]+$/);
+    expect(existsSync(join(jsHome, 'credentials', 'device-x25519.key'))).toBe(true);
+
+    const jsSyncReader = new SyncService({
+      homeDir: jsHome,
+      osHomeDir: osHome,
+      cipher: createJsAgeX25519Cipher(),
+    });
+    const recovered = await jsSyncReader.readExistingDeviceKeypair();
+    expect(recovered?.recipient).toBe(publicKey.recipient);
+  });
+
+  it(
+    'interoperates between Rust @kiki/auth-native and pure-JS ageCodec across 0/65535/65536/65537 bytes, multi-recipient X25519, passphrase scrypt, and ASCII armor',
+    async () => {
+      const sandbox = makeTempDir('kiki-age-codec-interop-');
+      const homeA = join(sandbox, 'home-a');
+      const osHome = join(sandbox, 'os-home');
+      mkdirSync(homeA, { recursive: true });
+      mkdirSync(osHome, { recursive: true });
+
+      const req = createRequire(import.meta.url);
+      let nativeRaw: unknown;
+      try {
+        const oauthEntry = req.resolve('@kiki/oauth');
+        nativeRaw = createRequire(oauthEntry)('@kiki/auth-native');
+      } catch {
+        nativeRaw = req('@kiki/auth-native');
+      }
+      const rustCodec = nativeRaw as AgeCodec & AgeX25519Cipher;
+      const jsCodec = createJsAgeCodec();
+      const jsCipher = createJsAgeX25519Cipher();
+      const fallbackCodec = loadNativeAge(() => {
+        const err = new Error("Cannot find module '@kiki/auth-native'") as NodeJS.ErrnoException;
+        err.code = 'MODULE_NOT_FOUND';
+        throw err;
+      });
+
+      const sync = new SyncService({
+        homeDir: homeA,
+        osHomeDir: osHome,
+        cipher: jsCipher,
+      });
+      const rustKey = await rustCodec.generateX25519Keypair();
+      const jsKey = await jsCipher.generateX25519Keypair();
+
+      for (const size of [0, 65535, 65536, 65537]) {
+        const payload = Buffer.alloc(size);
+        for (let i = 0; i < size; i += 1) {
+          payload[i] = (i * 73 + 29) & 0xff;
+        }
+
+        const rustEncoded = await encodeAge(
+          payload,
+          { mode: 'x25519', recipients: [rustKey.recipient, jsKey.recipient] },
+          [],
+          sync,
+          () => rustCodec,
+        );
+        const jsDecoded = await decodeAge(
+          rustEncoded.bytes,
+          { identity: jsKey.identity },
+          sync,
+          () => fallbackCodec,
+        );
+        expect(jsDecoded.mode).toBe('x25519');
+        expect(jsDecoded.bytes).toEqual(payload);
+
+        const jsEncoded = await encodeAge(
+          payload,
+          { mode: 'x25519', recipients: [rustKey.recipient, jsKey.recipient] },
+          [],
+          sync,
+          () => jsCodec,
+        );
+        const rustDecoded = await decodeAge(
+          jsEncoded.bytes,
+          { identity: rustKey.identity },
+          sync,
+          () => rustCodec,
+        );
+        expect(rustDecoded.mode).toBe('x25519');
+        expect(rustDecoded.bytes).toEqual(payload);
+
+        if (size === 0 || size === 65537) {
+          const armoredBytes = Buffer.from(armor.encode(jsEncoded.bytes), 'ascii');
+          const unarmoredByRust = await decodeAge(
+            armoredBytes,
+            { identity: rustKey.identity },
+            sync,
+            () => rustCodec,
+          );
+          const unarmoredByJs = await decodeAge(
+            armoredBytes,
+            { identity: jsKey.identity },
+            sync,
+            () => jsCodec,
+          );
+          expect(unarmoredByRust.bytes).toEqual(payload);
+          expect(unarmoredByJs.bytes).toEqual(payload);
+        }
+      }
+
+      const passphrasePayload = Buffer.from('portable-space-scrypt-interop-payload', 'utf8');
+      const passphrase = 'correct-horse-battery-staple';
+      const rustPassEncoded = await encodeAge(
+        passphrasePayload,
+        { mode: 'passphrase', passphrase },
+        [],
+        sync,
+        () => rustCodec,
+      );
+      const jsPassDecoded = await decodeAge(
+        rustPassEncoded.bytes,
+        { passphrase },
+        sync,
+        () => jsCodec,
+      );
+      expect(jsPassDecoded).toEqual({
+        bytes: passphrasePayload,
+        mode: 'passphrase',
+        matchedPassphrase: passphrase,
+      });
+
+      const jsPassEncoded = await encodeAge(
+        passphrasePayload,
+        { mode: 'passphrase', passphrase },
+        [],
+        sync,
+        () => jsCodec,
+      );
+      const rustPassDecoded = await decodeAge(
+        jsPassEncoded.bytes,
+        { passphrase },
+        sync,
+        () => rustCodec,
+      );
+      expect(rustPassDecoded).toEqual({
+        bytes: passphrasePayload,
+        mode: 'passphrase',
+        matchedPassphrase: passphrase,
+      });
+    },
+    30_000,
+  );
 });
