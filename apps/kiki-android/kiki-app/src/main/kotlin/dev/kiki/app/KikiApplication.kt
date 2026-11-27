@@ -13,7 +13,11 @@ class KikiApplication : Application() {
             appContext = this,
             config = KikiHostConfig(
                 versionName = BuildConfig.VERSION_NAME,
+                versionCode = BuildConfig.VERSION_CODE.toLong(),
                 gitHash = BuildConfig.GIT_HASH,
+                distributionChannel = BuildConfig.DISTRIBUTION_CHANNEL,
+                updaterFeedUrl = BuildConfig.UPDATER_FEED_URL,
+                expectedSignerSha256 = BuildConfig.EXPECTED_SIGNER_SHA256,
                 modules = listOf(
                     SystemToolsModule(),
                     ScreenToolsModule(),

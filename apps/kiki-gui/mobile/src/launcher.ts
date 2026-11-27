@@ -15,6 +15,7 @@ import {
   formatPairingCodeInput,
   getServerFingerprint,
   isServerOriginVerified,
+  isSyntheticRelayOrigin,
   probeOriginHandshake,
   readConnectInput,
   readDeviceIdentity,
@@ -88,6 +89,8 @@ interface OpenServerOptions {
   targetHostId?: string;
   grantId?: string;
   fingerprint?: string;
+  endpoints?: readonly string[];
+  relayEndpoints?: readonly string[];
   fromAutoRecovery?: boolean;
   fromComputersTab?: boolean;
   expectedAutoEpoch?: number;
@@ -99,6 +102,8 @@ type ParsedConnectSubmission =
       kind: 'pair';
       origin: string;
       endpoint?: string;
+      endpoints?: readonly string[];
+      relayEndpoints?: readonly string[];
       code: string;
       entry: string;
       fingerprint?: string;
@@ -144,6 +149,14 @@ function bootstrapLauncherUi(): void {
   const viewConnect = document.querySelector<HTMLElement>('#view-connect');
   const viewComputers = document.querySelector<HTMLElement>('#view-computers');
   const viewNetwork = document.querySelector<HTMLElement>('#view-network');
+  const viewSettings = document.querySelector<HTMLElement>('#view-settings');
+  const tabSettings = document.querySelector<HTMLButtonElement>('#tab-settings');
+  const tabbarInner = document.querySelector<HTMLElement>('#tabbar-inner');
+  const toggleLocalHost = document.querySelector<HTMLButtonElement>('#toggle-local-host');
+  const toggleAutoUpdate = document.querySelector<HTMLButtonElement>('#toggle-auto-update');
+  const checkUpdateBtn = document.querySelector<HTMLButtonElement>('#btn-check-update');
+  const openNativeSettingsBtn = document.querySelector<HTMLButtonElement>('#btn-open-native-settings');
+  const hostVersionLine = document.querySelector<HTMLElement>('#host-version-line');
 
   if (
     !qForm ||
@@ -197,10 +210,12 @@ function bootstrapLauncherUi(): void {
   const addressList: HTMLElement = qAddressList;
 
   const tabs = [...document.querySelectorAll<HTMLButtonElement>('.tab[data-tab]')];
-  const views: Record<'connect' | 'computers' | 'network', HTMLElement> = {
+  type TabName = 'connect' | 'computers' | 'network' | 'settings';
+  const views: Record<TabName, HTMLElement> = {
     connect: viewConnect,
     computers: viewComputers,
     network: viewNetwork,
+    settings: viewSettings ?? viewNetwork,
   };
 
   const lang: Locale = /^zh\b/i.test(navigator.language) ? 'zh' : 'en';
@@ -229,7 +244,12 @@ function bootstrapLauncherUi(): void {
   let openFlightEpoch = 0;
   let openFlightOpId: string | null = null;
   let openFlightAbortController: AbortController | null = null;
-  let pendingManualFingerprint: { origin: string; fingerprint: string } | null = null;
+  let pendingManualFingerprint: {
+    origin: string;
+    fingerprint: string;
+    endpoints?: readonly string[];
+    relayEndpoints?: readonly string[];
+  } | null = null;
   const addressStatus = new Map<string, { text: string; tone?: string }>();
   const computerStatus = new Map<
     string,
@@ -356,6 +376,8 @@ function bootstrapLauncherUi(): void {
         targetHomeId: latest.targetHomeId ?? bound.targetHomeId,
         targetHostId: latest.targetHostId ?? bound.targetHostId,
         grantId: activeGrantId,
+        endpoints: latest.endpoints,
+        relayEndpoints: latest.relayEndpoints,
         fromAutoRecovery: true,
         fromComputersTab: inComputersTab,
         expectedAutoEpoch: expectedEpoch,
@@ -380,10 +402,10 @@ function bootstrapLauncherUi(): void {
   }
 
   function setTab(
-    name: 'connect' | 'computers' | 'network',
+    name: TabName,
     options: { animate?: boolean; scroll?: boolean } = {},
   ): void {
-    if (!views[name]) return;
+    if (!views[name] || (name === 'settings' && (!viewSettings || tabSettings?.hidden))) return;
     if (name !== 'connect') {
       if (!(name === 'computers' && computersTabRecovery)) {
         stopAutoReconnect(false);
@@ -415,6 +437,7 @@ function bootstrapLauncherUi(): void {
   }
 
   function shortLayerLabelFor(originOrRaw: string): string {
+    if (isSyntheticRelayOrigin(originOrRaw)) return copy.layerRelay;
     const info = classifyOrigin(originOrRaw);
     if (info.layer === 'invalid') return '';
     if (info.layer === 'vpn') return copy.layerVpn;
@@ -424,6 +447,7 @@ function bootstrapLauncherUi(): void {
   }
 
   function layerLabelFor(originOrRaw: string): string {
+    if (isSyntheticRelayOrigin(originOrRaw)) return copy.layerRelay;
     const info = classifyOrigin(originOrRaw);
     if (info.layer === 'invalid') return '';
     if (info.layer === 'vpn') return copy.layerVpn;
@@ -575,6 +599,12 @@ function bootstrapLauncherUi(): void {
           serverId: probeOptions?.serverId ?? undefined,
           grantId: probeOptions?.grantId ?? undefined,
           fingerprint: probeOptions?.fingerprint ?? undefined,
+          endpoints: probeOptions?.endpoints ? [...probeOptions.endpoints] : undefined,
+          endpointsJson: probeOptions?.endpoints ? JSON.stringify([...probeOptions.endpoints]) : undefined,
+          relayEndpoints: probeOptions?.relayEndpoints ? [...probeOptions.relayEndpoints] : undefined,
+          relayEndpointsJson: probeOptions?.relayEndpoints
+            ? JSON.stringify([...probeOptions.relayEndpoints])
+            : undefined,
           expectedStatus: probeOptions?.expectedStatus ?? undefined,
         });
         if (isSignalAborted()) {
@@ -624,12 +654,19 @@ function bootstrapLauncherUi(): void {
     return probeOriginHandshake(origin, probeOptions);
   }
 
-  async function claimPairing(endpoint: string, code: string, fingerprint?: string) {
+  async function claimPairing(
+    endpoint: string,
+    code: string,
+    fingerprint?: string,
+    extra: { endpoints?: readonly string[]; relayEndpoints?: readonly string[] } = {},
+  ) {
     const platform = /iPhone|iPad|iPod/i.test(navigator.userAgent) ? 'ios' : 'android';
     const nativeIdentity = readDeviceIdentity(window.localStorage, platform);
     if (isNativeShell()) {
       return claimPairingOrigin(window.localStorage, {
         endpoint,
+        endpoints: extra.endpoints,
+        relayEndpoints: extra.relayEndpoints,
         code,
         fingerprint,
         platform,
@@ -646,6 +683,12 @@ function bootstrapLauncherUi(): void {
             if (params.fingerprint) {
               payload['fingerprint'] = params.fingerprint;
             }
+            if (params.endpoints && params.endpoints.length > 0) {
+              payload['endpoints'] = [...params.endpoints];
+            }
+            if (params.relayEndpoints && params.relayEndpoints.length > 0) {
+              payload['relayEndpoints'] = [...params.relayEndpoints];
+            }
             const res = await win.Capacitor!.nativePromise('KikiShell', 'claimPair', payload);
             if (res && typeof res['ok'] === 'boolean') return res as unknown as NativeClaimResponse;
           } catch {
@@ -656,6 +699,8 @@ function bootstrapLauncherUi(): void {
     }
     return claimPairingOrigin(window.localStorage, {
       endpoint,
+      endpoints: extra.endpoints,
+      relayEndpoints: extra.relayEndpoints,
       code,
       fingerprint,
       platform,
@@ -896,6 +941,16 @@ function bootstrapLauncherUi(): void {
           if (resolvedFp) {
             openPayload['fingerprint'] = resolvedFp;
           }
+          const resolvedEndpoints = resolved.server?.endpoints ?? options.endpoints;
+          if (resolvedEndpoints && resolvedEndpoints.length > 0) {
+            openPayload['endpoints'] = [...resolvedEndpoints];
+            openPayload['endpointsJson'] = JSON.stringify([...resolvedEndpoints]);
+          }
+          const resolvedRelays = resolved.server?.relayEndpoints ?? options.relayEndpoints;
+          if (resolvedRelays && resolvedRelays.length > 0) {
+            openPayload['relayEndpoints'] = [...resolvedRelays];
+            openPayload['relayEndpointsJson'] = JSON.stringify([...resolvedRelays]);
+          }
           const res = await win.Capacitor!.nativePromise('KikiShell', 'open', openPayload);
           if (isStaleOpen() || res?.['reason'] === 'aborted') {
             return;
@@ -1025,6 +1080,8 @@ function bootstrapLauncherUi(): void {
       targetHostId: server.targetHostId,
       grantId: server.grantId,
       fingerprint: getServerFingerprint(server, server.origin),
+      endpoints: server.endpoints,
+      relayEndpoints: server.relayEndpoints,
       fromComputersTab: options.fromComputersTab,
     });
   }
@@ -1040,6 +1097,10 @@ function bootstrapLauncherUi(): void {
           parsed.endpoint ?? parsed.origin,
           parsed.code,
           parsed.fingerprint,
+          {
+            endpoints: parsed.endpoints,
+            relayEndpoints: parsed.relayEndpoints,
+          },
         );
       } catch {
         setOpenBusy(false);
@@ -1063,6 +1124,8 @@ function bootstrapLauncherUi(): void {
         targetHostId: claim.targetHostId,
         grantId: claim.grantId,
         fingerprint: claim.fingerprint ?? parsed.fingerprint,
+        endpoints: claim.endpoints ?? parsed.endpoints,
+        relayEndpoints: claim.relayEndpoints ?? parsed.relayEndpoints,
       });
       return;
     }
@@ -1080,6 +1143,8 @@ function bootstrapLauncherUi(): void {
       targetHostId: existing?.targetHostId,
       grantId: existing?.grantId,
       fingerprint: getServerFingerprint(existing, parsed.origin),
+      endpoints: existing?.endpoints,
+      relayEndpoints: existing?.relayEndpoints,
     });
   }
 
@@ -1117,7 +1182,12 @@ function bootstrapLauncherUi(): void {
     input.value = editableOrigin(parsed.origin);
     pendingManualFingerprint =
       parsed.kind === 'pair' && parsed.fingerprint
-        ? { origin: parsed.origin, fingerprint: parsed.fingerprint }
+        ? {
+            origin: parsed.origin,
+            fingerprint: parsed.fingerprint,
+            endpoints: parsed.endpoints,
+            relayEndpoints: parsed.relayEndpoints,
+          }
         : null;
     if (parsed.kind === 'pair') {
       codeInput.value = parsed.code;
@@ -1171,7 +1241,12 @@ function bootstrapLauncherUi(): void {
       input.value = editableOrigin(parsed.origin);
       codeInput.value = parsed.code;
       pendingManualFingerprint = parsed.fingerprint
-        ? { origin: parsed.origin, fingerprint: parsed.fingerprint }
+        ? {
+            origin: parsed.origin,
+            fingerprint: parsed.fingerprint,
+            endpoints: parsed.endpoints,
+            relayEndpoints: parsed.relayEndpoints,
+          }
         : null;
       setManualExpanded(true);
       updateInputAffordances();
@@ -1784,10 +1859,69 @@ function bootstrapLauncherUi(): void {
   for (const tab of tabs) {
     tab.addEventListener('click', () => {
       const name = tab.dataset['tab'];
-      if (name === 'connect' || name === 'computers' || name === 'network') {
+      if (name === 'connect' || name === 'computers' || name === 'network' || name === 'settings') {
         setTab(name, { animate: true });
       }
     });
+  }
+
+  async function initEmbeddedHostSettings(): Promise<void> {
+    if (!isNativeShell() || !tabSettings || !viewSettings) return;
+    try {
+      const status = await win.Capacitor!.nativePromise('KikiShell', 'getHostStatus', {});
+      if (status?.['embeddedHost'] !== true) return;
+      tabSettings.hidden = false;
+      tabbarInner?.setAttribute('data-tabs', '4');
+
+      const syncUiFromStatus = (raw: Record<string, unknown> | undefined) => {
+        if (!raw) return;
+        const localOn = raw['localHostEnabled'] === true;
+        const autoUpdate = raw['autoCheckUpdates'] !== false;
+        toggleLocalHost?.setAttribute('aria-checked', localOn ? 'true' : 'false');
+        toggleAutoUpdate?.setAttribute('aria-checked', autoUpdate ? 'true' : 'false');
+        if (hostVersionLine && typeof raw['versionName'] === 'string') {
+          const ch = typeof raw['distributionChannel'] === 'string' ? ` · ${raw['distributionChannel']}` : '';
+          hostVersionLine.textContent = `Kiki ${raw['versionName']}${ch}`;
+        }
+      };
+      syncUiFromStatus(status);
+
+      toggleLocalHost?.addEventListener('click', () => {
+        const next = toggleLocalHost.getAttribute('aria-checked') !== 'true';
+        toggleLocalHost.setAttribute('aria-checked', next ? 'true' : 'false');
+        toggleLocalHost.disabled = true;
+        void win.Capacitor!.nativePromise('KikiShell', 'setLocalHostEnabled', { enabled: next })
+          .catch(() => {
+            toggleLocalHost.setAttribute('aria-checked', !next ? 'true' : 'false');
+          })
+          .finally(() => {
+            toggleLocalHost.disabled = false;
+          });
+      });
+
+      toggleAutoUpdate?.addEventListener('click', () => {
+        const next = toggleAutoUpdate.getAttribute('aria-checked') !== 'true';
+        toggleAutoUpdate.setAttribute('aria-checked', next ? 'true' : 'false');
+        void win.Capacitor!.nativePromise('KikiShell', 'setAutoCheckUpdates', { enabled: next }).catch(() => {});
+      });
+
+      checkUpdateBtn?.addEventListener('click', () => {
+        checkUpdateBtn.disabled = true;
+        const origText = checkUpdateBtn.textContent;
+        checkUpdateBtn.textContent = copy.checkingUpdate;
+        void win.Capacitor!.nativePromise('KikiShell', 'checkForUpdate', { manual: true })
+          .catch(() => {})
+          .finally(() => {
+            checkUpdateBtn.disabled = false;
+            checkUpdateBtn.textContent = origText;
+          });
+      });
+
+      openNativeSettingsBtn?.addEventListener('click', () => {
+        void win.Capacitor!.nativePromise('KikiShell', 'openNativeSettings', {}).catch(() => {});
+      });
+    } catch {
+    }
   }
 
   emptyConnect.addEventListener('click', () => {
@@ -1879,7 +2013,12 @@ function bootstrapLauncherUi(): void {
       input.value = editableOrigin(maybePair.origin);
       codeInput.value = maybePair.code;
       pendingManualFingerprint = maybePair.fingerprint
-        ? { origin: maybePair.origin, fingerprint: maybePair.fingerprint }
+        ? {
+            origin: maybePair.origin,
+            fingerprint: maybePair.fingerprint,
+            endpoints: maybePair.endpoints,
+            relayEndpoints: maybePair.relayEndpoints,
+          }
         : null;
     } else if (pendingManualFingerprint) {
       const currentTarget = readTarget(input.value);
@@ -2013,7 +2152,12 @@ function bootstrapLauncherUi(): void {
       !parsed.fingerprint &&
       pendingManualFingerprint &&
       pendingManualFingerprint.origin === parsed.origin
-        ? { ...parsed, fingerprint: pendingManualFingerprint.fingerprint }
+        ? {
+            ...parsed,
+            fingerprint: pendingManualFingerprint.fingerprint,
+            endpoints: pendingManualFingerprint.endpoints,
+            relayEndpoints: pendingManualFingerprint.relayEndpoints,
+          }
         : parsed;
     void submitConnect(submission);
   });
@@ -2136,6 +2280,7 @@ function bootstrapLauncherUi(): void {
     'identity_mismatch',
     'pair',
     'change',
+    'settings',
   ]);
 
   function consumeTransientActionHash(): string {
@@ -2169,6 +2314,8 @@ function bootstrapLauncherUi(): void {
       void consumePendingPairIfAny();
     } else if (hashAction === 'change') {
       setTab(landingTab());
+    } else if (hashAction === 'settings') {
+      setTab('settings');
     }
   });
 
@@ -2191,9 +2338,12 @@ function bootstrapLauncherUi(): void {
   const primaryServer = readSavedServers(window.localStorage)[0] ?? null;
 
   void (async () => {
+    await initEmbeddedHostSettings();
     const handledPair = await consumePendingPairIfAny();
     if (!handledPair) {
-      if (reason === 'unreachable' || reason === 'unverified_handshake_proof') {
+      if (reason === 'settings') {
+        setTab('settings');
+      } else if (reason === 'unreachable' || reason === 'unverified_handshake_proof') {
         showUnreachable(reason);
       } else if (
         reason === 'pairing_revoked' ||

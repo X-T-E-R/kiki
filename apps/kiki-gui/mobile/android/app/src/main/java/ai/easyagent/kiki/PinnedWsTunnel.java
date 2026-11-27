@@ -40,12 +40,18 @@ final class PinnedWsTunnel implements Closeable {
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final byte[] HEADER_END = { '\r', '\n', '\r', '\n' };
 
+    @FunctionalInterface
+    interface UpstreamDialer {
+        PeerStreamConnector.ConnectedRoute dial() throws IOException;
+    }
+
     private final String connectHost;
     private final int remotePort;
     private final String hostHeader;
     private final String key;
     private final SSLSocketFactory factory;
     private final Predicate<Certificate> peerCheck;
+    private final UpstreamDialer customDialer;
     private final String secret;
     private final ServerSocket server;
     private final Set<Socket> sockets = Collections.newSetFromMap(new ConcurrentHashMap<>());
@@ -56,7 +62,8 @@ final class PinnedWsTunnel implements Closeable {
         int remotePort,
         String key,
         SSLSocketFactory factory,
-        Predicate<Certificate> peerCheck
+        Predicate<Certificate> peerCheck,
+        UpstreamDialer customDialer
     ) throws IOException {
         this.connectHost = stripBrackets(remoteHost);
         this.remotePort = remotePort;
@@ -64,6 +71,7 @@ final class PinnedWsTunnel implements Closeable {
         this.key = key;
         this.factory = factory;
         this.peerCheck = peerCheck;
+        this.customDialer = customDialer;
         this.secret = randomSecret();
         this.server = new ServerSocket(0, 64, InetAddress.getByName("127.0.0.1"));
     }
@@ -75,10 +83,21 @@ final class PinnedWsTunnel implements Closeable {
         SSLSocketFactory factory,
         Predicate<Certificate> peerCheck
     ) throws IOException {
+        return start(remoteHost, remotePort, key, factory, peerCheck, null);
+    }
+
+    static PinnedWsTunnel start(
+        String remoteHost,
+        int remotePort,
+        String key,
+        SSLSocketFactory factory,
+        Predicate<Certificate> peerCheck,
+        UpstreamDialer customDialer
+    ) throws IOException {
         if (remoteHost == null || remoteHost.isEmpty() || remotePort <= 0 || factory == null || peerCheck == null) {
             throw new IOException("Invalid tunnel target");
         }
-        PinnedWsTunnel tunnel = new PinnedWsTunnel(remoteHost, remotePort, key, factory, peerCheck);
+        PinnedWsTunnel tunnel = new PinnedWsTunnel(remoteHost, remotePort, key, factory, peerCheck, customDialer);
         Thread acceptor = new Thread(tunnel::acceptLoop, "kiki-ws-tunnel-accept");
         acceptor.setDaemon(true);
         acceptor.start();
@@ -163,8 +182,9 @@ final class PinnedWsTunnel implements Closeable {
                 reject(client, "502 Bad Gateway");
                 return;
             }
+            String effectiveRewritten = rewritten;
             OutputStream out = upstream.getOutputStream();
-            out.write(rewritten.getBytes(StandardCharsets.ISO_8859_1));
+            out.write(effectiveRewritten.getBytes(StandardCharsets.ISO_8859_1));
             if (buffered.length > headLength) {
                 out.write(buffered, headLength, buffered.length - headLength);
             }
@@ -249,6 +269,22 @@ final class PinnedWsTunnel implements Closeable {
     }
 
     private Socket openPinnedUpstream(Socket raw, AtomicReference<Socket> upstreamRef) {
+        if (customDialer != null) {
+            release(raw);
+            try {
+                PeerStreamConnector.ConnectedRoute route = customDialer.dial();
+                if (route == null || route.socket == null) return null;
+                sockets.add(route.socket);
+                upstreamRef.set(route.socket);
+                if (closed) {
+                    release(route.socket);
+                    return null;
+                }
+                return route.socket;
+            } catch (Exception e) {
+                return null;
+            }
+        }
         SSLSocket ssl = null;
         try {
             raw.setTcpNoDelay(true);

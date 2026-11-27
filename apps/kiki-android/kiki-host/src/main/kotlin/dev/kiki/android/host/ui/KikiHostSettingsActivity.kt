@@ -32,23 +32,32 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.lifecycle.lifecycleScope
+import dev.kiki.android.host.HostMode
 import dev.kiki.android.host.KikiHost
 import dev.kiki.android.host.KikiHostEnvironment
 import dev.kiki.android.host.KikiHostSettings
+import dev.kiki.android.host.KikiRuntimeService
 import dev.kiki.android.host.i18n.HostStrings
+import kotlinx.coroutines.launch
 
 /**
- * Pure Kiki Android device settings screen: permissions, tool switches, proxy, and open-source notices.
+ * Pure Kiki Android device settings screen: operating mode ("在本机运行 Kiki"),
+ * app updates, tiered permissions, tool switches, proxy, and open-source notices.
  */
 class KikiHostSettingsActivity : ComponentActivity() {
 
     private lateinit var host: KikiHostEnvironment
+    private var localHostSwitch: Switch? = null
+    private var localOnlyContainer: LinearLayout? = null
     private var a11yStatusBadge: TextView? = null
     private var overlayStatusBadge: TextView? = null
     private var notifStatusBadge: TextView? = null
     private var batteryStatusBadge: TextView? = null
     private var proxyValueLabel: TextView? = null
+    private var updateChannelBadge: TextView? = null
     private var darkMode: Boolean = false
+    private var suppressLocalSwitchCallback: Boolean = false
 
     private val notifPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -74,7 +83,9 @@ class KikiHostSettingsActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        syncModeStateUi()
         refreshPermissionBadges()
+        host.updater.onActivityResumed(this)
     }
 
     @SuppressLint("BatteryLife", "UseSwitchCompatOrMaterialCode")
@@ -109,7 +120,7 @@ class KikiHostSettingsActivity : ComponentActivity() {
         }
 
         val titleView = TextView(this).apply {
-            text = if (zh) "设备设置" else "Phone Settings"
+            text = if (zh) "设置" else "Settings"
             setTextColor(tokens.ink)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 19f)
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
@@ -130,15 +141,12 @@ class KikiHostSettingsActivity : ComponentActivity() {
             setPadding(dp(20), dp(8), dp(20), dp(36))
         }
 
-        fun addSectionHeading(text: String) {
-            val heading = TextView(this).apply {
-                this.text = text
-                setTextColor(tokens.inkFaint)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
-                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-                setPadding(dp(4), dp(18), dp(4), dp(8))
-            }
-            column.addView(heading)
+        fun makeSectionHeading(text: String): TextView = TextView(this).apply {
+            this.text = text
+            setTextColor(tokens.inkFaint)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setPadding(dp(4), dp(18), dp(4), dp(8))
         }
 
         fun makeGroupSheet(): LinearLayout = LinearLayout(this).apply {
@@ -164,6 +172,7 @@ class KikiHostSettingsActivity : ComponentActivity() {
         fun makeStatusRow(
             title: String,
             subtitle: String,
+            onLongClick: (() -> Unit)? = null,
             onClick: () -> Unit,
         ): Pair<LinearLayout, TextView> {
             val row = LinearLayout(this).apply {
@@ -174,6 +183,12 @@ class KikiHostSettingsActivity : ComponentActivity() {
                 isClickable = true
                 isFocusable = true
                 setOnClickListener { onClick() }
+                if (onLongClick != null) {
+                    setOnLongClickListener {
+                        onLongClick()
+                        true
+                    }
+                }
             }
             val textCol = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
@@ -210,7 +225,7 @@ class KikiHostSettingsActivity : ComponentActivity() {
             subtitle: String,
             checked: Boolean,
             onToggle: (Boolean) -> Unit,
-        ): LinearLayout {
+        ): Pair<LinearLayout, Switch> {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -250,35 +265,83 @@ class KikiHostSettingsActivity : ComponentActivity() {
             row.setOnClickListener { sw.isChecked = !sw.isChecked }
             row.addView(textCol)
             row.addView(sw)
-            return row
+            return row to sw
         }
 
         val pkgUri = Uri.parse("package:$packageName")
+        val isLocalInitially = host.settings.hostMode == HostMode.LOCAL_HOST
 
-        // Group 1: Screen Control (Optional)
-        addSectionHeading(if (zh) "屏幕辅助（可选）" else "Screen Control (Optional)")
-        val screenSheet = makeGroupSheet()
-        val (a11yRow, a11yBadge) = makeStatusRow(
-            title = if (zh) "无障碍服务" else "Accessibility Service",
-            subtitle = if (zh) "需要读屏或跨应用点击时开启" else "Enable only if Kiki should inspect or tap other apps",
-        ) {
-            safeLaunch(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS), pkgUri)
+        // Section 0: Standalone "在本机运行 Kiki" Operating Mode Switch
+        column.addView(makeSectionHeading(if (zh) "运行模式" else "Operating Mode"))
+        val modeSheet = makeGroupSheet()
+        val (localModeRow, localModeSw) = makeSwitchRow(
+            title = if (zh) "在本机运行 Kiki" else "Run Kiki on This Phone",
+            subtitle = if (zh) {
+                "在手机本地启动独立智能体引擎；关闭则停止后台服务，仅连接电脑 Kiki"
+            } else {
+                "Starts a standalone local engine on this phone; turn off for zero-background remote mode"
+            },
+            checked = isLocalInitially,
+        ) { enabled ->
+            if (!suppressLocalSwitchCallback) {
+                handleLocalHostModeToggle(enabled)
+            }
         }
-        a11yStatusBadge = a11yBadge
-        val (overlayRow, overlayBadge) = makeStatusRow(
-            title = if (zh) "悬浮状态胶囊" else "Overlay Pill",
-            subtitle = if (zh) "跨应用执行时显示暂停与返回按钮" else "Shows pause and return controls above other apps",
-        ) {
-            safeLaunch(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, pkgUri), pkgUri)
-        }
-        overlayStatusBadge = overlayBadge
-        screenSheet.addView(a11yRow)
-        addDivider(screenSheet)
-        screenSheet.addView(overlayRow)
-        column.addView(screenSheet)
+        localHostSwitch = localModeSw
+        modeSheet.addView(localModeRow)
+        column.addView(modeSheet)
 
-        // Group 2: Background & Runtime
-        addSectionHeading(if (zh) "后台与网络" else "Background & Network")
+        // Section 1: App Updates (always available in both REMOTE_ONLY & LOCAL_HOST)
+        column.addView(makeSectionHeading(if (zh) "应用更新" else "App Updates"))
+        val updateSheet = makeGroupSheet()
+        val (autoUpdateRow, _) = makeSwitchRow(
+            title = if (zh) "自动检查更新" else "Check for Updates Automatically",
+            subtitle = if (zh) "启动时静默检查新版本并校验数字签名" else "Check signed release feed on launch",
+            checked = host.settings.autoCheckUpdates,
+        ) { enabled ->
+            host.settings.autoCheckUpdates = enabled
+        }
+        val (checkNowRow, checkNowBadge) = makeStatusRow(
+            title = if (zh) "检查更新" else "Check for Updates",
+            subtitle = if (zh) {
+                "当前 v${host.versionName} (${host.distributionChannel})"
+            } else {
+                "Current v${host.versionName} (${host.distributionChannel})"
+            },
+            onLongClick = { showUpdaterFeedDialog(tokens, zh) },
+        ) {
+            lifecycleScope.launch {
+                host.updater.checkAndPrompt(this@KikiHostSettingsActivity, manual = true)
+            }
+        }
+        updateChannelBadge = checkNowBadge
+        updateSheet.addView(autoUpdateRow)
+        addDivider(updateSheet)
+        updateSheet.addView(checkNowRow)
+        column.addView(updateSheet)
+
+        // Section 2: Network Proxy (applies to updater & local runtime)
+        column.addView(makeSectionHeading(if (zh) "网络连接" else "Network"))
+        val netSheet = makeGroupSheet()
+        val (proxyRow, proxyBadge) = makeStatusRow(
+            title = if (zh) "网络代理" else "Network Proxy",
+            subtitle = if (zh) "用于更新检查与本机内核网络请求" else "Used for update checks and local kernel requests",
+        ) {
+            showProxyDialog(tokens, zh)
+        }
+        proxyValueLabel = proxyBadge
+        netSheet.addView(proxyRow)
+        column.addView(netSheet)
+
+        // Container for Local-Host-Only Sections (hidden when "在本机运行 Kiki" is OFF)
+        val localSections = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = if (isLocalInitially) View.VISIBLE else View.GONE
+        }
+        localOnlyContainer = localSections
+
+        // Local Group A: Background & Notifications
+        localSections.addView(makeSectionHeading(if (zh) "本机后台保活" else "Local Runtime"))
         val runtimeSheet = makeGroupSheet()
         val (notifRow, notifBadge) = makeStatusRow(
             title = if (zh) "通知提醒" else "Notifications",
@@ -299,14 +362,14 @@ class KikiHostSettingsActivity : ComponentActivity() {
         }
         notifStatusBadge = notifBadge
         val (batteryRow, batteryBadge) = makeStatusRow(
-            title = if (zh) "后台省电豁免" else "Unrestricted Battery",
+            title = if (zh) "后台省电豁免（可选）" else "Unrestricted Battery (Optional)",
             subtitle = if (zh) "避免长耗时任务在锁屏后被系统挂起" else "Prevents Android from freezing active local sessions",
         ) {
             safeLaunch(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, pkgUri), pkgUri)
         }
         batteryStatusBadge = batteryBadge
 
-        val autostartRow = makeSwitchRow(
+        val (autostartRow, _) = makeSwitchRow(
             title = if (zh) "开机自动启动内核" else "Start Kernel on Boot",
             subtitle = if (zh) "设备重启后恢复本机 Kiki 服务" else "Launch local Kiki service after device reboot",
             checked = host.settings.bootAutostart,
@@ -314,25 +377,37 @@ class KikiHostSettingsActivity : ComponentActivity() {
             host.settings.bootAutostart = allowed
         }
 
-        val (proxyRow, proxyBadge) = makeStatusRow(
-            title = if (zh) "网络代理" else "Network Proxy",
-            subtitle = if (zh) "下次启动内核时生效" else "Applied on next kernel start",
-        ) {
-            showProxyDialog(tokens, zh)
-        }
-        proxyValueLabel = proxyBadge
-
         runtimeSheet.addView(notifRow)
         addDivider(runtimeSheet)
         runtimeSheet.addView(batteryRow)
         addDivider(runtimeSheet)
         runtimeSheet.addView(autostartRow)
-        addDivider(runtimeSheet)
-        runtimeSheet.addView(proxyRow)
-        column.addView(runtimeSheet)
+        localSections.addView(runtimeSheet)
 
-        // Group 3: Device Tool Switches
-        addSectionHeading(if (zh) "原生工具权限" else "Device Tool Access")
+        // Local Group B: Screen Control (Deferred Optional)
+        localSections.addView(makeSectionHeading(if (zh) "屏幕辅助（执行手机自动化时按需开启）" else "Screen Control (On Demand)"))
+        val screenSheet = makeGroupSheet()
+        val (a11yRow, a11yBadge) = makeStatusRow(
+            title = if (zh) "无障碍服务" else "Accessibility Service",
+            subtitle = if (zh) "需要读屏或跨应用点击时开启" else "Enable only if Kiki should inspect or tap other apps",
+        ) {
+            safeLaunch(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS), pkgUri)
+        }
+        a11yStatusBadge = a11yBadge
+        val (overlayRow, overlayBadge) = makeStatusRow(
+            title = if (zh) "悬浮状态胶囊" else "Overlay Pill",
+            subtitle = if (zh) "跨应用执行时显示暂停与返回按钮" else "Shows pause and return controls above other apps",
+        ) {
+            safeLaunch(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, pkgUri), pkgUri)
+        }
+        overlayStatusBadge = overlayBadge
+        screenSheet.addView(a11yRow)
+        addDivider(screenSheet)
+        screenSheet.addView(overlayRow)
+        localSections.addView(screenSheet)
+
+        // Local Group C: Device Tool Switches
+        localSections.addView(makeSectionHeading(if (zh) "原生工具权限" else "Device Tool Access"))
         val toolsSheet = makeGroupSheet()
         toolsSheet.addView(makeSwitchRow(
             title = if (zh) "读取剪贴板" else "Read Clipboard",
@@ -340,7 +415,7 @@ class KikiHostSettingsActivity : ComponentActivity() {
             checked = host.settings.allowClipboardRead,
         ) { allowed ->
             host.settings.allowClipboardRead = allowed
-        })
+        }.first)
         addDivider(toolsSheet)
         toolsSheet.addView(makeSwitchRow(
             title = if (zh) "写入剪贴板" else "Write Clipboard",
@@ -348,7 +423,7 @@ class KikiHostSettingsActivity : ComponentActivity() {
             checked = host.settings.allowClipboardWrite,
         ) { allowed ->
             host.settings.allowClipboardWrite = allowed
-        })
+        }.first)
         addDivider(toolsSheet)
         toolsSheet.addView(makeSwitchRow(
             title = if (zh) "唤醒屏幕" else "Wake Screen",
@@ -356,11 +431,13 @@ class KikiHostSettingsActivity : ComponentActivity() {
             checked = host.settings.allowWakeUnlock,
         ) { allowed ->
             host.settings.allowWakeUnlock = allowed
-        })
-        column.addView(toolsSheet)
+        }.first)
+        localSections.addView(toolsSheet)
 
-        // Group 4: About & Open-Source Notices
-        addSectionHeading(if (zh) "关于" else "About")
+        column.addView(localSections)
+
+        // Section 4: About & Open-Source Notices
+        column.addView(makeSectionHeading(if (zh) "关于" else "About"))
         val aboutSheet = makeGroupSheet()
         val (noticesRow, noticesBadge) = makeStatusRow(
             title = if (zh) "开源致谢" else "Open-Source Notices",
@@ -395,6 +472,39 @@ class KikiHostSettingsActivity : ComponentActivity() {
         refreshPermissionBadges()
     }
 
+    private fun handleLocalHostModeToggle(enabled: Boolean) {
+        if (enabled) {
+            host.settings.hostMode = HostMode.LOCAL_HOST
+            localOnlyContainer?.visibility = View.VISIBLE
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                !host.settings.localNotifPromptedOnce &&
+                ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+            ) {
+                host.settings.localNotifPromptedOnce = true
+                notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+            KikiRuntimeService.ensureStarted(applicationContext)
+            refreshPermissionBadges()
+        } else {
+            host.settings.hostMode = HostMode.REMOTE_ONLY
+            localOnlyContainer?.visibility = View.GONE
+            lifecycleScope.launch {
+                KikiRuntimeService.stopAndTeardown(applicationContext)
+            }
+        }
+    }
+
+    private fun syncModeStateUi() {
+        val isLocal = host.settings.hostMode == HostMode.LOCAL_HOST
+        val sw = localHostSwitch
+        if (sw != null && sw.isChecked != isLocal) {
+            suppressLocalSwitchCallback = true
+            sw.isChecked = isLocal
+            suppressLocalSwitchCallback = false
+        }
+        localOnlyContainer?.visibility = if (isLocal) View.VISIBLE else View.GONE
+    }
+
     private fun refreshPermissionBadges() {
         val tokens = KikiPalette.of(darkMode)
         val zh = HostStrings.isChinese(this)
@@ -416,6 +526,15 @@ class KikiHostSettingsActivity : ComponentActivity() {
         val proxy = host.settings.proxyUrl
         proxyValueLabel?.let { badge ->
             styleNeutralBadge(badge, proxy ?: if (zh) "直连" else "Direct", tokens)
+        }
+        updateChannelBadge?.let { badge ->
+            val hasCustom = host.settings.updaterFeedUrlOverride != null
+            val label = if (hasCustom) {
+                if (zh) "自定义源" else "Custom"
+            } else {
+                if (zh) "检查" else "Check"
+            }
+            styleNeutralBadge(badge, label, tokens)
         }
     }
 
@@ -488,6 +607,59 @@ class KikiHostSettingsActivity : ComponentActivity() {
                     host.settings.proxyUrl = normalized
                     refreshPermissionBadges()
                     dialog.dismiss()
+                } catch (e: IllegalArgumentException) {
+                    errorLabel.text = e.message
+                    errorLabel.visibility = View.VISIBLE
+                }
+            }
+        }
+        dialog.show()
+    }
+
+    private fun showUpdaterFeedDialog(tokens: KikiPalette.Tokens, zh: Boolean) {
+        val density = resources.displayMetrics.density
+        fun dp(v: Int): Int = (v * density + 0.5f).toInt()
+        val input = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            hint = host.updater.defaultFeedUrl
+            setText(host.settings.updaterFeedUrlOverride.orEmpty())
+            setSingleLine(true)
+        }
+        val errorLabel = TextView(this).apply {
+            setTextColor(tokens.danger)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+            visibility = View.GONE
+            setPadding(0, dp(6), 0, 0)
+        }
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(14), dp(22), dp(4))
+            addView(input)
+            addView(errorLabel)
+        }
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(if (zh) "更新源地址" else "Update Feed URL")
+            .setView(container)
+            .setPositiveButton(if (zh) "保存并检查" else "Save & Check", null)
+            .setNeutralButton(if (zh) "恢复默认" else "Reset") { _, _ ->
+                host.settings.updaterFeedUrlOverride = null
+                refreshPermissionBadges()
+            }
+            .setNegativeButton(if (zh) "取消" else "Cancel", null)
+            .create()
+
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val candidate = input.text?.toString().orEmpty()
+                try {
+                    val normalized = KikiHostSettings.normalizeUpdaterFeedUrl(candidate)
+                    host.settings.updaterFeedUrlOverride = normalized
+                    refreshPermissionBadges()
+                    dialog.dismiss()
+                    lifecycleScope.launch {
+                        host.updater.checkAndPrompt(this@KikiHostSettingsActivity, manual = true)
+                    }
                 } catch (e: IllegalArgumentException) {
                     errorLabel.text = e.message
                     errorLabel.visibility = View.VISIBLE

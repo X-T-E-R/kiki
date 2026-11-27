@@ -32,6 +32,10 @@ val configuredKikiDistTarInputs = rootProject.files().apply {
     if (configuredKikiDistTarPresent) from(configuredKikiDistTar)
 }
 
+val requireRealDist = gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) } ||
+    providers.environmentVariable("KIKI_REQUIRE_REAL_DIST").orNull == "1" ||
+    providers.gradleProperty("kikiRequireRealDist").orNull == "true"
+
 val stageKikiDist by tasks.registering(Exec::class) {
     group = "kiki"
     description = "Stage kiki-dist.tar.xz and kiki-dist.meta.json into assets/kiki"
@@ -39,9 +43,10 @@ val stageKikiDist by tasks.registering(Exec::class) {
     inputs.files(configuredKikiDistTarInputs).withPropertyName("kikiDistTar")
     inputs.property("kikiDistTarPath", configuredKikiDistTar.absolutePath)
     inputs.property("kikiDistTarPresent", configuredKikiDistTarPresent)
+    inputs.property("requireRealDist", requireRealDist)
     outputs.dir(generatedAssetsDir)
     workingDir(rootProject.projectDir)
-    commandLine(
+    val cmd = mutableListOf(
         "node",
         rootProject.file("tools/kiki-runtime/stage-dist.mjs").absolutePath,
         "--tar",
@@ -49,6 +54,10 @@ val stageKikiDist by tasks.registering(Exec::class) {
         "--out",
         generatedAssetsDir.get().asFile.resolve("kiki").absolutePath,
     )
+    if (requireRealDist) {
+        cmd.add("--require-real")
+    }
+    commandLine(cmd)
 }
 
 android {
@@ -74,10 +83,17 @@ kotlin {
     jvmToolchain(17)
 }
 
-tasks.matching { it.name.contains("JniLibFolders") || it.name.contains("NativeLibs") }.configureEach {
+tasks.matching {
+    it.name.contains("JniLibFolders", ignoreCase = true) ||
+        it.name.contains("NativeLibs", ignoreCase = true) ||
+        it.name.contains("lint", ignoreCase = true)
+}.configureEach {
     dependsOn(stageKikiNode)
 }
-tasks.matching { it.name.contains("Assets") }.configureEach {
+tasks.matching {
+    (it.name.contains("Assets", ignoreCase = true) || it.name.contains("lint", ignoreCase = true)) &&
+        it.name != stageKikiDist.name
+}.configureEach {
     dependsOn(stageKikiDist)
 }
 

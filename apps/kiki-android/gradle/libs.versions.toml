@@ -9,6 +9,8 @@ commonsCompress = "1.28.0"
 webkit = "1.12.1"
 xz = "1.10"
 mlkitTextRecognition = "16.0.1"
+camerax = "1.4.1"
+zxingCore = "3.5.3"
 
 [libraries]
 junit = { module = "junit:junit", version.ref = "junit" }
@@ -22,6 +24,11 @@ androidx-webkit = { module = "androidx.webkit:webkit", version.ref = "webkit" }
 xz = { module = "org.tukaani:xz", version.ref = "xz" }
 mlkit-text-recognition = { module = "com.google.mlkit:text-recognition", version.ref = "mlkitTextRecognition" }
 mlkit-text-recognition-chinese = { module = "com.google.mlkit:text-recognition-chinese", version.ref = "mlkitTextRecognition" }
+camerax-core = { module = "androidx.camera:camera-core", version.ref = "camerax" }
+camerax-camera2 = { module = "androidx.camera:camera-camera2", version.ref = "camerax" }
+camerax-lifecycle = { module = "androidx.camera:camera-lifecycle", version.ref = "camerax" }
+camerax-view = { module = "androidx.camera:camera-view", version.ref = "camerax" }
+zxing-core = { module = "com.google.zxing:core", version.ref = "zxingCore" }
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test-junit", version.ref = "kotlin" }
 
 [plugins]

@@ -14,6 +14,7 @@ import dev.kiki.android.host.tools.ScreenControlPort
 import dev.kiki.android.host.tools.SystemToolsModule
 import dev.kiki.android.host.tools.ToolGate
 import dev.kiki.android.host.ui.KikiHostSettingsActivity
+import dev.kiki.android.host.updater.KikiApkUpdater
 import java.io.File
 import java.lang.ref.WeakReference
 import java.util.ServiceLoader
@@ -21,8 +22,12 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 data class KikiHostConfig(
-    val versionName: String = "0.1.0",
+    val versionName: String = "0.7.0",
+    val versionCode: Long = 7000L,
     val gitHash: String = "dev",
+    val distributionChannel: String = "official",
+    val updaterFeedUrl: String = "https://github.com/X-T-E-R/kiki/releases/latest/download/android.json",
+    val expectedSignerSha256: String = "",
     val modules: List<KikiToolModule> = emptyList(),
 )
 
@@ -33,17 +38,24 @@ data class KikiHostConfig(
 class KikiHostEnvironment internal constructor(
     private val appContext: Context,
     val versionName: String,
+    val versionCode: Long,
     val gitHash: String,
+    val distributionChannel: String,
     val settings: KikiHostSettings,
     val workspaceDir: File,
     val shareIntakeStore: ShareIntakeStore,
+    val updater: KikiApkUpdater,
     private val screenControlProvider: () -> ScreenControlPort?,
     private val activityProvider: () -> Activity?,
+    private val toolRegistryFactory: (KikiHostEnvironment) -> CompositeToolRegistry,
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
+    private var toolRegistryInitialized = false
 
-    lateinit var toolRegistry: CompositeToolRegistry
-        internal set
+    val toolRegistry: CompositeToolRegistry by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        toolRegistryInitialized = true
+        toolRegistryFactory(this)
+    }
 
     fun sandboxSpec(): SandboxDeviceSpec = SandboxDeviceSpec(
         available = false,
@@ -104,7 +116,7 @@ class KikiHostEnvironment internal constructor(
     }
 
     fun close() {
-        if (::toolRegistry.isInitialized) {
+        if (toolRegistryInitialized) {
             toolRegistry.close()
         }
     }
@@ -163,6 +175,7 @@ object KikiHost {
         app.registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
             override fun onActivityResumed(activity: Activity) {
                 activeActivityRef = WeakReference(activity)
+                installedEnv?.updater?.onActivityResumed(activity)
             }
 
             override fun onActivityPaused(activity: Activity) {
@@ -180,8 +193,8 @@ object KikiHost {
     }
 
     private fun createEnvironment(appContext: Context, config: KikiHostConfig): KikiHostEnvironment {
-        val workspaceDir = File(appContext.filesDir, "kiki/workspace").apply { mkdirs() }
-        val shareInboxDir = File(workspaceDir, "shared-inbox").apply { mkdirs() }
+        val workspaceDir = File(appContext.filesDir, "kiki/workspace")
+        val shareInboxDir = File(workspaceDir, "shared-inbox")
         val settings = KikiHostSettings(appContext)
         val shareStore = ShareIntakeStore(
             inboxRootDir = shareInboxDir,
@@ -196,25 +209,42 @@ object KikiHost {
             addAll(config.modules)
         }.distinctBy { it.id }
 
-        val screenControl: ScreenControlPort? = allModules.firstNotNullOfOrNull { module ->
-            runCatching { module.screenControl(appContext) }.getOrNull()
+        val screenControlLazy = lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+            allModules.firstNotNullOfOrNull { module ->
+                runCatching { module.screenControl(appContext) }.getOrNull()
+            }
         }
 
-        val env = KikiHostEnvironment(
+        val updater = KikiApkUpdater(
+            appContext = appContext,
+            settings = settings,
+            currentVersionName = config.versionName,
+            currentVersionCode = config.versionCode,
+            distributionChannel = config.distributionChannel,
+            defaultFeedUrl = config.updaterFeedUrl,
+            expectedSignerSha256 = config.expectedSignerSha256,
+        )
+
+        return KikiHostEnvironment(
             appContext = appContext,
             versionName = config.versionName,
+            versionCode = config.versionCode,
             gitHash = config.gitHash,
+            distributionChannel = config.distributionChannel,
             settings = settings,
             workspaceDir = workspaceDir,
             shareIntakeStore = shareStore,
-            screenControlProvider = { screenControl },
+            updater = updater,
+            screenControlProvider = { screenControlLazy.value },
             activityProvider = { activeActivityRef?.get() },
+            toolRegistryFactory = { env ->
+                workspaceDir.mkdirs()
+                shareInboxDir.mkdirs()
+                val providers = allModules.flatMap { module ->
+                    runCatching { module.providers(appContext, env) }.getOrDefault(emptyList())
+                }
+                CompositeToolRegistry(providers)
+            },
         )
-
-        val providers = allModules.flatMap { module ->
-            runCatching { module.providers(appContext, env) }.getOrDefault(emptyList())
-        }
-        env.toolRegistry = CompositeToolRegistry(providers)
-        return env
     }
 }

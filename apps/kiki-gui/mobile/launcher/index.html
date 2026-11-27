@@ -125,10 +125,47 @@
             <div id="address-list" class="address-list"></div>
           </div>
         </section>
+
+        <section id="view-settings" class="view" aria-labelledby="settings-title" hidden>
+          <h1 id="settings-title" class="view-title" data-i18n="settingsTitle">Settings</h1>
+
+          <div class="group">
+            <h2 class="group-title" data-i18n="localHostGroup">On-device engine</h2>
+            <div class="settings-card">
+              <div class="settings-row">
+                <div class="settings-copy">
+                  <span class="settings-label" data-i18n="localHostTitle">Run Kiki on this phone</span>
+                  <p class="settings-desc" data-i18n="localHostDesc">Starts a standalone local agent kernel on this phone. Turn off for zero-background remote-only mode.</p>
+                </div>
+                <button id="toggle-local-host" type="button" role="switch" aria-checked="false" class="toggle-switch" aria-labelledby="settings-title"></button>
+              </div>
+              <button id="btn-open-native-settings" type="button" class="settings-link-row">
+                <span data-i18n="nativeSettingsRow">Phone permissions &amp; network</span>
+                <span class="settings-link-action" data-i18n="nativeSettingsOpen">Open</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="group">
+            <h2 class="group-title" data-i18n="updatesGroup">Updates</h2>
+            <div class="settings-card">
+              <div class="settings-row">
+                <div class="settings-copy">
+                  <span class="settings-label" data-i18n="autoUpdateTitle">Check for updates automatically</span>
+                  <p id="host-version-line" class="settings-desc">Kiki</p>
+                </div>
+                <button id="toggle-auto-update" type="button" role="switch" aria-checked="true" class="toggle-switch"></button>
+              </div>
+              <div class="settings-actions-row">
+                <button id="btn-check-update" type="button" class="secondary settings-full-btn" data-i18n="checkUpdate">Check for updates</button>
+              </div>
+            </div>
+          </div>
+        </section>
       </main>
 
       <nav class="tabbar" aria-label="Kiki">
-        <div class="tabbar-inner">
+        <div id="tabbar-inner" class="tabbar-inner">
           <button type="button" class="tab" data-tab="connect">
             <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
               <path d="M4 8V5.5C4 4.67 4.67 4 5.5 4H8M16 4h2.5c.83 0 1.5.67 1.5 1.5V8M20 16v2.5c0 .83-.67 1.5-1.5 1.5H16M8 20H5.5C4.67 20 4 19.33 4 18.5V16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
@@ -149,6 +186,13 @@
               <circle cx="12" cy="18.6" r="1.2" fill="currentColor" />
             </svg>
             <span data-i18n="tabNetwork">Network</span>
+          </button>
+          <button id="tab-settings" type="button" class="tab" data-tab="settings" hidden>
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle cx="12" cy="12" r="3.2" stroke="currentColor" stroke-width="1.6" />
+              <path d="M12 3.8v2.1M12 18.1v2.1M3.8 12h2.1M18.1 12h2.1M6.2 6.2l1.5 1.5M16.3 16.3l1.5 1.5M17.8 6.2l-1.5 1.5M7.7 16.3l-1.5 1.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+            <span data-i18n="tabSettings">Settings</span>
           </button>
         </div>
       </nav>

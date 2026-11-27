@@ -32,6 +32,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.io.File
@@ -56,10 +57,16 @@ class KikiRuntimeService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        val appCtx = applicationContext
+        if (KikiHostSettings(appCtx).hostMode != HostMode.LOCAL_HOST) {
+            Log.i(TAG, "Refusing to start KikiRuntimeService outside LOCAL_HOST mode")
+            _kernelState.value = KernelState.Stopped
+            stopSelf()
+            return
+        }
         ensureNotificationChannels()
         startInForeground(if (HostStrings.isChinese(this)) "正在启动 Kiki 内核" else "Starting Kiki kernel")
 
-        val appCtx = applicationContext
         serviceScope.launch(Dispatchers.Default) {
             host = KikiHost.resolve(appCtx)
             installer = RuntimeInstaller(appCtx)
@@ -167,6 +174,11 @@ class KikiRuntimeService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (KikiHostSettings(applicationContext).hostMode != HostMode.LOCAL_HOST) {
+            runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+            stopSelf()
+            return START_NOT_STICKY
+        }
         when (intent?.action) {
             ACTION_STOP_TURNS -> {
                 if (::supervisor.isInitialized) supervisor.cancelActiveTurns("notification_stop")
@@ -209,11 +221,34 @@ class KikiRuntimeService : Service() {
         releaseWakeLock()
         if (::supervisor.isInitialized) {
             runBlocking {
-                runCatching { supervisor.stop(2_000L) }
+                runCatching { supervisor.stop(1_500L) }
             }
         }
         if (::hostGateway.isInitialized) runCatching { hostGateway.close() }
+        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+        runCatching { nm?.cancel(RUNTIME_NOTIFICATION_ID) }
         super.onDestroy()
+    }
+
+    internal suspend fun stopImmediately() {
+        instanceRef = null
+        serviceScope.cancel()
+        if (::networkHints.isInitialized) runCatching { networkHints.unregister() }
+        if (::overlayPill.isInitialized) runCatching { overlayPill.hide() }
+        releaseWakeLock()
+        if (::supervisor.isInitialized) {
+            withContext(Dispatchers.Default) {
+                runCatching { supervisor.stop(1_500L) }
+            }
+        }
+        if (::hostGateway.isInitialized) runCatching { hostGateway.close() }
+        withContext(Dispatchers.Main.immediate) {
+            runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            runCatching { nm?.cancel(RUNTIME_NOTIFICATION_ID) }
+            stopSelf()
+        }
     }
 
     fun notifyWebActivityResumed() {
@@ -432,6 +467,9 @@ class KikiRuntimeService : Service() {
 
         fun ensureStarted(context: Context) {
             val appCtx = context.applicationContext
+            if (KikiHostSettings(appCtx).hostMode != HostMode.LOCAL_HOST) {
+                return
+            }
             val intent = Intent(appCtx, KikiRuntimeService::class.java)
             runCatching {
                 appCtx.startForegroundService(intent)
@@ -442,6 +480,9 @@ class KikiRuntimeService : Service() {
 
         fun restartKernel(context: Context) {
             val appCtx = context.applicationContext
+            if (KikiHostSettings(appCtx).hostMode != HostMode.LOCAL_HOST) {
+                return
+            }
             val intent = Intent(appCtx, KikiRuntimeService::class.java).apply {
                 action = ACTION_RESTART_KERNEL
             }
@@ -450,6 +491,18 @@ class KikiRuntimeService : Service() {
             }.onFailure {
                 runCatching { appCtx.startService(intent) }
             }
+        }
+
+        suspend fun stopAndTeardown(context: Context) {
+            val appCtx = context.applicationContext
+            instanceRef?.stopImmediately()
+            runCatching { appCtx.stopService(Intent(appCtx, KikiRuntimeService::class.java)) }
+            val nm = appCtx.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            runCatching { nm?.cancel(RUNTIME_NOTIFICATION_ID) }
+            withContext(Dispatchers.IO) {
+                NodeSupervisor.terminateAllOwnedNodeProcesses(File(appCtx.filesDir, "kiki/run"))
+            }
+            _kernelState.value = KernelState.Stopped
         }
     }
 }

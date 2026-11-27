@@ -6,12 +6,14 @@ import android.app.Activity
 import android.app.DownloadManager
 import android.content.ContentValues
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
+import android.net.http.SslError
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
@@ -22,11 +24,13 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
+import android.webkit.SslErrorHandler
 import android.webkit.URLUtil
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -38,6 +42,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
@@ -47,14 +52,17 @@ import androidx.lifecycle.lifecycleScope
 import androidx.webkit.ScriptHandler
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import dev.kiki.android.host.HostMode
 import dev.kiki.android.host.KernelState
 import dev.kiki.android.host.KikiHost
 import dev.kiki.android.host.KikiHostEnvironment
 import dev.kiki.android.host.KikiRuntimeService
 import dev.kiki.android.host.i18n.HostStrings
+import dev.kiki.android.host.remote.RemotePeerShell
 import dev.kiki.android.host.share.ShareIntakeBatch
 import dev.kiki.android.host.share.ShareIntakeStore
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonPrimitive
@@ -66,18 +74,24 @@ class KikiWebActivity : ComponentActivity() {
 
     private var host: KikiHostEnvironment? = null
     private lateinit var rootFrame: FrameLayout
+    private var modePickerView: View? = null
     private var webView: WebView? = null
+    private var defaultWebViewUa: String? = null
     private lateinit var splashContainer: LinearLayout
     private lateinit var splashTitle: TextView
     private lateinit var splashHint: TextView
     private lateinit var splashRetryBtn: TextView
     private var bridgeHandler: AndroidBridgeHandler? = null
+    private var remotePeerShell: RemotePeerShell? = null
 
+    private var activeRenderedMode: HostMode? = null
+    private var kernelCollectorJob: Job? = null
     private var activeScriptHandler: ScriptHandler? = null
     private var loadedOriginAndToken: Pair<String, String>? = null
     private var pendingFileChooserCallback: ValueCallback<Array<Uri>>? = null
     private var pendingCameraOutputUri: Uri? = null
     private var pendingCameraOutputFile: File? = null
+    private var pendingQrCallback: ((String?) -> Unit)? = null
     private var lastCssInsetsScript: String = ""
     private var lastImeCssPx: Int = -1
     private var lastSysBarsBottomPx: Int = 0
@@ -119,6 +133,19 @@ class KikiWebActivity : ComponentActivity() {
         cb?.onReceiveValue(if (uris.isEmpty()) null else uris.toTypedArray())
     }
 
+    private val qrScannerLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        val cb = pendingQrCallback
+        pendingQrCallback = null
+        val qrText = if (result.resultCode == Activity.RESULT_OK) {
+            result.data?.getStringExtra(KikiQrScannerActivity.EXTRA_QR_TEXT)
+        } else {
+            null
+        }
+        cb?.invoke(qrText)
+    }
+
     private val requestNotifLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { _ ->
@@ -132,58 +159,73 @@ class KikiWebActivity : ComponentActivity() {
         window.navigationBarColor = Color.TRANSPARENT
         val systemDark = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
 
-        setupSplashViews(systemDark)
+        val resolvedHost = KikiHost.resolve(applicationContext)
+        host = resolvedHost
+
+        setupRootAndSplashViews(systemDark)
         applySystemBarsAppearance(dark = systemDark)
         setupInsetsForwarding()
         setupBackNavigation()
 
-        KikiRuntimeService.ensureStarted(applicationContext)
-
-        lifecycleScope.launch {
-            val resolvedHost = withContext(Dispatchers.Default) {
-                KikiHost.resolve(applicationContext)
-            }
-            host = resolvedHost
-            if (savedInstanceState == null) {
-                ingestShareIntentIfPresent(intent, resolvedHost)
-            }
-            KikiRuntimeService.kernelState.collect { state ->
-                renderKernelState(state)
-            }
-        }
+        val initialMode = resolvedHost.settings.hostMode
+        activateHostMode(
+            mode = initialMode,
+            incomingIntent = if (savedInstanceState == null) intent else null,
+        )
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        val route = intent.getStringExtra(KikiRuntimeService.EXTRA_SESSION_ROUTE)
-        if (!route.isNullOrBlank()) {
-            bridgeHandler?.pushEvent("navigate", buildJsonObject { put("route", route) })
+        val resolvedHost = host ?: KikiHost.resolve(applicationContext).also { host = it }
+        val currentMode = resolvedHost.settings.hostMode
+        if (currentMode == HostMode.REMOTE_ONLY) {
+            remotePeerShell?.acceptIncomingPairIntent(intent)
+            return
         }
-        lifecycleScope.launch {
-            val resolvedHost = host ?: withContext(Dispatchers.Default) {
-                KikiHost.resolve(applicationContext).also { host = it }
+        if (currentMode == HostMode.LOCAL_HOST) {
+            val route = intent.getStringExtra(KikiRuntimeService.EXTRA_SESSION_ROUTE)
+            if (!route.isNullOrBlank()) {
+                bridgeHandler?.pushEvent("navigate", buildJsonObject { put("route", route) })
             }
-            ingestShareIntentIfPresent(intent, resolvedHost)
+            lifecycleScope.launch {
+                ingestShareIntentIfPresent(intent, resolvedHost)
+            }
         }
     }
 
     override fun onResume() {
         super.onResume()
-        KikiRuntimeService.instanceRef?.notifyWebActivityResumed()
-        pushPermissionSnapshot()
+        val resolvedHost = host ?: KikiHost.resolve(applicationContext).also { host = it }
+        val persistedMode = resolvedHost.settings.hostMode
+        if (activeRenderedMode != null && persistedMode != activeRenderedMode) {
+            activateHostMode(persistedMode, incomingIntent = null)
+        }
+        if (persistedMode == HostMode.LOCAL_HOST) {
+            KikiRuntimeService.instanceRef?.notifyWebActivityResumed()
+            pushPermissionSnapshot()
+        }
+        resolvedHost.updater.onActivityResumed(this)
     }
 
     override fun onPause() {
-        KikiRuntimeService.instanceRef?.notifyWebActivityPaused()
+        if (activeRenderedMode == HostMode.LOCAL_HOST) {
+            KikiRuntimeService.instanceRef?.notifyWebActivityPaused()
+        }
         super.onPause()
     }
 
     override fun onDestroy() {
+        kernelCollectorJob?.cancel()
+        kernelCollectorJob = null
         activeScriptHandler?.let { runCatching { it.remove() } }
         activeScriptHandler = null
+        remotePeerShell?.let { runCatching { it.close() } }
+        remotePeerShell = null
         pendingFileChooserCallback?.onReceiveValue(null)
         pendingFileChooserCallback = null
+        pendingQrCallback?.invoke(null)
+        pendingQrCallback = null
         pendingCameraOutputUri = null
         runCatching { pendingCameraOutputFile?.delete() }
         pendingCameraOutputFile = null
@@ -198,6 +240,183 @@ class KikiWebActivity : ComponentActivity() {
         super.onDestroy()
     }
 
+    private fun activateHostMode(mode: HostMode, incomingIntent: Intent?) {
+        val resolvedHost = host ?: KikiHost.resolve(applicationContext).also { host = it }
+        val systemDark = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        val previousMode = activeRenderedMode
+        activeRenderedMode = mode
+
+        when (mode) {
+            HostMode.UNSELECTED -> {
+                kernelCollectorJob?.cancel()
+                kernelCollectorJob = null
+                splashContainer.visibility = View.GONE
+                webView?.visibility = View.GONE
+                showModePicker(systemDark, resolvedHost)
+            }
+
+            HostMode.REMOTE_ONLY -> {
+                kernelCollectorJob?.cancel()
+                kernelCollectorJob = null
+                hideModePicker()
+                splashContainer.visibility = View.GONE
+                splashRetryBtn.visibility = View.GONE
+
+                if (previousMode == HostMode.LOCAL_HOST) {
+                    teardownLocalWebViewBinding()
+                    lifecycleScope.launch {
+                        KikiRuntimeService.stopAndTeardown(applicationContext)
+                    }
+                }
+
+                val wv = ensureWebViewCreated()
+                configureWebViewUserAgent(wv, embeddedLocalHost = false)
+                val shell = ensureRemotePeerShell(resolvedHost, wv)
+                wv.visibility = View.VISIBLE
+                val handledPair = shell.acceptIncomingPairIntent(incomingIntent)
+                if (!handledPair && (wv.url.isNullOrBlank() || previousMode != HostMode.REMOTE_ONLY)) {
+                    shell.openLauncher()
+                }
+                resolvedHost.updater.maybeAutoCheckOnLaunch(this)
+            }
+
+            HostMode.LOCAL_HOST -> {
+                hideModePicker()
+                if (previousMode == HostMode.REMOTE_ONLY) {
+                    teardownRemoteWebViewBinding()
+                }
+                val wv = ensureWebViewCreated()
+                configureWebViewUserAgent(wv, embeddedLocalHost = true)
+                wv.visibility = View.INVISIBLE
+                val zh = HostStrings.isChinese(this)
+                splashHint.text = if (zh) "正在启动本机内核…" else "Starting local kernel…"
+                splashRetryBtn.visibility = View.GONE
+                splashContainer.visibility = View.VISIBLE
+
+                maybePromptLocalNotificationOnce(resolvedHost)
+                KikiRuntimeService.ensureStarted(applicationContext)
+
+                if (incomingIntent != null) {
+                    lifecycleScope.launch {
+                        ingestShareIntentIfPresent(incomingIntent, resolvedHost)
+                    }
+                }
+
+                kernelCollectorJob?.cancel()
+                kernelCollectorJob = lifecycleScope.launch {
+                    KikiRuntimeService.kernelState.collect { state ->
+                        if (activeRenderedMode == HostMode.LOCAL_HOST) {
+                            renderKernelState(state)
+                        }
+                    }
+                }
+                resolvedHost.updater.maybeAutoCheckOnLaunch(this)
+            }
+        }
+    }
+
+    private fun showModePicker(dark: Boolean, resolvedHost: KikiHostEnvironment) {
+        if (modePickerView != null) {
+            modePickerView?.visibility = View.VISIBLE
+            return
+        }
+        val picker = ModePickerView.create(
+            context = this,
+            dark = dark,
+            onSelectRemoteOnly = {
+                resolvedHost.settings.hostMode = HostMode.REMOTE_ONLY
+                activateHostMode(HostMode.REMOTE_ONLY, incomingIntent = intent)
+            },
+            onSelectLocalHost = {
+                resolvedHost.settings.hostMode = HostMode.LOCAL_HOST
+                activateHostMode(HostMode.LOCAL_HOST, incomingIntent = intent)
+            },
+            onCheckUpdates = {
+                lifecycleScope.launch {
+                    resolvedHost.updater.checkAndPrompt(this@KikiWebActivity, manual = true)
+                }
+            },
+        )
+        modePickerView = picker
+        rootFrame.addView(picker)
+    }
+
+    private fun hideModePicker() {
+        modePickerView?.let { picker ->
+            rootFrame.removeView(picker)
+        }
+        modePickerView = null
+    }
+
+    private fun ensureRemotePeerShell(resolvedHost: KikiHostEnvironment, wv: WebView): RemotePeerShell {
+        val existing = remotePeerShell
+        if (existing != null) {
+            existing.attachToWebView(wv)
+            return existing
+        }
+        val created = RemotePeerShell(
+            activity = this,
+            host = resolvedHost,
+            onAppearanceChanged = ::applySystemBarsAppearance,
+            onLaunchQrScanner = { callback ->
+                pendingQrCallback?.invoke(null)
+                pendingQrCallback = callback
+                qrScannerLauncher.launch(Intent(this, KikiQrScannerActivity::class.java))
+            },
+            onSwitchToLocalHost = {
+                resolvedHost.settings.hostMode = HostMode.LOCAL_HOST
+                activateHostMode(HostMode.LOCAL_HOST, incomingIntent = null)
+            },
+        )
+        created.attachToWebView(wv)
+        remotePeerShell = created
+        return created
+    }
+
+    private fun teardownRemoteWebViewBinding() {
+        remotePeerShell?.let { runCatching { it.close() } }
+        remotePeerShell = null
+        webView?.let { wv ->
+            wv.stopLoading()
+            wv.clearHistory()
+        }
+    }
+
+    private fun teardownLocalWebViewBinding() {
+        activeScriptHandler?.let { runCatching { it.remove() } }
+        activeScriptHandler = null
+        bridgeHandler?.unbind()
+        loadedOriginAndToken = null
+        pageReadyForEvents = false
+        runCatching { CookieManager.getInstance().removeAllCookies(null) }
+        webView?.let { wv ->
+            wv.stopLoading()
+            wv.clearHistory()
+        }
+    }
+
+    private fun maybePromptLocalNotificationOnce(resolvedHost: KikiHostEnvironment) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (resolvedHost.settings.localNotifPromptedOnce) return
+        resolvedHost.settings.localNotifPromptedOnce = true
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestNotifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    private fun configureWebViewUserAgent(wv: WebView, embeddedLocalHost: Boolean) {
+        val rawBase = defaultWebViewUa ?: (wv.settings.userAgentString ?: "").also { defaultWebViewUa = it }
+        val cleanBase = rawBase
+            .replace("KikiEmbedded/1", "")
+            .replace("KikiApp/android", "")
+            .trim()
+        wv.settings.userAgentString = if (embeddedLocalHost) {
+            "$cleanBase KikiApp/android KikiEmbedded/1".trim()
+        } else {
+            "$cleanBase KikiApp/android".trim()
+        }
+    }
+
     private suspend fun ingestShareIntentIfPresent(incomingIntent: Intent?, resolvedHost: KikiHostEnvironment) {
         val action = incomingIntent?.action ?: return
         if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return
@@ -206,7 +425,6 @@ class KikiWebActivity : ComponentActivity() {
                 ?: return@withContext null
             resolvedHost.shareIntakeStore.stageIncoming(payload)
         }
-        // Clear action so configuration recreation does not stage the same share twice.
         incomingIntent.action = Intent.ACTION_MAIN
         if (batch != null) {
             pendingShareBatches.addLast(batch)
@@ -222,12 +440,7 @@ class KikiWebActivity : ComponentActivity() {
             val draftText = ShareIntakeStore.formatComposerDraft(batch)
             bh.pushEvent(
                 "share-intake",
-                buildJsonObject {
-                    put("id", batch.id)
-                    if (draftText.isNotEmpty()) {
-                        put("draft", draftText)
-                    }
-                },
+                buildShareIntakeEventPayload(batch.id, draftText),
             )
         }
     }
@@ -243,7 +456,7 @@ class KikiWebActivity : ComponentActivity() {
         webView?.setBackgroundColor(tokens.paper)
     }
 
-    private fun setupSplashViews(dark: Boolean) {
+    private fun setupRootAndSplashViews(dark: Boolean) {
         val density = resources.displayMetrics.density
         fun dp(v: Int): Int = (v * density + 0.5f).toInt()
         val zh = HostStrings.isChinese(this)
@@ -256,6 +469,7 @@ class KikiWebActivity : ComponentActivity() {
         splashContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
+            visibility = View.GONE
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -318,7 +532,7 @@ class KikiWebActivity : ComponentActivity() {
         }
 
         val nativeSettingsBtn = TextView(this).apply {
-            text = if (zh) "设备设置" else "Phone settings"
+            text = if (zh) "设置" else "Settings"
             setTextColor(tokens.inkSoft)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             setPadding(dp(16), dp(8), dp(16), dp(8))
@@ -371,14 +585,24 @@ class KikiWebActivity : ComponentActivity() {
             allowContentAccess = false
             mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
             mediaPlaybackRequiresUserGesture = false
-            val baseUa = userAgentString ?: ""
-            if (!baseUa.contains("KikiApp/android")) {
-                userAgentString = "$baseUa KikiApp/android KikiEmbedded/1".trim()
-            }
+            defaultWebViewUa = userAgentString ?: ""
         }
 
         wv.webViewClient = object : WebViewClient() {
+            override fun shouldInterceptRequest(
+                view: WebView,
+                request: WebResourceRequest,
+            ): WebResourceResponse? {
+                if (activeRenderedMode == HostMode.REMOTE_ONLY) {
+                    remotePeerShell?.interceptRequest(request)?.let { return it }
+                }
+                return super.shouldInterceptRequest(view, request)
+            }
+
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                if (activeRenderedMode == HostMode.REMOTE_ONLY) {
+                    return remotePeerShell?.shouldOverrideUrlLoading(view, request) ?: true
+                }
                 val uri = request.url ?: return false
                 val scheme = uri.scheme?.lowercase() ?: return true
                 if (scheme == "kiki-shell") {
@@ -398,8 +622,34 @@ class KikiWebActivity : ComponentActivity() {
                 return true
             }
 
+            override fun onReceivedSslError(
+                view: WebView,
+                handler: SslErrorHandler,
+                error: SslError,
+            ) {
+                if (activeRenderedMode == HostMode.REMOTE_ONLY &&
+                    remotePeerShell?.handleSslError(handler, error) == true
+                ) {
+                    return
+                }
+                handler.cancel()
+            }
+
+            override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                if (activeRenderedMode == HostMode.REMOTE_ONLY) {
+                    remotePeerShell?.onPageStarted(view, url)
+                }
+            }
+
             override fun onPageCommitVisible(view: WebView, url: String) {
                 super.onPageCommitVisible(view, url)
+                if (activeRenderedMode == HostMode.REMOTE_ONLY) {
+                    remotePeerShell?.onPageCommitVisible(view, url)
+                    applyLatestCssInsets()
+                    view.visibility = View.VISIBLE
+                    return
+                }
                 val ready = KikiRuntimeService.kernelState.value as? KernelState.Ready ?: return
                 if (!url.startsWith(ready.origin)) return
                 injectRuntimeHelpersAndTokenFallback(view, ready)
@@ -414,6 +664,11 @@ class KikiWebActivity : ComponentActivity() {
 
             override fun onPageFinished(view: WebView, url: String) {
                 super.onPageFinished(view, url)
+                if (activeRenderedMode == HostMode.REMOTE_ONLY) {
+                    applyLatestCssInsets()
+                    view.visibility = View.VISIBLE
+                    return
+                }
                 val ready = KikiRuntimeService.kernelState.value as? KernelState.Ready ?: return
                 if (!url.startsWith(ready.origin)) return
                 applyLatestCssInsets()
@@ -431,6 +686,10 @@ class KikiWebActivity : ComponentActivity() {
             ) {
                 super.onReceivedError(view, request, error)
                 if (!request.isForMainFrame) return
+                if (activeRenderedMode == HostMode.REMOTE_ONLY) {
+                    remotePeerShell?.onMainFrameError(view, request, error)
+                    return
+                }
                 val zh = HostStrings.isChinese(this@KikiWebActivity)
                 loadedOriginAndToken = null
                 pageReadyForEvents = false
@@ -652,11 +911,6 @@ class KikiWebActivity : ComponentActivity() {
             val density = resources.displayMetrics.density.coerceAtLeast(1f)
             val imeCssPx = ((ime.bottom - sysBars.bottom).coerceAtLeast(0) / density).toInt()
 
-            // The frame keeps the WebView clear of the system bars and display
-            // cutout (so `--kiki-safe-*` are omitted to avoid double bar bands).
-            // IME occlusion is forwarded solely via `--kiki-ime-height` (and
-            // WindowInsetsAnimationCompat) rather than mutating native bottom
-            // padding, preventing double-compensation and per-frame relayout.
             rootFrame.setPadding(sysBars.left, sysBars.top, sysBars.right, sysBars.bottom)
 
             publishImeHeightCss(imeCssPx)
@@ -768,6 +1022,7 @@ class KikiWebActivity : ComponentActivity() {
                     loadedOriginAndToken = pair
                     pageReadyForEvents = false
                     val wv = ensureWebViewCreated()
+                    configureWebViewUserAgent(wv, embeddedLocalHost = true)
                     bridgeHandler?.bindToOrigin(state.origin)
                     installDocumentStartCredential(wv, state.origin, state.localOwnerToken)
                     val route = intent?.getStringExtra(KikiRuntimeService.EXTRA_SESSION_ROUTE)
@@ -935,6 +1190,7 @@ class KikiWebActivity : ComponentActivity() {
     }
 
     private fun pushPermissionSnapshot() {
+        if (activeRenderedMode != HostMode.LOCAL_HOST) return
         val bh = bridgeHandler ?: return
         bh.pushEvent("permissions", bh.buildCapabilitiesJson())
     }
@@ -1038,10 +1294,6 @@ class KikiWebActivity : ComponentActivity() {
             """.trimIndent()
         }
 
-        /**
-         * Normalizes incoming notification/deep-link routes so legacy `/sessions/<id>`
-         * links resolve into the mobile native conversation route `/m/c/local/<id>`.
-         */
         fun normalizeInitialSessionRoute(rawRoute: String?): String? {
             if (rawRoute.isNullOrBlank()) return null
             val trimmed = rawRoute.trim()
@@ -1052,10 +1304,6 @@ class KikiWebActivity : ComponentActivity() {
             return if (trimmed.startsWith("/")) trimmed else "/$trimmed"
         }
 
-        /**
-         * Builds the `share-intake` bridge event payload delivered via `kiki:android`
-         * so the GUI consumes shared text/files through session-core drafts without DOM scraping.
-         */
         fun buildShareIntakeEventPayload(batchId: String, draftText: String): kotlinx.serialization.json.JsonObject =
             buildJsonObject {
                 put("id", batchId)

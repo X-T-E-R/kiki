@@ -479,23 +479,7 @@ class NodeSupervisor(
     }
 
     private fun cleanupStaleLockProcess(runDir: File) {
-        val lockFile = File(runDir, "kernel.lock")
-        if (!lockFile.isFile) return
-        val oldPid = lockFile.readText().trim().toIntOrNull() ?: return
-        if (oldPid <= 0 || oldPid == android.os.Process.myPid()) return
-        val cmdline = runCatching {
-            File("/proc/$oldPid/cmdline").readBytes().toString(StandardCharsets.UTF_8)
-        }.getOrNull().orEmpty()
-        if (cmdline.contains("libkiki_node.so")) {
-            Log.w(TAG, "Killing stale libkiki_node.so process pid=$oldPid")
-            runCatching { android.os.Process.sendSignal(oldPid, 15) }
-            Thread.sleep(500L)
-            val stillThere = File("/proc/$oldPid/cmdline").exists()
-            if (stillThere) {
-                runCatching { android.os.Process.sendSignal(oldPid, 9) }
-            }
-        }
-        runCatching { lockFile.delete() }
+        cleanupLockProcessInternal(runDir)
     }
 
     private fun writeLockAndReadyFiles(runDir: File, ready: KernelOutboundFrame.Ready) {
@@ -653,6 +637,44 @@ class NodeSupervisor(
         private val DAEMON_LAUNCHER_THREAD = Executors.newSingleThreadExecutor { runnable ->
             Thread(runnable, "kiki-daemon-launcher").apply {
                 isDaemon = true
+            }
+        }
+
+        internal fun cleanupLockProcessInternal(runDir: File) {
+            val lockFile = File(runDir, "kernel.lock")
+            if (!lockFile.isFile) return
+            val oldPid = runCatching { lockFile.readText().trim().toIntOrNull() }.getOrNull() ?: return
+            if (oldPid > 0 && oldPid != android.os.Process.myPid()) {
+                terminateNodePidIfMatching(oldPid)
+            }
+            runCatching { lockFile.delete() }
+        }
+
+        internal fun terminateAllOwnedNodeProcesses(runDir: File) {
+            cleanupLockProcessInternal(runDir)
+            val myPid = android.os.Process.myPid()
+            val procEntries = runCatching { File("/proc").listFiles() }.getOrNull().orEmpty()
+            for (entry in procEntries) {
+                val pid = entry.name.toIntOrNull() ?: continue
+                if (pid <= 0 || pid == myPid) continue
+                terminateNodePidIfMatching(pid)
+            }
+        }
+
+        private fun terminateNodePidIfMatching(pid: Int) {
+            val cmdline = runCatching {
+                File("/proc/$pid/cmdline").readBytes().toString(StandardCharsets.UTF_8)
+            }.getOrNull().orEmpty()
+            if (!cmdline.contains("libkiki_node.so")) return
+            Log.i(TAG, "Terminating libkiki_node.so process pid=$pid")
+            runCatching { android.os.Process.sendSignal(pid, 15) }
+            val deadline = System.currentTimeMillis() + 500L
+            while (System.currentTimeMillis() < deadline) {
+                if (!File("/proc/$pid/cmdline").exists()) return
+                runCatching { Thread.sleep(40L) }
+            }
+            if (File("/proc/$pid/cmdline").exists()) {
+                runCatching { android.os.Process.sendSignal(pid, 9) }
             }
         }
     }

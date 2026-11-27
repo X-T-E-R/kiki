@@ -24,6 +24,7 @@ import androidx.activity.OnBackPressedCallback;
 import androidx.core.content.ContextCompat;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
+import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
@@ -48,6 +49,7 @@ import java.security.cert.Certificate;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -60,8 +62,10 @@ import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
@@ -92,7 +96,17 @@ public class KikiShellPlugin extends Plugin {
     private static final String TLS_FP_PREFIX = "peerTlsFp.";
     private static final String ORIGIN_TLS_FP_PREFIX = "originTlsFp.";
     private static final String VERIFIED_ORIGINS_PREFIX = "verifiedOrigins.";
+    private static final String ENDPOINTS_PREFIX = "peerEndpoints.";
+    private static final String RELAYS_PREFIX = "peerRelays.";
     static final String ACTION_CHANGE_SERVER = "ai.easyagent.kiki.CHANGE_SERVER";
+    private volatile String activeRelayBridgeOrigin;
+    private volatile String activeRelayBridgeServerId;
+    private volatile String activeRelayBridgeFingerprint;
+    private PeerStreamConnector.RelayHttpsLoopbackServer activeRelayHttpBridge;
+    private final java.util.concurrent.ConcurrentHashMap<String, List<String>> stagedEndpointsByKey =
+        new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.concurrent.ConcurrentHashMap<String, List<String>> stagedRelaysByKey =
+        new java.util.concurrent.ConcurrentHashMap<>();
     private static final SecureRandom NONCE_RANDOM = new SecureRandom();
 
     private volatile String pendingPairUri;
@@ -435,6 +449,13 @@ public class KikiShellPlugin extends Plugin {
         String parsedOrigin = originOf(originUri);
         String resolvedFp = fingerprint != null ? fingerprint : resolvePinnedFingerprint(serverId, parsedOrigin);
         String normalizedOrigin = upgradeOriginForTlsPin(parsedOrigin, resolvedFp);
+        stageRouteHints(
+            serverId,
+            normalizedOrigin,
+            call.getString("endpointsJson"),
+            call.getString("relayEndpointsJson"),
+            resolvedFp
+        );
         boolean pairedProbe =
             serverId != null &&
             !serverId.isEmpty() &&
@@ -442,8 +463,8 @@ public class KikiShellPlugin extends Plugin {
             hasStoredToken(serverId, normalizedOrigin);
         new Thread(() -> {
             JSObject result = new JSObject();
-            HandshakeResult hs = (resolvedFp != null && !resolvedFp.isEmpty())
-                ? fetchHandshake(normalizedOrigin, serverId, grantId, resolvedFp)
+            HandshakeResult hs = (fingerprint != null && !fingerprint.isEmpty())
+                ? fetchHandshake(normalizedOrigin, serverId, grantId, fingerprint)
                 : fetchHandshake(normalizedOrigin, serverId, grantId);
             if (hs.redirected) {
                 result.put("ok", false);
@@ -598,6 +619,11 @@ public class KikiShellPlugin extends Plugin {
                 return;
             }
 
+            if (normalizedOrigin != null && (normalizedOrigin.endsWith(".kiki.peer") || "https://kiki.peer".equals(normalizedOrigin))) {
+                result.put("ok", false);
+                call.resolve(result);
+                return;
+            }
             HttpURLConnection metaConn = null;
             try {
                 URL metaUrl = new URL(normalizedOrigin + "/api/meta");
@@ -635,10 +661,35 @@ public class KikiShellPlugin extends Plugin {
             return;
         }
         String base = upgradeOriginForTlsPin(originOf(endpointUri), fingerprint);
+        List<String> callEndpoints = extractEndpointsArg(call.getArray("endpoints"), fingerprint);
+        List<String> callRelays = extractRelaysArg(call.getArray("relayEndpoints"));
+        List<String> effectiveEndpoints = mergeCandidateEndpoints(base, callEndpoints, Collections.emptyList(), fingerprint);
+        if (effectiveEndpoints.isEmpty() && (fingerprint == null || callRelays.isEmpty())) {
+            JSObject invalid = new JSObject();
+            invalid.put("ok", false);
+            invalid.put("reason", "rejected");
+            call.resolve(invalid);
+            return;
+        }
         new Thread(() -> {
             JSObject result = new JSObject();
             HttpURLConnection conn = null;
+            PeerStreamConnector.RelayHttpsLoopbackServer tempRelayBridge = null;
             try {
+                PeerStreamConnector.SelectedRoute route = PeerStreamConnector.selectRoute(
+                    effectiveEndpoints,
+                    callRelays,
+                    fingerprint,
+                    5000
+                );
+                String requestBase;
+                if (route.viaRelay) {
+                    tempRelayBridge = PeerStreamConnector.RelayHttpsLoopbackServer.start(route.relayUrl, fingerprint);
+                    requestBase = tempRelayBridge.localHttpsOrigin();
+                } else {
+                    requestBase = route.directOrigin;
+                }
+
                 JSONObject source = new JSONObject();
                 source.put("homeId", homeId);
                 source.put("hostId", hostId);
@@ -651,9 +702,9 @@ public class KikiShellPlugin extends Plugin {
                 payload.put("requestBridge", false);
 
                 byte[] bytes = payload.toString().getBytes(StandardCharsets.UTF_8);
-                URL url = new URL(base + "/api/remote-connections/pair/claim");
+                URL url = new URL(requestBase + "/api/remote-connections/pair/claim");
                 conn = (HttpURLConnection) url.openConnection();
-                configurePinnedTls(conn, base, null, fingerprint);
+                configurePinnedTls(conn, requestBase, null, fingerprint);
                 conn.setInstanceFollowRedirects(false);
                 conn.setRequestMethod("POST");
                 conn.setConnectTimeout(5000);
@@ -693,19 +744,42 @@ public class KikiShellPlugin extends Plugin {
                     return;
                 }
 
+                String canonicalOrigin = !route.viaRelay && route.directOrigin != null ? route.directOrigin : base;
                 String grantId = data == null ? "" : data.optString("grantId", "");
-                storePeerToken(targetHomeId, base, peerToken);
-                recordVerifiedOrigin(targetHomeId, base, targetHostId, grantId);
-                savePinnedFingerprint(targetHomeId, base, fingerprint);
+
+                List<String> responseRelays = extractRelaysJson(data == null ? null : data.optJSONArray("relayEndpoints"));
+                List<String> finalRelays = !responseRelays.isEmpty() ? responseRelays : callRelays;
+                List<String> responseEndpoints = extractEndpointsJson(data == null ? null : data.optJSONArray("endpoints"), fingerprint);
+                List<String> finalEndpoints = mergeCandidateEndpoints(canonicalOrigin, effectiveEndpoints, responseEndpoints, fingerprint);
+
+                storePeerToken(targetHomeId, canonicalOrigin, peerToken);
+                recordVerifiedOrigin(targetHomeId, canonicalOrigin, targetHostId, grantId);
+                savePinnedFingerprint(targetHomeId, canonicalOrigin, fingerprint);
+                for (String candEp : finalEndpoints) {
+                    storePeerToken(targetHomeId, candEp, peerToken);
+                    recordVerifiedOrigin(targetHomeId, candEp, targetHostId, grantId);
+                    savePinnedFingerprint(targetHomeId, candEp, fingerprint);
+                }
+                saveStoredEndpointsAndRelays(targetHomeId, finalEndpoints, finalRelays);
 
                 result.put("ok", true);
-                result.put("origin", base);
+                result.put("origin", canonicalOrigin);
                 result.put("serverId", targetHomeId);
                 result.put("targetHomeId", targetHomeId);
                 result.put("targetHostId", targetHostId);
                 result.put("targetLabel", data.optString("targetLabel", ""));
                 result.put("grantId", grantId);
                 result.put("revision", data.optInt("revision", 0));
+                if (!finalEndpoints.isEmpty()) {
+                    JSArray epArr = new JSArray();
+                    for (String ep : finalEndpoints) epArr.put(ep);
+                    result.put("endpoints", epArr);
+                }
+                if (!finalRelays.isEmpty()) {
+                    JSArray relayArr = new JSArray();
+                    for (String r : finalRelays) relayArr.put(r);
+                    result.put("relayEndpoints", relayArr);
+                }
                 call.resolve(result);
             } catch (Exception e) {
                 result.put("ok", false);
@@ -713,6 +787,7 @@ public class KikiShellPlugin extends Plugin {
                 call.resolve(result);
             } finally {
                 if (conn != null) conn.disconnect();
+                if (tempRelayBridge != null) tempRelayBridge.close();
             }
         }).start();
     }
@@ -757,6 +832,13 @@ public class KikiShellPlugin extends Plugin {
         if (resolvedFp != null && !resolvedFp.isEmpty()) {
             savePinnedFingerprint(serverId, origin, resolvedFp);
         }
+        stageRouteHints(
+            serverId,
+            origin,
+            call.getString("endpointsJson"),
+            call.getString("relayEndpointsJson"),
+            resolvedFp
+        );
         String cleanEntry = stripTokenFromEntry(origin, entry);
         final long callEpoch;
         synchronized (this) {
@@ -784,6 +866,15 @@ public class KikiShellPlugin extends Plugin {
                 call.resolve(failed);
                 return;
             }
+            String[] routed = resolveNavigationTarget(origin, cleanEntry, serverId, resolvedFp);
+            if (routed == null) {
+                clearPendingAuthIfCurrent(callEpoch);
+                JSObject failed = new JSObject();
+                failed.put("ok", false);
+                failed.put("reason", "unreachable");
+                call.resolve(failed);
+                return;
+            }
             if (callEpoch != pendingAuthEpoch) {
                 JSObject aborted = new JSObject();
                 aborted.put("ok", false);
@@ -791,6 +882,9 @@ public class KikiShellPlugin extends Plugin {
                 call.resolve(aborted);
                 return;
             }
+            final String committedNavOrigin = routed[0];
+            final String committedNavEntry = routed[1];
+            final boolean isRelaySession = "true".equals(routed[2]);
             getBridge().getWebView().post(() -> {
                 synchronized (this) {
                     if (callEpoch != pendingAuthEpoch) {
@@ -801,18 +895,22 @@ public class KikiShellPlugin extends Plugin {
                         return;
                     }
                     pendingOpenCommitted = true;
-                    pendingAuthOrigin = origin;
+                    pendingAuthOrigin = committedNavOrigin;
                     pendingAuthServerId = serverId;
-                    activeAuthOrigin = origin;
+                    activeAuthOrigin = committedNavOrigin;
                     activeAuthServerId = serverId;
                 }
-                recordVerifiedOrigin(serverId, origin, hs.targetHostId, grantId);
-                prefs().edit().putString(TRUSTED_ORIGIN, origin).apply();
+                if (!isRelaySession) {
+                    recordVerifiedOrigin(serverId, committedNavOrigin, hs.targetHostId, grantId);
+                } else {
+                    recordVerifiedOrigin(serverId, origin, hs.targetHostId, grantId);
+                }
+                prefs().edit().putString(TRUSTED_ORIGIN, committedNavOrigin).apply();
                 ensureWebViewListenersRegistered();
-                getBridge().getWebView().loadUrl(cleanEntry);
+                getBridge().getWebView().loadUrl(committedNavEntry);
                 JSObject result = new JSObject();
                 result.put("ok", true);
-                result.put("origin", origin);
+                result.put("origin", isRelaySession ? origin : committedNavOrigin);
                 call.resolve(result);
             });
         }).start();
@@ -1270,17 +1368,142 @@ public class KikiShellPlugin extends Plugin {
             effectiveFp = resolvePinnedFingerprint(serverId, rawNormalizedOrigin);
         }
         String normalizedOrigin = upgradeOriginForTlsPin(rawNormalizedOrigin, effectiveFp);
+        if (normalizedOrigin != null && normalizedOrigin.equals(activeRelayBridgeOrigin)) {
+            return fetchHandshakeOverTarget(normalizedOrigin, normalizedOrigin, serverId, explicitGrantId, effectiveFp);
+        }
+        List<String> candidateEndpoints = effectiveEndpointsFor(serverId, normalizedOrigin, effectiveFp);
+        List<String> candidateRelays = effectiveRelaysFor(serverId, normalizedOrigin);
+        if (
+            (!candidateRelays.isEmpty() && effectiveFp != null) ||
+            candidateEndpoints.size() > 1 ||
+            PeerStreamConnector.isSyntheticRelayOrigin(normalizedOrigin)
+        ) {
+            PeerStreamConnector.RelayHttpsLoopbackServer tempBridge = null;
+            try {
+                PeerStreamConnector.SelectedRoute route = PeerStreamConnector.selectRoute(
+                    candidateEndpoints,
+                    candidateRelays,
+                    effectiveFp,
+                    4500
+                );
+                String targetBase;
+                if (route.viaRelay) {
+                    tempBridge = PeerStreamConnector.RelayHttpsLoopbackServer.start(route.relayUrl, effectiveFp);
+                    targetBase = tempBridge.localHttpsOrigin();
+                } else {
+                    targetBase = route.directOrigin;
+                }
+                return fetchHandshakeOverTarget(targetBase, normalizedOrigin, serverId, explicitGrantId, effectiveFp);
+            } catch (Exception ignored) {
+                return new HandshakeResult(false, false, 0, "", "", "", false, false, false, false, true);
+            } finally {
+                if (tempBridge != null) tempBridge.close();
+            }
+        }
+        return fetchHandshakeOverTarget(normalizedOrigin, normalizedOrigin, serverId, explicitGrantId, effectiveFp);
+    }
+
+    private void stageRouteHints(
+        String serverId,
+        String origin,
+        String endpointsJson,
+        String relaysJson,
+        String resolvedFp
+    ) {
+        String key = (serverId != null && !serverId.isEmpty()) ? serverId : (origin == null ? "" : origin);
+        if (key.isEmpty()) return;
+        List<String> parsedEndpoints = Collections.emptyList();
+        if (endpointsJson != null && !endpointsJson.isEmpty()) {
+            try {
+                parsedEndpoints = extractEndpointsJson(new JSONArray(endpointsJson), resolvedFp);
+            } catch (Exception ignored) {
+            }
+        }
+        List<String> parsedRelays = Collections.emptyList();
+        if (relaysJson != null && !relaysJson.isEmpty()) {
+            try {
+                parsedRelays = extractRelaysJson(new JSONArray(relaysJson));
+            } catch (Exception ignored) {
+            }
+        }
+        if (!parsedEndpoints.isEmpty()) {
+            stagedEndpointsByKey.put(key, parsedEndpoints);
+        }
+        if (!parsedRelays.isEmpty()) {
+            stagedRelaysByKey.put(key, parsedRelays);
+        }
+        if (serverId != null && !serverId.isEmpty() && (!parsedEndpoints.isEmpty() || !parsedRelays.isEmpty())) {
+            List<String> mergedEp = mergeCandidateEndpoints(origin, parsedEndpoints, loadStoredEndpoints(serverId), resolvedFp);
+            List<String> mergedRelays = !parsedRelays.isEmpty() ? parsedRelays : loadStoredRelays(serverId);
+            saveStoredEndpointsAndRelays(serverId, mergedEp, mergedRelays);
+        }
+    }
+
+    private List<String> effectiveEndpointsFor(String serverId, String origin, String resolvedFp) {
+        String key = (serverId != null && !serverId.isEmpty()) ? serverId : (origin == null ? "" : origin);
+        List<String> staged = key.isEmpty() ? Collections.emptyList() : stagedEndpointsByKey.getOrDefault(key, Collections.emptyList());
+        return mergeCandidateEndpoints(origin, staged, loadStoredEndpoints(serverId), resolvedFp);
+    }
+
+    private List<String> effectiveRelaysFor(String serverId, String origin) {
+        String key = (serverId != null && !serverId.isEmpty()) ? serverId : (origin == null ? "" : origin);
+        List<String> staged = key.isEmpty() ? Collections.emptyList() : stagedRelaysByKey.getOrDefault(key, Collections.emptyList());
+        return !staged.isEmpty() ? staged : loadStoredRelays(serverId);
+    }
+
+    private String[] resolveNavigationTarget(String origin, String cleanEntry, String serverId, String resolvedFp) {
+        List<String> effectiveEndpoints = effectiveEndpointsFor(serverId, origin, resolvedFp);
+        List<String> effectiveRelays = effectiveRelaysFor(serverId, origin);
+        if (effectiveRelays.isEmpty() && effectiveEndpoints.size() <= 1 && !PeerStreamConnector.isSyntheticRelayOrigin(origin)) {
+            closeRelayHttpBridge();
+            return new String[] { origin, cleanEntry, "false" };
+        }
+        try {
+            PeerStreamConnector.SelectedRoute selectedRoute =
+                PeerStreamConnector.selectRoute(effectiveEndpoints, effectiveRelays, resolvedFp, 4500);
+            if (selectedRoute.viaRelay) {
+                PeerStreamConnector.RelayHttpsLoopbackServer bridge = ensureRelayHttpBridge(
+                    serverId,
+                    selectedRoute.relayUrl,
+                    resolvedFp
+                );
+                if (bridge == null) return null;
+                String navOrigin = bridge.localHttpsOrigin();
+                String suffix = cleanEntry.startsWith(origin) ? cleanEntry.substring(origin.length()) : "/";
+                String navEntry = navOrigin + (suffix.isEmpty() ? "/" : suffix);
+                return new String[] { navOrigin, navEntry, "true" };
+            }
+            closeRelayHttpBridge();
+            if (selectedRoute.directOrigin != null && !selectedRoute.directOrigin.equals(origin)) {
+                String navOrigin = selectedRoute.directOrigin;
+                String suffix = cleanEntry.startsWith(origin) ? cleanEntry.substring(origin.length()) : "/";
+                String navEntry = navOrigin + (suffix.isEmpty() ? "/" : suffix);
+                return new String[] { navOrigin, navEntry, "false" };
+            }
+            return new String[] { origin, cleanEntry, "false" };
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private HandshakeResult fetchHandshakeOverTarget(
+        String connectionOrigin,
+        String logicalOrigin,
+        String serverId,
+        String explicitGrantId,
+        String effectiveFp
+    ) {
         HttpURLConnection conn = null;
         try {
-            URL handshakeUrl = new URL(normalizedOrigin + "/api/remote-connections/handshake");
+            URL handshakeUrl = new URL(connectionOrigin + "/api/remote-connections/handshake");
             conn = (HttpURLConnection) handshakeUrl.openConnection();
-            configurePinnedTls(conn, normalizedOrigin, serverId, effectiveFp);
+            configurePinnedTls(conn, connectionOrigin, serverId, effectiveFp);
             conn.setInstanceFollowRedirects(false);
             conn.setRequestMethod("GET");
             conn.setConnectTimeout(3500);
             conn.setReadTimeout(3500);
             conn.setRequestProperty("Accept", "application/json");
-            String handshakeKey = resolveHandshakeKey(serverId, normalizedOrigin);
+            String handshakeKey = resolveHandshakeKey(serverId, logicalOrigin);
             String nonce = null;
             if (handshakeKey != null && !handshakeKey.isEmpty()) {
                 nonce = generateHandshakeNonce();
@@ -1288,7 +1511,7 @@ public class KikiShellPlugin extends Plugin {
                 if (reqProof != null && !reqProof.isEmpty()) {
                     conn.setRequestProperty("x-kiki-handshake-nonce", nonce);
                     conn.setRequestProperty("x-kiki-handshake-proof", reqProof);
-                    String grantId = resolveStoredGrantId(serverId, normalizedOrigin, explicitGrantId);
+                    String grantId = resolveStoredGrantId(serverId, logicalOrigin, explicitGrantId);
                     if (grantId != null && !grantId.isEmpty()) {
                         conn.setRequestProperty("x-kiki-handshake-grant", grantId);
                     }
@@ -1385,6 +1608,14 @@ public class KikiShellPlugin extends Plugin {
     }
 
     private boolean isOriginVerified(String serverId, String origin) {
+        if (
+            serverId != null &&
+            origin != null &&
+            origin.equals(activeRelayBridgeOrigin) &&
+            serverId.equals(activeRelayBridgeServerId)
+        ) {
+            return true;
+        }
         SharedPreferences sp = prefs();
         Set<String> set = sp.getStringSet(VERIFIED_ORIGINS_PREFIX + serverId, null);
         if (set == null) return false;
@@ -1481,7 +1712,9 @@ public class KikiShellPlugin extends Plugin {
                 .remove(LEGACY_TOKEN_PREFIX + serverId)
                 .remove(HOST_ID_PREFIX + serverId)
                 .remove(GRANT_ID_PREFIX + serverId)
-                .remove(VERIFIED_ORIGINS_PREFIX + serverId);
+                .remove(VERIFIED_ORIGINS_PREFIX + serverId)
+                .remove(ENDPOINTS_PREFIX + serverId)
+                .remove(RELAYS_PREFIX + serverId);
         }
         if (origin != null && !origin.isEmpty()) {
             String legacyO = legacyHttpOriginForHttps(origin);
@@ -1572,6 +1805,13 @@ public class KikiShellPlugin extends Plugin {
 
     private String resolvePinnedFingerprint(String serverId, String origin) {
         if (origin == null || origin.isEmpty()) return null;
+        if (
+            origin.equals(activeRelayBridgeOrigin) &&
+            activeRelayBridgeFingerprint != null &&
+            (serverId == null || serverId.isEmpty() || serverId.equals(activeRelayBridgeServerId))
+        ) {
+            return activeRelayBridgeFingerprint;
+        }
         SharedPreferences sp = prefs();
         if (serverId != null && !serverId.isEmpty()) {
             String scoped = normalizeFingerprint(sp.getString(TLS_FP_PREFIX + scopedTokenId(serverId, origin), null));
@@ -1611,7 +1851,16 @@ public class KikiShellPlugin extends Plugin {
         try {
             SSLContext ctx = pinnedSslContext(pinnedFp);
             HttpsURLConnection httpsConn = (HttpsURLConnection) conn;
-            httpsConn.setSSLSocketFactory(ctx.getSocketFactory());
+            if (origin != null && origin.startsWith("https://127.0.0.1:")) {
+                httpsConn.setSSLSocketFactory(
+                    new PeerStreamConnector.PinnedPeerSslSocketFactory(
+                        ctx.getSocketFactory(),
+                        cert -> constantTimeEquals(certificateSpkiSha256Hex(cert), pinnedFp)
+                    )
+                );
+            } else {
+                httpsConn.setSSLSocketFactory(ctx.getSocketFactory());
+            }
             httpsConn.setHostnameVerifier((hostname, session) -> {
                 try {
                     Certificate[] certs = session.getPeerCertificates();
@@ -1655,6 +1904,160 @@ public class KikiShellPlugin extends Plugin {
         return ctx;
     }
 
+    private synchronized PeerStreamConnector.RelayHttpsLoopbackServer ensureRelayHttpBridge(
+        String serverId,
+        String relayUrl,
+        String rawFp
+    ) {
+        String cleanFp = normalizeFingerprint(rawFp);
+        if (cleanFp == null || relayUrl == null || relayUrl.isEmpty()) {
+            closeRelayHttpBridge();
+            return null;
+        }
+        if (activeRelayHttpBridge != null && activeRelayHttpBridge.matches(relayUrl, cleanFp)) {
+            activeRelayBridgeServerId = serverId;
+            return activeRelayHttpBridge;
+        }
+        closeRelayHttpBridge();
+        try {
+            activeRelayHttpBridge = PeerStreamConnector.RelayHttpsLoopbackServer.start(relayUrl, cleanFp);
+            activeRelayBridgeOrigin = activeRelayHttpBridge.localHttpsOrigin();
+            activeRelayBridgeServerId = serverId;
+            activeRelayBridgeFingerprint = cleanFp;
+        } catch (Exception e) {
+            activeRelayHttpBridge = null;
+            activeRelayBridgeOrigin = null;
+            activeRelayBridgeServerId = null;
+            activeRelayBridgeFingerprint = null;
+        }
+        return activeRelayHttpBridge;
+    }
+
+    private synchronized void closeRelayHttpBridge() {
+        if (activeRelayHttpBridge != null) {
+            activeRelayHttpBridge.close();
+            activeRelayHttpBridge = null;
+        }
+        activeRelayBridgeOrigin = null;
+        activeRelayBridgeServerId = null;
+        activeRelayBridgeFingerprint = null;
+    }
+
+    private List<String> extractEndpointsArg(JSArray arr, String rawFp) {
+        if (arr == null || arr.length() == 0) return Collections.emptyList();
+        List<String> out = new ArrayList<>();
+        for (int i = 0; i < arr.length(); i++) {
+            String item = arr.optString(i, null);
+            if (item == null || item.isEmpty()) continue;
+            Uri u = Uri.parse(item);
+            if (!isWebOrigin(u)) continue;
+            String upgraded = upgradeOriginForTlsPin(originOf(u), rawFp);
+            if (!PeerStreamConnector.isSyntheticRelayOrigin(upgraded) && !out.contains(upgraded)) {
+                out.add(upgraded);
+            }
+        }
+        return out;
+    }
+
+    private List<String> extractEndpointsJson(JSONArray arr, String rawFp) {
+        if (arr == null || arr.length() == 0) return Collections.emptyList();
+        List<String> out = new ArrayList<>();
+        for (int i = 0; i < arr.length(); i++) {
+            String item = arr.optString(i, null);
+            if (item == null || item.isEmpty()) continue;
+            Uri u = Uri.parse(item);
+            if (!isWebOrigin(u)) continue;
+            String upgraded = upgradeOriginForTlsPin(originOf(u), rawFp);
+            if (!PeerStreamConnector.isSyntheticRelayOrigin(upgraded) && !out.contains(upgraded)) {
+                out.add(upgraded);
+            }
+        }
+        return out;
+    }
+
+    private List<String> extractRelaysArg(JSArray arr) {
+        if (arr == null || arr.length() == 0) return Collections.emptyList();
+        List<String> out = new ArrayList<>();
+        for (int i = 0; i < arr.length(); i++) {
+            String norm = PeerStreamConnector.normalizeRelayEndpoint(arr.optString(i, null));
+            if (norm != null && !out.contains(norm)) out.add(norm);
+        }
+        return out;
+    }
+
+    private List<String> extractRelaysJson(JSONArray arr) {
+        if (arr == null || arr.length() == 0) return Collections.emptyList();
+        List<String> out = new ArrayList<>();
+        for (int i = 0; i < arr.length(); i++) {
+            String norm = PeerStreamConnector.normalizeRelayEndpoint(arr.optString(i, null));
+            if (norm != null && !out.contains(norm)) out.add(norm);
+        }
+        return out;
+    }
+
+    private List<String> mergeCandidateEndpoints(
+        String primaryOrigin,
+        List<String> first,
+        List<String> second,
+        String rawFp
+    ) {
+        List<String> out = new ArrayList<>();
+        if (primaryOrigin != null && !primaryOrigin.isEmpty() && !PeerStreamConnector.isSyntheticRelayOrigin(primaryOrigin)) {
+            out.add(upgradeOriginForTlsPin(primaryOrigin, rawFp));
+        }
+        if (first != null) {
+            for (String ep : first) {
+                String up = upgradeOriginForTlsPin(ep, rawFp);
+                if (up != null && !PeerStreamConnector.isSyntheticRelayOrigin(up) && !out.contains(up)) out.add(up);
+            }
+        }
+        if (second != null) {
+            for (String ep : second) {
+                String up = upgradeOriginForTlsPin(ep, rawFp);
+                if (up != null && !PeerStreamConnector.isSyntheticRelayOrigin(up) && !out.contains(up)) out.add(up);
+            }
+        }
+        return out;
+    }
+
+    private void saveStoredEndpointsAndRelays(String serverId, List<String> endpoints, List<String> relays) {
+        if (serverId == null || serverId.isEmpty()) return;
+        SharedPreferences.Editor editor = prefs().edit();
+        if (endpoints != null && !endpoints.isEmpty()) {
+            JSONArray epJson = new JSONArray();
+            for (String ep : endpoints) epJson.put(ep);
+            editor.putString(ENDPOINTS_PREFIX + serverId, epJson.toString());
+        }
+        if (relays != null && !relays.isEmpty()) {
+            JSONArray relayJson = new JSONArray();
+            for (String r : relays) relayJson.put(r);
+            editor.putString(RELAYS_PREFIX + serverId, relayJson.toString());
+        }
+        editor.apply();
+    }
+
+    private List<String> loadStoredEndpoints(String serverId) {
+        if (serverId == null || serverId.isEmpty()) return Collections.emptyList();
+        String raw = prefs().getString(ENDPOINTS_PREFIX + serverId, null);
+        if (raw == null || raw.isEmpty()) return Collections.emptyList();
+        try {
+            return extractEndpointsJson(new JSONArray(raw), null);
+        } catch (Exception e) {
+            return Collections.emptyList();
+        }
+    }
+
+    private List<String> loadStoredRelays(String serverId) {
+        if (serverId == null || serverId.isEmpty()) return Collections.emptyList();
+        String raw = prefs().getString(RELAYS_PREFIX + serverId, null);
+        if (raw == null || raw.isEmpty()) return Collections.emptyList();
+        try {
+            return extractRelaysJson(new JSONArray(raw));
+        } catch (Exception e) {
+            return Collections.emptyList();
+        }
+    }
+
     private PinnedWsTunnel wsTunnel;
 
     private synchronized void closeWsTunnel() {
@@ -1662,6 +2065,7 @@ public class KikiShellPlugin extends Plugin {
             wsTunnel.close();
             wsTunnel = null;
         }
+        closeRelayHttpBridge();
     }
 
     /**
@@ -1689,12 +2093,27 @@ public class KikiShellPlugin extends Plugin {
         closeWsTunnel();
         try {
             int port = uri.getPort() > 0 ? uri.getPort() : 443;
+            final SSLSocketFactory pinnedFactory = pinnedSslContext(fp).getSocketFactory();
+            final java.util.function.Predicate<Certificate> check =
+                cert -> constantTimeEquals(certificateSpkiSha256Hex(cert), fp);
+            final List<String> storedEndpoints = loadStoredEndpoints(serverId);
+            final List<String> storedRelays = loadStoredRelays(serverId);
+            final boolean useRelayOrMulti =
+                !storedRelays.isEmpty() ||
+                storedEndpoints.size() > 1 ||
+                origin.equals(activeRelayBridgeOrigin);
+            final List<String> dialDirect = origin.equals(activeRelayBridgeOrigin)
+                ? storedEndpoints
+                : mergeCandidateEndpoints(origin, storedEndpoints, Collections.emptyList(), fp);
             wsTunnel = PinnedWsTunnel.start(
                 uri.getHost(),
                 port,
                 key,
-                pinnedSslContext(fp).getSocketFactory(),
-                cert -> constantTimeEquals(certificateSpkiSha256Hex(cert), fp)
+                pinnedFactory,
+                check,
+                useRelayOrMulti
+                    ? () -> PeerStreamConnector.raceConnect(dialDirect, storedRelays, pinnedFactory, check, 5000)
+                    : null
             );
         } catch (Exception e) {
             wsTunnel = null;
@@ -1950,6 +2369,7 @@ public class KikiShellPlugin extends Plugin {
     @Override
     protected void handleOnDestroy() {
         closeWsTunnel();
+        closeRelayHttpBridge();
         super.handleOnDestroy();
     }
 

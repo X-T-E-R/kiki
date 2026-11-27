@@ -52,6 +52,17 @@
 			tabConnect: "Connect",
 			tabComputers: "Computers",
 			tabNetwork: "Network",
+			tabSettings: "Settings",
+			settingsTitle: "Settings",
+			localHostGroup: "On-device engine",
+			localHostTitle: "Run Kiki on this phone",
+			localHostDesc: "Starts a standalone local agent kernel on this phone. Turn off for zero-background remote-only mode.",
+			updatesGroup: "Updates",
+			autoUpdateTitle: "Check for updates automatically",
+			checkUpdate: "Check for updates",
+			checkingUpdate: "Checking…",
+			nativeSettingsRow: "Phone permissions & network",
+			nativeSettingsOpen: "Open",
 			scanQr: "Scan QR code",
 			pasteLink: "Paste pairing link",
 			pasteEmpty: "No pairing link or server address found in the clipboard. Copy it on your computer or enter manually below.",
@@ -99,6 +110,7 @@
 			saveAddress: "Save",
 			layerLan: "LAN · HTTP",
 			layerVpn: "Tailscale / VPN",
+			layerRelay: "Relay · WSS",
 			layerHttps: "HTTPS",
 			layerHttp: "HTTP",
 			empty: "Enter the address shown on your computer.",
@@ -127,6 +139,17 @@
 			tabConnect: "连接",
 			tabComputers: "电脑",
 			tabNetwork: "网络",
+			tabSettings: "设置",
+			settingsTitle: "设置",
+			localHostGroup: "本机引擎",
+			localHostTitle: "在本机运行 Kiki",
+			localHostDesc: "在手机本地启动独立智能体引擎；关闭时零后台消耗，仅连接电脑空间。",
+			updatesGroup: "应用更新",
+			autoUpdateTitle: "自动检查更新",
+			checkUpdate: "检查更新",
+			checkingUpdate: "正在检查…",
+			nativeSettingsRow: "设备权限与网络设置",
+			nativeSettingsOpen: "打开",
 			scanQr: "扫码连接",
 			pasteLink: "粘贴配对链接",
 			pasteEmpty: "剪贴板里没有配对链接或服务器地址，请先在电脑上复制或在下方手动输入。",
@@ -174,6 +197,7 @@
 			saveAddress: "保存",
 			layerLan: "局域网 · HTTP",
 			layerVpn: "Tailscale / VPN",
+			layerRelay: "中继 · WSS",
 			layerHttps: "外部 HTTPS",
 			layerHttp: "外部 HTTP",
 			empty: "请输入电脑端显示的地址。",
@@ -11386,237 +11410,6 @@
 			return;
 		}
 	}
-	function formatPairingUri(input) {
-		const endpoint = normalizePairingEndpoint(input?.endpoint ?? "");
-		const code = normalizePairingCode$1(input?.code ?? "");
-		const fingerprint = input?.fingerprint;
-		if (endpoint === void 0 || code === void 0 || fingerprint !== void 0 && !TLS_FINGERPRINT_PATTERN.test(fingerprint)) throw new Error("Invalid pairing URI payload");
-		return `${PAIRING_URI_PREFIX}?${`endpoint=${encodeURIComponent(endpoint)}&code=${encodeURIComponent(code)}`}${fingerprint === void 0 ? "" : `&fp=${encodeURIComponent(fingerprint)}`}`;
-	}
-	function parsePairingUri$1(raw) {
-		const text = String(raw ?? "").trim();
-		if (!/^kiki:\/\/\/?pair(?:\?|$)/i.test(text)) return void 0;
-		try {
-			const url = new URL(text);
-			const host = url.hostname.toLowerCase();
-			const path = url.pathname.toLowerCase();
-			if (url.protocol.toLowerCase() !== "kiki:" || url.username !== "" || url.password !== "" || url.port !== "" || url.hash !== "") return;
-			if (!(host === "pair" && (path === "" || path === "/") || host === "" && path === "/pair")) return;
-			const endpoint = normalizePairingEndpoint(url.searchParams.get("endpoint") ?? "");
-			const code = normalizePairingCode$1(url.searchParams.get("code") ?? "");
-			const fingerprint = url.searchParams.get("fp") ?? void 0;
-			if (endpoint === void 0 || code === void 0 || fingerprint !== void 0 && !TLS_FINGERPRINT_PATTERN.test(fingerprint)) return;
-			return fingerprint === void 0 ? {
-				endpoint,
-				code
-			} : {
-				endpoint,
-				code,
-				fingerprint
-			};
-		} catch {
-			return;
-		}
-	}
-	function readScanPayload(raw) {
-		const text = String(raw ?? "").trim();
-		if (text === "") return {
-			ok: false,
-			reason: "invalid_qr"
-		};
-		const pair = parsePairingUri$1(text);
-		if (pair !== void 0) {
-			const resolvedEndpoint = upgradeEndpointForTlsPin(pair.endpoint, pair.fingerprint);
-			const target = readTarget(resolvedEndpoint);
-			if (!target.ok) return {
-				ok: false,
-				reason: "invalid_qr"
-			};
-			return pair.fingerprint !== void 0 ? {
-				ok: true,
-				kind: "pair",
-				origin: target.origin,
-				endpoint: resolvedEndpoint,
-				code: pair.code,
-				entry: `${target.origin}/`,
-				fingerprint: pair.fingerprint
-			} : {
-				ok: true,
-				kind: "pair",
-				origin: target.origin,
-				endpoint: resolvedEndpoint,
-				code: pair.code,
-				entry: `${target.origin}/`
-			};
-		}
-		if (!/^https?:\/\//i.test(text)) return {
-			ok: false,
-			reason: "invalid_qr"
-		};
-		const target = readTarget(text);
-		if (!target.ok) return {
-			ok: false,
-			reason: "invalid_qr"
-		};
-		try {
-			const url = new URL(text);
-			const hashParams = new URLSearchParams(url.hash.replace(/^#/, ""));
-			const embeddedCode = normalizePairingCode$1(url.searchParams.get("code") ?? hashParams.get("code") ?? "");
-			if (embeddedCode !== void 0) {
-				const embeddedFp = url.searchParams.get("fp") ?? hashParams.get("fp");
-				if (embeddedFp !== null && TLS_FINGERPRINT_PATTERN.test(embeddedFp)) {
-					const upgradedTarget = readTarget(upgradeEndpointForTlsPin(target.origin, embeddedFp));
-					const finalOrigin = upgradedTarget.ok ? upgradedTarget.origin : target.origin;
-					return {
-						ok: true,
-						kind: "pair",
-						origin: finalOrigin,
-						endpoint: finalOrigin,
-						code: embeddedCode,
-						entry: `${finalOrigin}/`,
-						fingerprint: embeddedFp
-					};
-				}
-				return {
-					ok: true,
-					kind: "pair",
-					origin: target.origin,
-					endpoint: target.origin,
-					code: embeddedCode,
-					entry: `${target.origin}/`
-				};
-			}
-		} catch {
-			return {
-				ok: true,
-				kind: "target",
-				origin: target.origin,
-				entry: target.entry
-			};
-		}
-		return {
-			ok: true,
-			kind: "target",
-			origin: target.origin,
-			entry: target.entry
-		};
-	}
-	function readConnectInput(rawAddress, rawCode = "") {
-		const addressText = String(rawAddress ?? "").trim();
-		const codeText = String(rawCode ?? "").trim();
-		if (/^kiki:\/\//i.test(addressText)) {
-			const scanned = readScanPayload(addressText);
-			if (!scanned.ok) return {
-				ok: false,
-				reason: "invalid"
-			};
-			if (codeText !== "") {
-				const overrideCode = normalizePairingCode$1(codeText);
-				if (overrideCode === void 0) return {
-					ok: false,
-					reason: "invalid_code"
-				};
-				const endpoint = scanned.kind === "pair" ? scanned.endpoint : scanned.origin;
-				const fingerprint = scanned.kind === "pair" ? scanned.fingerprint : void 0;
-				return fingerprint !== void 0 ? {
-					ok: true,
-					kind: "pair",
-					origin: scanned.origin,
-					endpoint,
-					code: overrideCode,
-					entry: `${scanned.origin}/`,
-					fingerprint
-				} : {
-					ok: true,
-					kind: "pair",
-					origin: scanned.origin,
-					endpoint,
-					code: overrideCode,
-					entry: `${scanned.origin}/`
-				};
-			}
-			return scanned;
-		}
-		const target = readTarget(addressText);
-		if (!target.ok) return target;
-		if (codeText !== "") {
-			const code = normalizePairingCode$1(codeText);
-			if (code === void 0) return {
-				ok: false,
-				reason: "invalid_code"
-			};
-			return {
-				ok: true,
-				kind: "pair",
-				origin: target.origin,
-				endpoint: target.origin,
-				code,
-				entry: `${target.origin}/`
-			};
-		}
-		return {
-			ok: true,
-			kind: "target",
-			origin: target.origin,
-			entry: target.entry
-		};
-	}
-	function readPastePayload(raw) {
-		const text = String(raw ?? "").trim();
-		if (text === "") return {
-			ok: false,
-			reason: "empty"
-		};
-		const directScan = readScanPayload(text);
-		if (directScan.ok) return directScan;
-		const embeddedPair = text.match(/kiki:\/\/\/?pair\?[^\s"'<>]+/i);
-		if (embeddedPair) {
-			const scanned = readScanPayload(embeddedPair[0].replace(/[),.;!?]+$/, ""));
-			if (scanned.ok) return scanned;
-		}
-		const tokens = text.split(/\s+/).filter(Boolean);
-		if (tokens.length === 2) {
-			const combined = readConnectInput(tokens[0], tokens[1]);
-			if (combined.ok && combined.kind === "pair") return combined;
-		}
-		const bare = readTarget(text);
-		if (bare.ok) return {
-			ok: true,
-			kind: "target",
-			origin: bare.origin,
-			entry: bare.entry
-		};
-		return {
-			ok: false,
-			reason: "invalid"
-		};
-	}
-	function parsePairInput(raw, rawCode) {
-		if (rawCode !== void 0 && String(rawCode).trim() !== "") return readConnectInput(raw, rawCode);
-		const text = String(raw ?? "").trim();
-		if (text === "") return {
-			ok: false,
-			reason: "empty"
-		};
-		if (/^[a-z0-9]{4}[-\s][a-z0-9]{4}$/i.test(text)) {
-			const code = normalizePairingCode$1(text);
-			if (code !== void 0) return {
-				ok: true,
-				kind: "code",
-				code
-			};
-		}
-		const pasted = readPastePayload(text);
-		if (pasted.ok) return pasted;
-		const bareTarget = readTarget(text);
-		if (!bareTarget.ok) return bareTarget;
-		return {
-			ok: true,
-			kind: "target",
-			origin: bareTarget.origin,
-			entry: bareTarget.entry
-		};
-	}
 	function handshakeRequestPreimage(nonce) {
 		return `${HANDSHAKE_DOMAINS.req}:${nonce.trim().toLowerCase()}`;
 	}
@@ -11759,6 +11552,7 @@
 		deliverCommittedServerCredential: () => deliverCommittedServerCredential,
 		displayOrigin: () => displayOrigin,
 		editableOrigin: () => editableOrigin,
+		extractRelayNodeId: () => extractRelayNodeId,
 		formatPairingCodeInput: () => formatPairingCodeInput,
 		formatPairingUri: () => formatPairingUri,
 		getServerFingerprint: () => getServerFingerprint,
@@ -11771,11 +11565,13 @@
 		isLanHost: () => isLanHost,
 		isLocalDefaultHost: () => isLocalDefaultHost,
 		isServerOriginVerified: () => isServerOriginVerified,
+		isSyntheticRelayOrigin: () => isSyntheticRelayOrigin,
 		isValidTargetHostname: () => isValidTargetHostname,
 		isValidTlsFingerprint: () => isValidTlsFingerprint,
 		isVpnHost: () => isVpnHost,
 		normalizePairingCode: () => normalizePairingCode,
 		normalizePairingEndpoint: () => normalizePairingEndpoint,
+		normalizeRelayEndpoint: () => normalizeRelayEndpoint,
 		normalizeTlsFingerprint: () => normalizeTlsFingerprint,
 		openVerifiedServerNavigation: () => openVerifiedServerNavigation,
 		parsePairInput: () => parsePairInput,
@@ -11803,11 +11599,315 @@
 	const SHELL_MANAGED_STORAGE_KEY = "kiki.shell.managed";
 	const SHELL_DOCUMENT_NAV_NONCE_PROP = "__kikiShellNavNonce";
 	const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+	const RELAY_STREAM_PATH_PATTERN = /^(?:\/([A-Za-z0-9._~/-]+))?\/v1\/stream\/?$/;
+	const RELAY_CONNECT_PATH_PATTERN = /^(?:\/([A-Za-z0-9._~/-]+))?\/v1\/connect\/([A-Za-z0-9._~-]+)\/?$/;
+	function normalizeRelayEndpoint(raw) {
+		const trimmed = String(raw ?? "").trim();
+		if (!/^wss?:\/\//i.test(trimmed)) return void 0;
+		const authority = trimmed.replace(/^wss?:\/\//i, "").split(/[/?#]/, 1)[0] ?? "";
+		if (authority === "" || authority.includes("@") || authority.includes("*")) return void 0;
+		try {
+			const parsed = new URL(trimmed);
+			const proto = parsed.protocol.toLowerCase();
+			if (proto !== "wss:" && proto !== "ws:") return void 0;
+			if (parsed.username !== "" || parsed.password !== "" || parsed.hash !== "" || !isValidTargetHostname(parsed.hostname)) return;
+			if (parsed.pathname.includes("//") || parsed.pathname.split("/").some((seg) => seg === "." || seg === "..")) return;
+			const streamMatch = RELAY_STREAM_PATH_PATTERN.exec(parsed.pathname);
+			if (streamMatch) {
+				const basePrefix = streamMatch[1] ? `/${streamMatch[1].replaceAll(/^\/+|\/+$/g, "")}` : "";
+				return `${parsed.origin}${basePrefix}/v1/stream${parsed.search}`;
+			}
+			const connectMatch = RELAY_CONNECT_PATH_PATTERN.exec(parsed.pathname);
+			if (connectMatch) {
+				const basePrefix = connectMatch[1] ? `/${connectMatch[1].replaceAll(/^\/+|\/+$/g, "")}` : "";
+				const nodeId = connectMatch[2];
+				return `${parsed.origin}${basePrefix}/v1/connect/${nodeId}${parsed.search}`;
+			}
+			return;
+		} catch {
+			return;
+		}
+	}
+	function extractRelayNodeId(rawRelayUrl) {
+		const normalized = normalizeRelayEndpoint(rawRelayUrl);
+		if (normalized === void 0) return void 0;
+		try {
+			const parsed = new URL(normalized);
+			const targetParam = parsed.searchParams.get("target")?.trim();
+			if (targetParam) return targetParam.slice(0, 16);
+			return RELAY_CONNECT_PATH_PATTERN.exec(parsed.pathname)?.[2];
+		} catch {
+			return;
+		}
+	}
+	function syntheticRelayOrigin(relayUrl) {
+		return `https://${(extractRelayNodeId(relayUrl) ?? "peer").toLowerCase().replaceAll(/[^a-z0-9-]/g, "-").replaceAll(/-+/g, "-").replaceAll(/^-+|-+$/g, "").slice(0, 48) || "peer"}.kiki.peer`;
+	}
+	function isSyntheticRelayOrigin(rawOrOrigin) {
+		try {
+			const host = new URL(rawOrOrigin).hostname.toLowerCase();
+			return host === "kiki.peer" || host.endsWith(".kiki.peer");
+		} catch {
+			return false;
+		}
+	}
 	function normalizePairingCode(raw) {
 		return normalizePairingCode$1(raw) ?? null;
 	}
+	function formatPairingUri(input) {
+		const candidateEndpoints = [...typeof input?.endpoint === "string" && input.endpoint.trim() !== "" ? [input.endpoint] : [], ...Array.isArray(input?.endpoints) ? input.endpoints : []];
+		const endpoints = [];
+		for (const rawEp of candidateEndpoints) {
+			const norm = normalizePairingEndpoint(rawEp);
+			if (norm === void 0) throw new Error("Invalid pairing URI payload");
+			if (!endpoints.includes(norm)) endpoints.push(norm);
+		}
+		const relayEndpoints = [];
+		if (Array.isArray(input?.relayEndpoints)) for (const rawRelay of input.relayEndpoints) {
+			const norm = normalizeRelayEndpoint(rawRelay);
+			if (norm === void 0) throw new Error("Invalid pairing URI relay payload");
+			if (!relayEndpoints.includes(norm)) relayEndpoints.push(norm);
+		}
+		const code = normalizePairingCode$1(input?.code ?? "");
+		const fingerprint = input?.fingerprint;
+		if (code === void 0 || endpoints.length === 0 && relayEndpoints.length === 0 || fingerprint !== void 0 && !TLS_FINGERPRINT_PATTERN.test(fingerprint) || relayEndpoints.length > 0 && (fingerprint === void 0 || !TLS_FINGERPRINT_PATTERN.test(fingerprint))) throw new Error("Invalid pairing URI payload");
+		const parts = [];
+		for (const ep of endpoints) parts.push(`endpoint=${encodeURIComponent(ep)}`);
+		for (const relay of relayEndpoints) parts.push(`relay=${encodeURIComponent(relay)}`);
+		parts.push(`code=${encodeURIComponent(code)}`);
+		if (fingerprint !== void 0) parts.push(`fp=${encodeURIComponent(fingerprint)}`);
+		return `${PAIRING_URI_PREFIX}?${parts.join("&")}`;
+	}
 	function parsePairingUri(raw) {
-		return parsePairingUri$1(raw) ?? null;
+		const text = String(raw ?? "").trim();
+		if (!/^kiki:\/\/\/?pair(?:\?|$)/i.test(text)) return null;
+		try {
+			const url = new URL(text);
+			const host = url.hostname.toLowerCase();
+			const path = url.pathname.toLowerCase();
+			if (url.protocol.toLowerCase() !== "kiki:" || url.username !== "" || url.password !== "" || url.port !== "" || url.hash !== "") return null;
+			if (!(host === "pair" && (path === "" || path === "/") || host === "" && path === "/pair")) return null;
+			const rawEndpoints = url.searchParams.getAll("endpoint");
+			const rawRelays = url.searchParams.getAll("relay");
+			const code = normalizePairingCode$1(url.searchParams.get("code") ?? "");
+			const rawFp = url.searchParams.get("fp");
+			const fingerprint = rawFp === null ? void 0 : rawFp;
+			if (code === void 0 || fingerprint !== void 0 && !TLS_FINGERPRINT_PATTERN.test(fingerprint)) return null;
+			const endpoints = [];
+			for (const item of rawEndpoints) {
+				const norm = normalizePairingEndpoint(item);
+				if (norm === void 0) return null;
+				if (!endpoints.includes(norm) && endpoints.length < 8) endpoints.push(norm);
+			}
+			const relayEndpoints = [];
+			for (const item of rawRelays) {
+				const norm = normalizeRelayEndpoint(item);
+				if (norm === void 0) return null;
+				if (!relayEndpoints.includes(norm) && relayEndpoints.length < 6) relayEndpoints.push(norm);
+			}
+			if (relayEndpoints.length > 0 && fingerprint === void 0) return null;
+			if (endpoints.length === 0 && relayEndpoints.length === 0) return null;
+			return {
+				endpoint: endpoints[0] ?? syntheticRelayOrigin(relayEndpoints[0]),
+				code,
+				...fingerprint !== void 0 ? { fingerprint } : {},
+				...endpoints.length > 1 ? { endpoints } : {},
+				...relayEndpoints.length > 0 ? { relayEndpoints } : {}
+			};
+		} catch {
+			return null;
+		}
+	}
+	function readScanPayload(raw) {
+		const text = String(raw ?? "").trim();
+		if (text === "") return {
+			ok: false,
+			reason: "invalid_qr"
+		};
+		const pair = parsePairingUri(text);
+		if (pair !== null) {
+			const resolvedEndpoint = upgradeEndpointForTlsPin(pair.endpoint, pair.fingerprint);
+			const target = readTarget(resolvedEndpoint);
+			if (!target.ok) return {
+				ok: false,
+				reason: "invalid_qr"
+			};
+			const upgradedEndpoints = pair.endpoints?.map((ep) => upgradeEndpointForTlsPin(ep, pair.fingerprint));
+			return {
+				ok: true,
+				kind: "pair",
+				origin: target.origin,
+				endpoint: resolvedEndpoint,
+				code: pair.code,
+				entry: `${target.origin}/`,
+				...pair.fingerprint !== void 0 ? { fingerprint: pair.fingerprint } : {},
+				...upgradedEndpoints !== void 0 && upgradedEndpoints.length > 1 ? { endpoints: upgradedEndpoints } : {},
+				...pair.relayEndpoints !== void 0 && pair.relayEndpoints.length > 0 ? { relayEndpoints: [...pair.relayEndpoints] } : {}
+			};
+		}
+		if (!/^https?:\/\//i.test(text)) return {
+			ok: false,
+			reason: "invalid_qr"
+		};
+		const target = readTarget(text);
+		if (!target.ok) return {
+			ok: false,
+			reason: "invalid_qr"
+		};
+		try {
+			const url = new URL(text);
+			const hashParams = new URLSearchParams(url.hash.replace(/^#/, ""));
+			const embeddedCode = normalizePairingCode$1(url.searchParams.get("code") ?? hashParams.get("code") ?? "");
+			if (embeddedCode !== void 0) {
+				const rawFp = url.searchParams.get("fp") ?? hashParams.get("fp");
+				const embeddedFp = rawFp !== null ? rawFp.trim().toLowerCase() : null;
+				if (embeddedFp !== null && TLS_FINGERPRINT_PATTERN.test(embeddedFp)) {
+					const upgradedTarget = readTarget(upgradeEndpointForTlsPin(target.origin, embeddedFp));
+					const finalOrigin = upgradedTarget.ok ? upgradedTarget.origin : target.origin;
+					return {
+						ok: true,
+						kind: "pair",
+						origin: finalOrigin,
+						endpoint: finalOrigin,
+						code: embeddedCode,
+						entry: `${finalOrigin}/`,
+						fingerprint: embeddedFp
+					};
+				}
+				return {
+					ok: true,
+					kind: "pair",
+					origin: target.origin,
+					endpoint: target.origin,
+					code: embeddedCode,
+					entry: `${target.origin}/`
+				};
+			}
+		} catch {
+			return {
+				ok: true,
+				kind: "target",
+				origin: target.origin,
+				entry: target.entry
+			};
+		}
+		return {
+			ok: true,
+			kind: "target",
+			origin: target.origin,
+			entry: target.entry
+		};
+	}
+	function readConnectInput(rawAddress, rawCode = "") {
+		const addressText = String(rawAddress ?? "").trim();
+		const codeText = String(rawCode ?? "").trim();
+		if (/^kiki:\/\//i.test(addressText)) {
+			const scanned = readScanPayload(addressText);
+			if (!scanned.ok) return {
+				ok: false,
+				reason: "invalid"
+			};
+			if (codeText !== "") {
+				const overrideCode = normalizePairingCode$1(codeText);
+				if (overrideCode === void 0) return {
+					ok: false,
+					reason: "invalid_code"
+				};
+				const endpoint = scanned.kind === "pair" ? scanned.endpoint : scanned.origin;
+				const fingerprint = scanned.kind === "pair" ? scanned.fingerprint : void 0;
+				return {
+					ok: true,
+					kind: "pair",
+					origin: scanned.origin,
+					endpoint,
+					code: overrideCode,
+					entry: `${scanned.origin}/`,
+					...fingerprint !== void 0 ? { fingerprint } : {},
+					...scanned.kind === "pair" && scanned.endpoints !== void 0 ? { endpoints: scanned.endpoints } : {},
+					...scanned.kind === "pair" && scanned.relayEndpoints !== void 0 ? { relayEndpoints: scanned.relayEndpoints } : {}
+				};
+			}
+			return scanned;
+		}
+		const target = readTarget(addressText);
+		if (!target.ok) return target;
+		if (codeText !== "") {
+			const code = normalizePairingCode$1(codeText);
+			if (code === void 0) return {
+				ok: false,
+				reason: "invalid_code"
+			};
+			return {
+				ok: true,
+				kind: "pair",
+				origin: target.origin,
+				endpoint: target.origin,
+				code,
+				entry: `${target.origin}/`
+			};
+		}
+		return {
+			ok: true,
+			kind: "target",
+			origin: target.origin,
+			entry: target.entry
+		};
+	}
+	function readPastePayload(raw) {
+		const text = String(raw ?? "").trim();
+		if (text === "") return {
+			ok: false,
+			reason: "empty"
+		};
+		const directScan = readScanPayload(text);
+		if (directScan.ok) return directScan;
+		const embeddedPair = text.match(/kiki:\/\/\/?pair\?[^\s"'<>]+/i);
+		if (embeddedPair) {
+			const scanned = readScanPayload(embeddedPair[0].replace(/[),.;!?]+$/, ""));
+			if (scanned.ok) return scanned;
+		}
+		const tokens = text.split(/\s+/).filter(Boolean);
+		if (tokens.length === 2) {
+			const combined = readConnectInput(tokens[0], tokens[1]);
+			if (combined.ok && combined.kind === "pair") return combined;
+		}
+		const bare = readTarget(text);
+		if (bare.ok) return {
+			ok: true,
+			kind: "target",
+			origin: bare.origin,
+			entry: bare.entry
+		};
+		return {
+			ok: false,
+			reason: "invalid"
+		};
+	}
+	function parsePairInput(raw, rawCode) {
+		if (rawCode !== void 0 && String(rawCode).trim() !== "") return readConnectInput(raw, rawCode);
+		const text = String(raw ?? "").trim();
+		if (text === "") return {
+			ok: false,
+			reason: "empty"
+		};
+		if (/^[a-z0-9]{4}[-\s][a-z0-9]{4}$/i.test(text)) {
+			const code = normalizePairingCode$1(text);
+			if (code !== void 0) return {
+				ok: true,
+				kind: "code",
+				code
+			};
+		}
+		const pasted = readPastePayload(text);
+		if (pasted.ok) return pasted;
+		const bareTarget = readTarget(text);
+		if (!bareTarget.ok) return bareTarget;
+		return {
+			ok: true,
+			kind: "target",
+			origin: bareTarget.origin,
+			entry: bareTarget.entry
+		};
 	}
 	function randomUuid() {
 		if (typeof globalThis.crypto?.randomUUID === "function") return globalThis.crypto.randomUUID();
@@ -11855,7 +11955,7 @@
 		const clean = {};
 		let count = 0;
 		for (const [rawOrigin, rawFp] of Object.entries(rawMap)) {
-			if (count >= 6) break;
+			if (count >= 10) break;
 			const parsed = readTarget(rawOrigin);
 			if (!parsed.ok) continue;
 			const fp = typeof rawFp === "string" ? rawFp.trim().toLowerCase() : "";
@@ -11901,18 +12001,43 @@
 			if (!verifiedOrigins.includes(migrated) && verifiedOrigins.length < 6) verifiedOrigins.push(migrated);
 		}
 		const rawOrigins = Array.isArray(obj["origins"]) ? obj["origins"] : [];
+		const rawEndpoints = Array.isArray(obj["endpoints"]) ? obj["endpoints"] : [];
 		const origins = [origin];
-		for (const item of [...rawOrigins, ...verifiedOrigins]) {
+		for (const item of [
+			...rawOrigins,
+			...rawEndpoints,
+			...verifiedOrigins
+		]) {
 			const parsed = readTarget(String(item ?? ""));
 			if (!parsed.ok) continue;
 			const migrated = resolveMigratedOriginForPinnedMap(parsed.origin, pinnedFingerprints);
-			if (!origins.includes(migrated) && origins.length < 6) origins.push(migrated);
+			if (!origins.includes(migrated) && origins.length < 8) origins.push(migrated);
+		}
+		const endpoints = [];
+		for (const item of [
+			origin,
+			...rawEndpoints,
+			...origins
+		]) {
+			const norm = normalizePairingEndpoint(String(item ?? ""));
+			if (norm === void 0 || isSyntheticRelayOrigin(norm)) continue;
+			const migrated = resolveMigratedOriginForPinnedMap(norm, pinnedFingerprints);
+			if (!endpoints.includes(migrated) && endpoints.length < 8) endpoints.push(migrated);
+		}
+		const hasAnyPinnedFingerprint = pinnedFingerprints !== void 0 && Object.keys(pinnedFingerprints).length > 0;
+		const rawRelays = Array.isArray(obj["relayEndpoints"]) ? obj["relayEndpoints"] : [];
+		const relayEndpoints = [];
+		if (hasAnyPinnedFingerprint) for (const item of rawRelays) {
+			const norm = normalizeRelayEndpoint(String(item ?? ""));
+			if (norm !== void 0 && !relayEndpoints.includes(norm) && relayEndpoints.length < 6) relayEndpoints.push(norm);
 		}
 		const record = {
 			id: typeof obj["id"] === "string" && obj["id"].trim() !== "" ? obj["id"].trim() : targetHomeId ?? `origin:${origin}`,
 			label: typeof obj["label"] === "string" && obj["label"].trim() !== "" ? obj["label"].trim() : defaultLabelForOrigin(origin),
 			origin,
 			origins,
+			endpoints,
+			relayEndpoints,
 			verifiedOrigins,
 			paired,
 			targetHomeId,
@@ -12010,25 +12135,55 @@
 		const isPaired = Boolean(input?.paired || existing?.paired || resolvedHomeId);
 		const markVerified = isPaired && input?.verified !== false;
 		if (isPaired && !markVerified && existing && !isServerOriginVerified(existing, origin)) return existing;
+		const normalizedFp = typeof input?.fingerprint === "string" && TLS_FINGERPRINT_PATTERN.test(input.fingerprint.trim().toLowerCase()) ? input.fingerprint.trim().toLowerCase() : void 0;
+		const extraCandidateOrigins = [];
+		if (Array.isArray(input?.endpoints)) for (const rawEp of input.endpoints) {
+			const parsed = readTarget(upgradeEndpointForTlsPin(rawEp, normalizedFp));
+			if (parsed.ok && !extraCandidateOrigins.includes(parsed.origin)) extraCandidateOrigins.push(parsed.origin);
+		}
 		const verifiedOrigins = markVerified ? [origin] : [];
+		if (markVerified) {
+			for (const cand of extraCandidateOrigins) if (!verifiedOrigins.includes(cand) && verifiedOrigins.length < 8) verifiedOrigins.push(cand);
+		}
 		if (existing && Array.isArray(existing.verifiedOrigins)) {
-			for (const prev of existing.verifiedOrigins) if (!verifiedOrigins.includes(prev) && verifiedOrigins.length < 6) verifiedOrigins.push(prev);
+			for (const prev of existing.verifiedOrigins) if (!verifiedOrigins.includes(prev) && verifiedOrigins.length < 8) verifiedOrigins.push(prev);
 		}
 		const origins = [origin];
+		for (const cand of extraCandidateOrigins) if (!origins.includes(cand) && origins.length < 8) origins.push(cand);
 		if (existing) {
-			for (const prev of existing.origins) if (!origins.includes(prev) && origins.length < 6) origins.push(prev);
+			for (const prev of existing.origins) if (!origins.includes(prev) && origins.length < 8) origins.push(prev);
+		}
+		const endpoints = [];
+		for (const ep of [
+			...Array.isArray(input?.endpoints) ? input.endpoints : [],
+			...origins,
+			...existing?.endpoints ?? []
+		]) {
+			const norm = normalizePairingEndpoint(upgradeEndpointForTlsPin(ep, normalizedFp));
+			if (norm !== void 0 && !isSyntheticRelayOrigin(norm) && !endpoints.includes(norm) && endpoints.length < 8) endpoints.push(norm);
+		}
+		const relayEndpoints = [];
+		const sourceRelays = Array.isArray(input?.relayEndpoints) && input.relayEndpoints.length > 0 ? input.relayEndpoints : existing?.relayEndpoints ?? [];
+		for (const relay of sourceRelays) {
+			const norm = normalizeRelayEndpoint(relay);
+			if (norm !== void 0 && !relayEndpoints.includes(norm) && relayEndpoints.length < 6) relayEndpoints.push(norm);
 		}
 		const label = typeof input?.label === "string" && input.label.trim() !== "" ? input.label.trim() : existing?.label && existing.label !== defaultLabelForOrigin(existing.origin) ? existing.label : defaultLabelForOrigin(origin);
 		const mergedFingerprints = {
 			...existing?.pinnedFingerprints,
 			...input?.pinnedFingerprints
 		};
-		if (typeof input?.fingerprint === "string" && TLS_FINGERPRINT_PATTERN.test(input.fingerprint.trim())) mergedFingerprints[origin] = input.fingerprint.trim();
+		if (normalizedFp !== void 0) {
+			mergedFingerprints[origin] = normalizedFp;
+			for (const cand of extraCandidateOrigins) mergedFingerprints[cand] = normalizedFp;
+		}
 		const updated = sanitizeServerRecord({
 			id: resolvedId,
 			label,
 			origin,
 			origins,
+			endpoints,
+			relayEndpoints,
 			verifiedOrigins,
 			pinnedFingerprints: mergedFingerprints,
 			paired: isPaired,
@@ -12472,7 +12627,9 @@
 	async function claimPairingOrigin(storage, input) {
 		let rawEndpoint = input?.endpoint ?? input?.origin ?? "";
 		let rawCode = input?.code ?? "";
-		let rawFingerprint = typeof input?.fingerprint === "string" ? input.fingerprint.trim() : "";
+		let rawFingerprint = typeof input?.fingerprint === "string" ? input.fingerprint.trim().toLowerCase() : "";
+		let rawEndpointsList = Array.isArray(input?.endpoints) ? [...input.endpoints] : [];
+		let rawRelayList = Array.isArray(input?.relayEndpoints) ? [...input.relayEndpoints] : [];
 		if (/^kiki:\/\//i.test(String(rawEndpoint).trim())) {
 			const parsedUri = parsePairingUri(rawEndpoint);
 			if (!parsedUri) return {
@@ -12482,9 +12639,25 @@
 			rawEndpoint = parsedUri.endpoint;
 			if (!rawCode) rawCode = parsedUri.code;
 			if (!rawFingerprint && parsedUri.fingerprint) rawFingerprint = parsedUri.fingerprint;
+			if (rawEndpointsList.length === 0 && parsedUri.endpoints) rawEndpointsList = [...parsedUri.endpoints];
+			if (rawRelayList.length === 0 && parsedUri.relayEndpoints) rawRelayList = [...parsedUri.relayEndpoints];
 		}
 		const fingerprint = TLS_FINGERPRINT_PATTERN.test(rawFingerprint) ? rawFingerprint : void 0;
 		if (fingerprint !== void 0) rawEndpoint = upgradeEndpointForTlsPin(rawEndpoint, fingerprint);
+		const normalizedEndpoints = [];
+		for (const ep of [rawEndpoint, ...rawEndpointsList]) {
+			const norm = normalizePairingEndpoint(fingerprint !== void 0 ? upgradeEndpointForTlsPin(ep, fingerprint) : ep);
+			if (norm !== void 0 && !isSyntheticRelayOrigin(norm) && !normalizedEndpoints.includes(norm)) normalizedEndpoints.push(norm);
+		}
+		const normalizedRelays = [];
+		if (fingerprint !== void 0) for (const relay of rawRelayList) {
+			const norm = normalizeRelayEndpoint(relay);
+			if (norm !== void 0 && !normalizedRelays.includes(norm)) normalizedRelays.push(norm);
+		}
+		else if (rawRelayList.length > 0 && normalizedEndpoints.length === 0) return {
+			ok: false,
+			reason: "invalid_code"
+		};
 		const normalizedEndpoint = normalizePairingEndpoint(rawEndpoint);
 		const target = readTarget(normalizedEndpoint ?? rawEndpoint);
 		const code = normalizePairingCode(rawCode);
@@ -12507,15 +12680,30 @@
 				homeId: identity.homeId,
 				hostId: identity.hostId,
 				sourceLabel: identity.label,
-				fingerprint
+				fingerprint,
+				...normalizedEndpoints.length > 0 ? { endpoints: normalizedEndpoints } : {},
+				...normalizedRelays.length > 0 ? { relayEndpoints: normalizedRelays } : {}
 			};
 			const res = await input.nativeClaim(nativeParams);
 			if (res?.ok && res.targetHomeId) {
 				const resolvedOriginTarget = typeof res.origin === "string" && res.origin.trim() !== "" ? readTarget(res.origin) : null;
-				const finalOrigin = resolvedOriginTarget?.ok ? resolvedOriginTarget.origin : origin;
+				const finalOrigin = resolvedOriginTarget?.ok && !resolvedOriginTarget.origin.startsWith("https://127.0.0.1:") ? resolvedOriginTarget.origin : origin;
+				const claimedRelays = [];
+				if (fingerprint !== void 0 && Array.isArray(res.relayEndpoints)) for (const item of res.relayEndpoints) {
+					const norm = normalizeRelayEndpoint(item);
+					if (norm !== void 0 && !claimedRelays.includes(norm) && claimedRelays.length < 6) claimedRelays.push(norm);
+				}
+				const effectiveRelays = claimedRelays.length > 0 ? claimedRelays : normalizedRelays;
+				const claimedEndpoints = [...normalizedEndpoints];
+				if (Array.isArray(res.endpoints)) for (const item of res.endpoints) {
+					const norm = normalizePairingEndpoint(fingerprint !== void 0 ? upgradeEndpointForTlsPin(item, fingerprint) : item);
+					if (norm !== void 0 && !isSyntheticRelayOrigin(norm) && !claimedEndpoints.includes(norm)) claimedEndpoints.push(norm);
+				}
 				const server = upsertSavedServer(storage, {
 					id: res.serverId ?? res.targetHomeId,
 					origin: finalOrigin,
+					endpoints: claimedEndpoints,
+					relayEndpoints: effectiveRelays,
 					label: res.targetLabel,
 					paired: true,
 					targetHomeId: res.targetHomeId,
@@ -12527,6 +12715,8 @@
 				return {
 					ok: true,
 					origin: finalOrigin,
+					endpoints: claimedEndpoints,
+					relayEndpoints: effectiveRelays,
 					serverId: server?.id ?? res.serverId ?? res.targetHomeId,
 					targetHomeId: res.targetHomeId,
 					targetHostId: res.targetHostId,
@@ -12579,10 +12769,25 @@
 				ok: false,
 				reason: "rejected"
 			};
+			const responseRelays = [];
+			if (fingerprint !== void 0 && Array.isArray(data.relayEndpoints)) for (const item of data.relayEndpoints) {
+				if (typeof item !== "string") continue;
+				const norm = normalizeRelayEndpoint(item);
+				if (norm !== void 0 && !responseRelays.includes(norm) && responseRelays.length < 6) responseRelays.push(norm);
+			}
+			const effectiveRelays = responseRelays.length > 0 ? responseRelays : normalizedRelays;
+			const effectiveEndpoints = [...normalizedEndpoints];
+			if (Array.isArray(data.endpoints)) for (const item of data.endpoints) {
+				if (typeof item !== "string") continue;
+				const norm = normalizePairingEndpoint(fingerprint !== void 0 ? upgradeEndpointForTlsPin(item, fingerprint) : item);
+				if (norm !== void 0 && !isSyntheticRelayOrigin(norm) && !effectiveEndpoints.includes(norm)) effectiveEndpoints.push(norm);
+			}
 			if (typeof input?.saveToken === "function") await input.saveToken(data.target.homeId, data.peerToken, origin);
 			const server = upsertSavedServer(storage, {
 				id: data.target.homeId,
 				origin,
+				endpoints: effectiveEndpoints,
+				relayEndpoints: effectiveRelays,
 				label: data.targetLabel,
 				paired: true,
 				targetHomeId: data.target.homeId,
@@ -12594,6 +12799,8 @@
 			return {
 				ok: true,
 				origin,
+				endpoints: effectiveEndpoints,
+				relayEndpoints: effectiveRelays,
 				serverId: server?.id ?? data.target.homeId,
 				targetHomeId: data.target.homeId,
 				targetHostId: data.target.hostId,
@@ -12946,6 +13153,8 @@
 			const claim = await claimPairingOrigin(storage, {
 				endpoint: input.endpoint ?? origin,
 				origin,
+				endpoints: input.endpoints,
+				relayEndpoints: input.relayEndpoints,
 				code: input.code,
 				fingerprint: input.fingerprint,
 				platform: input.platform,
@@ -12981,6 +13190,8 @@
 				const expectedHomeId = existing?.targetHomeId ?? input.targetHomeId;
 				const expectedHostId = existing?.targetHostId ?? input.targetHostId;
 				const resolvedFingerprint = input.fingerprint ?? getServerFingerprint(existing, origin);
+				const candidateEndpoints = input.endpoints ?? existing?.endpoints;
+				const candidateRelays = input.relayEndpoints ?? existing?.relayEndpoints;
 				const probe = await (input.probe ?? ((targetOrigin, probeOptions) => probeOriginHandshake(targetOrigin, {
 					fetchImpl: input.fetchImpl,
 					handshakeKey: probeOptions?.handshakeKey ?? probeOptions?.handshakeProof ?? handshakeKey,
@@ -12988,6 +13199,8 @@
 					targetHomeId: probeOptions?.targetHomeId ?? expectedHomeId,
 					targetHostId: probeOptions?.targetHostId ?? expectedHostId,
 					serverId: probeOptions?.serverId ?? targetServerId,
+					endpoints: probeOptions?.endpoints ?? candidateEndpoints,
+					relayEndpoints: probeOptions?.relayEndpoints ?? candidateRelays,
 					requireMutualProof: Boolean(probeOptions?.requireMutualProof ?? requireMutualProof),
 					signal: probeOptions?.signal ?? signal
 				})))(origin, canProveVerifiedOrigin ? {
@@ -12996,12 +13209,16 @@
 					targetHostId: expectedHostId,
 					grantId,
 					fingerprint: resolvedFingerprint,
+					endpoints: candidateEndpoints,
+					relayEndpoints: candidateRelays,
 					handshakeKey,
 					handshakeProof: handshakeKey,
 					requireMutualProof,
 					signal
 				} : {
 					fingerprint: resolvedFingerprint,
+					endpoints: candidateEndpoints,
+					relayEndpoints: candidateRelays,
 					signal
 				});
 				if (isStale() || probe?.aborted === true || probe?.reason === "aborted") return {
@@ -13039,6 +13256,8 @@
 		const saved = upsertSavedServer(storage, {
 			id: existing?.id ?? input.serverId,
 			origin,
+			endpoints: input.endpoints ?? existing?.endpoints,
+			relayEndpoints: input.relayEndpoints ?? existing?.relayEndpoints,
 			label: existing?.label ?? input.label,
 			paired: isPairedTarget,
 			targetHomeId: existing?.targetHomeId ?? input.targetHomeId,
@@ -13299,6 +13518,14 @@
 		const viewConnect = document.querySelector("#view-connect");
 		const viewComputers = document.querySelector("#view-computers");
 		const viewNetwork = document.querySelector("#view-network");
+		const viewSettings = document.querySelector("#view-settings");
+		const tabSettings = document.querySelector("#tab-settings");
+		const tabbarInner = document.querySelector("#tabbar-inner");
+		const toggleLocalHost = document.querySelector("#toggle-local-host");
+		const toggleAutoUpdate = document.querySelector("#toggle-auto-update");
+		const checkUpdateBtn = document.querySelector("#btn-check-update");
+		const openNativeSettingsBtn = document.querySelector("#btn-open-native-settings");
+		const hostVersionLine = document.querySelector("#host-version-line");
 		if (!qForm || !qInput || !qCodeInput || !qLayerBadge || !qButton || !qProblem || !qScanButton || !qScanFeedback || !qScannerPanel || !qScannerVideo || !qScanCancel || !qRecent || !qRecentList || !qComputersEmpty || !qEmptyConnect || !qProbeInput || !qProbeLayer || !qTestButton || !qProbeResult || !qAddresses || !qAddressList || !viewConnect || !viewComputers || !viewNetwork) return;
 		const form = qForm;
 		const input = qInput;
@@ -13325,7 +13552,8 @@
 		const views = {
 			connect: viewConnect,
 			computers: viewComputers,
-			network: viewNetwork
+			network: viewNetwork,
+			settings: viewSettings ?? viewNetwork
 		};
 		const lang = /^zh\b/i.test(navigator.language) ? "zh" : "en";
 		const copy = COPY[lang];
@@ -13444,6 +13672,8 @@
 					targetHomeId: latest.targetHomeId ?? bound.targetHomeId,
 					targetHostId: latest.targetHostId ?? bound.targetHostId,
 					grantId: activeGrantId,
+					endpoints: latest.endpoints,
+					relayEndpoints: latest.relayEndpoints,
 					fromAutoRecovery: true,
 					fromComputersTab: inComputersTab,
 					expectedAutoEpoch: expectedEpoch,
@@ -13463,7 +13693,7 @@
 			return displayOrigin(origin).replace(" · http", "");
 		}
 		function setTab(name, options = {}) {
-			if (!views[name]) return;
+			if (!views[name] || name === "settings" && (!viewSettings || tabSettings?.hidden)) return;
 			if (name !== "connect") {
 				if (!(name === "computers" && computersTabRecovery)) stopAutoReconnect(false);
 				if (activeStream) stopCameraScanner();
@@ -13483,6 +13713,7 @@
 			if (options.scroll !== false) window.scrollTo(0, 0);
 		}
 		function shortLayerLabelFor(originOrRaw) {
+			if (isSyntheticRelayOrigin(originOrRaw)) return copy.layerRelay;
 			const info = classifyOrigin(originOrRaw);
 			if (info.layer === "invalid") return "";
 			if (info.layer === "vpn") return copy.layerVpn;
@@ -13491,6 +13722,7 @@
 			return lang === "zh" ? "局域网" : "LAN";
 		}
 		function layerLabelFor(originOrRaw) {
+			if (isSyntheticRelayOrigin(originOrRaw)) return copy.layerRelay;
 			const info = classifyOrigin(originOrRaw);
 			if (info.layer === "invalid") return "";
 			if (info.layer === "vpn") return copy.layerVpn;
@@ -13603,6 +13835,10 @@
 					serverId: probeOptions?.serverId ?? void 0,
 					grantId: probeOptions?.grantId ?? void 0,
 					fingerprint: probeOptions?.fingerprint ?? void 0,
+					endpoints: probeOptions?.endpoints ? [...probeOptions.endpoints] : void 0,
+					endpointsJson: probeOptions?.endpoints ? JSON.stringify([...probeOptions.endpoints]) : void 0,
+					relayEndpoints: probeOptions?.relayEndpoints ? [...probeOptions.relayEndpoints] : void 0,
+					relayEndpointsJson: probeOptions?.relayEndpoints ? JSON.stringify([...probeOptions.relayEndpoints]) : void 0,
 					expectedStatus: probeOptions?.expectedStatus ?? void 0
 				});
 				if (isSignalAborted()) return {
@@ -13637,11 +13873,13 @@
 			}
 			return probeOriginHandshake(origin, probeOptions);
 		}
-		async function claimPairing(endpoint, code, fingerprint) {
+		async function claimPairing(endpoint, code, fingerprint, extra = {}) {
 			const platform = /iPhone|iPad|iPod/i.test(navigator.userAgent) ? "ios" : "android";
 			const nativeIdentity = readDeviceIdentity(window.localStorage, platform);
 			if (isNativeShell()) return claimPairingOrigin(window.localStorage, {
 				endpoint,
+				endpoints: extra.endpoints,
+				relayEndpoints: extra.relayEndpoints,
 				code,
 				fingerprint,
 				platform,
@@ -13656,6 +13894,8 @@
 							sourceLabel: params.sourceLabel
 						};
 						if (params.fingerprint) payload["fingerprint"] = params.fingerprint;
+						if (params.endpoints && params.endpoints.length > 0) payload["endpoints"] = [...params.endpoints];
+						if (params.relayEndpoints && params.relayEndpoints.length > 0) payload["relayEndpoints"] = [...params.relayEndpoints];
 						const res = await win.Capacitor.nativePromise("KikiShell", "claimPair", payload);
 						if (res && typeof res["ok"] === "boolean") return res;
 					} catch {}
@@ -13667,6 +13907,8 @@
 			});
 			return claimPairingOrigin(window.localStorage, {
 				endpoint,
+				endpoints: extra.endpoints,
+				relayEndpoints: extra.relayEndpoints,
 				code,
 				fingerprint,
 				platform,
@@ -13802,6 +14044,16 @@
 					};
 					const resolvedFp = options.fingerprint ?? getServerFingerprint(resolved.server, targetOrigin) ?? getServerFingerprint(resolved.server, origin);
 					if (resolvedFp) openPayload["fingerprint"] = resolvedFp;
+					const resolvedEndpoints = resolved.server?.endpoints ?? options.endpoints;
+					if (resolvedEndpoints && resolvedEndpoints.length > 0) {
+						openPayload["endpoints"] = [...resolvedEndpoints];
+						openPayload["endpointsJson"] = JSON.stringify([...resolvedEndpoints]);
+					}
+					const resolvedRelays = resolved.server?.relayEndpoints ?? options.relayEndpoints;
+					if (resolvedRelays && resolvedRelays.length > 0) {
+						openPayload["relayEndpoints"] = [...resolvedRelays];
+						openPayload["relayEndpointsJson"] = JSON.stringify([...resolvedRelays]);
+					}
 					const res = await win.Capacitor.nativePromise("KikiShell", "open", openPayload);
 					if (isStaleOpen() || res?.["reason"] === "aborted") return;
 					if (!res || res["ok"] === false) {
@@ -13893,6 +14145,8 @@
 				targetHostId: server.targetHostId,
 				grantId: server.grantId,
 				fingerprint: getServerFingerprint(server, server.origin),
+				endpoints: server.endpoints,
+				relayEndpoints: server.relayEndpoints,
 				fromComputersTab: options.fromComputersTab
 			});
 		}
@@ -13902,7 +14156,10 @@
 				setOpenBusy(true, copy.pairing);
 				let claim;
 				try {
-					claim = await claimPairing(parsed.endpoint ?? parsed.origin, parsed.code, parsed.fingerprint);
+					claim = await claimPairing(parsed.endpoint ?? parsed.origin, parsed.code, parsed.fingerprint, {
+						endpoints: parsed.endpoints,
+						relayEndpoints: parsed.relayEndpoints
+					});
 				} catch {
 					setOpenBusy(false);
 					showProblem(unreachableMessageFor(parsed.origin));
@@ -13922,7 +14179,9 @@
 					targetHomeId: claim.targetHomeId,
 					targetHostId: claim.targetHostId,
 					grantId: claim.grantId,
-					fingerprint: claim.fingerprint ?? parsed.fingerprint
+					fingerprint: claim.fingerprint ?? parsed.fingerprint,
+					endpoints: claim.endpoints ?? parsed.endpoints,
+					relayEndpoints: claim.relayEndpoints ?? parsed.relayEndpoints
 				});
 				return;
 			}
@@ -13934,7 +14193,9 @@
 				targetHomeId: existing?.targetHomeId,
 				targetHostId: existing?.targetHostId,
 				grantId: existing?.grantId,
-				fingerprint: getServerFingerprint(existing, parsed.origin)
+				fingerprint: getServerFingerprint(existing, parsed.origin),
+				endpoints: existing?.endpoints,
+				relayEndpoints: existing?.relayEndpoints
 			});
 		}
 		function stopCameraScanner(options = {}) {
@@ -13970,7 +14231,9 @@
 			input.value = editableOrigin(parsed.origin);
 			pendingManualFingerprint = parsed.kind === "pair" && parsed.fingerprint ? {
 				origin: parsed.origin,
-				fingerprint: parsed.fingerprint
+				fingerprint: parsed.fingerprint,
+				endpoints: parsed.endpoints,
+				relayEndpoints: parsed.relayEndpoints
 			} : null;
 			if (parsed.kind === "pair") codeInput.value = parsed.code;
 			setManualExpanded(true);
@@ -14029,7 +14292,9 @@
 				codeInput.value = parsed.code;
 				pendingManualFingerprint = parsed.fingerprint ? {
 					origin: parsed.origin,
-					fingerprint: parsed.fingerprint
+					fingerprint: parsed.fingerprint,
+					endpoints: parsed.endpoints,
+					relayEndpoints: parsed.relayEndpoints
 				} : null;
 				setManualExpanded(true);
 				updateInputAffordances();
@@ -14525,8 +14790,56 @@
 		}
 		for (const tab of tabs) tab.addEventListener("click", () => {
 			const name = tab.dataset["tab"];
-			if (name === "connect" || name === "computers" || name === "network") setTab(name, { animate: true });
+			if (name === "connect" || name === "computers" || name === "network" || name === "settings") setTab(name, { animate: true });
 		});
+		async function initEmbeddedHostSettings() {
+			if (!isNativeShell() || !tabSettings || !viewSettings) return;
+			try {
+				const status = await win.Capacitor.nativePromise("KikiShell", "getHostStatus", {});
+				if (status?.["embeddedHost"] !== true) return;
+				tabSettings.hidden = false;
+				tabbarInner?.setAttribute("data-tabs", "4");
+				const syncUiFromStatus = (raw) => {
+					if (!raw) return;
+					const localOn = raw["localHostEnabled"] === true;
+					const autoUpdate = raw["autoCheckUpdates"] !== false;
+					toggleLocalHost?.setAttribute("aria-checked", localOn ? "true" : "false");
+					toggleAutoUpdate?.setAttribute("aria-checked", autoUpdate ? "true" : "false");
+					if (hostVersionLine && typeof raw["versionName"] === "string") {
+						const ch = typeof raw["distributionChannel"] === "string" ? ` · ${raw["distributionChannel"]}` : "";
+						hostVersionLine.textContent = `Kiki ${raw["versionName"]}${ch}`;
+					}
+				};
+				syncUiFromStatus(status);
+				toggleLocalHost?.addEventListener("click", () => {
+					const next = toggleLocalHost.getAttribute("aria-checked") !== "true";
+					toggleLocalHost.setAttribute("aria-checked", next ? "true" : "false");
+					toggleLocalHost.disabled = true;
+					win.Capacitor.nativePromise("KikiShell", "setLocalHostEnabled", { enabled: next }).catch(() => {
+						toggleLocalHost.setAttribute("aria-checked", !next ? "true" : "false");
+					}).finally(() => {
+						toggleLocalHost.disabled = false;
+					});
+				});
+				toggleAutoUpdate?.addEventListener("click", () => {
+					const next = toggleAutoUpdate.getAttribute("aria-checked") !== "true";
+					toggleAutoUpdate.setAttribute("aria-checked", next ? "true" : "false");
+					win.Capacitor.nativePromise("KikiShell", "setAutoCheckUpdates", { enabled: next }).catch(() => {});
+				});
+				checkUpdateBtn?.addEventListener("click", () => {
+					checkUpdateBtn.disabled = true;
+					const origText = checkUpdateBtn.textContent;
+					checkUpdateBtn.textContent = copy.checkingUpdate;
+					win.Capacitor.nativePromise("KikiShell", "checkForUpdate", { manual: true }).catch(() => {}).finally(() => {
+						checkUpdateBtn.disabled = false;
+						checkUpdateBtn.textContent = origText;
+					});
+				});
+				openNativeSettingsBtn?.addEventListener("click", () => {
+					win.Capacitor.nativePromise("KikiShell", "openNativeSettings", {}).catch(() => {});
+				});
+			} catch {}
+		}
 		emptyConnect.addEventListener("click", () => {
 			setTab("connect", { animate: true });
 		});
@@ -14599,7 +14912,9 @@
 				codeInput.value = maybePair.code;
 				pendingManualFingerprint = maybePair.fingerprint ? {
 					origin: maybePair.origin,
-					fingerprint: maybePair.fingerprint
+					fingerprint: maybePair.fingerprint,
+					endpoints: maybePair.endpoints,
+					relayEndpoints: maybePair.relayEndpoints
 				} : null;
 			} else if (pendingManualFingerprint) {
 				const currentTarget = readTarget(input.value);
@@ -14692,7 +15007,9 @@
 			}
 			submitConnect(parsed.kind === "pair" && !parsed.fingerprint && pendingManualFingerprint && pendingManualFingerprint.origin === parsed.origin ? {
 				...parsed,
-				fingerprint: pendingManualFingerprint.fingerprint
+				fingerprint: pendingManualFingerprint.fingerprint,
+				endpoints: pendingManualFingerprint.endpoints,
+				relayEndpoints: pendingManualFingerprint.relayEndpoints
 			} : parsed);
 		});
 		let restingHeight = window.visualViewport?.height ?? window.innerHeight;
@@ -14780,7 +15097,8 @@
 			"pairing_required",
 			"identity_mismatch",
 			"pair",
-			"change"
+			"change",
+			"settings"
 		]);
 		function consumeTransientActionHash() {
 			const raw = window.location.hash.replace(/^#/, "");
@@ -14798,6 +15116,7 @@
 			else if (hashAction === "identity_mismatch") showPairingRecovery("identity_mismatch");
 			else if (hashAction === "pair") consumePendingPairIfAny();
 			else if (hashAction === "change") setTab(landingTab());
+			else if (hashAction === "settings") setTab("settings");
 		});
 		if (win.__kikiLauncher) win.__kikiLauncher.openServer = openServer;
 		renderSavedServers();
@@ -14811,8 +15130,10 @@
 		const reason = consumeTransientActionHash();
 		const primaryServer = readSavedServers(window.localStorage)[0] ?? null;
 		(async () => {
+			await initEmbeddedHostSettings();
 			if (!await consumePendingPairIfAny()) {
-				if (reason === "unreachable" || reason === "unverified_handshake_proof") showUnreachable(reason);
+				if (reason === "settings") setTab("settings");
+				else if (reason === "unreachable" || reason === "unverified_handshake_proof") showUnreachable(reason);
 				else if (reason === "pairing_revoked" || reason === "pairing_required" || reason === "identity_mismatch") showPairingRecovery(reason);
 				else if (primaryServer !== null && firstVisit && reason === "") await openSavedServer(primaryServer);
 			}

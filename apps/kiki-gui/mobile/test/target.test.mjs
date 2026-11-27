@@ -1849,6 +1849,10 @@ ${origin}
     private String resolvePinnedFingerprint(String id, String origin) { return null; }
     private void configurePinnedTls(HttpURLConnection conn, String origin, String serverId, String fp) {}
     private void closeWsTunnel() {}
+    private void stageRouteHints(String id, String origin, String epJson, String relayJson, String fp) {}
+    private String[] resolveNavigationTarget(String origin, String entry, String id, String fp) {
+        return new String[] { origin, entry, "false" };
+    }
     private String prepareWsTunnelScript(String origin, String serverId) { return null; }
     private boolean matchesStoredHostId(String id, String host) {
         return id.equals("home-a") && (host == null || host.isEmpty() || host.equals("host-a"));
@@ -3859,4 +3863,85 @@ await test('launcher Connect screen defaults to a centered scan-first hierarchy 
     await browser.close();
     launcherServer.close();
   }
+});
+
+await test('kiki-relay v1 pairing URI preserves multiple endpoints + relay streams, enforces fp pinning, and refreshes persistent relayEndpoints from pair/claim', async () => {
+  const fp = 'a1b2c3d4e5f60718'.repeat(4);
+  const pairRelayHome = `wss://relay-home.example.test/v1/stream?target=${fp}&rt=p.temp10m`;
+  const pairRelayConnect = 'wss://relay-legacy.example.test/edge/v1/connect/node-alpha-01';
+  const grantRelayHome = `wss://relay-home.example.test/v1/stream?target=${fp}&rt=g.longlived1`;
+  const grantRelayStandby = `wss://relay-standby.example.test/v1/stream?target=${fp}&rt=g.longlived2`;
+
+  const multiUri = formatPairingUri({
+    endpoints: ['http://192.168.1.5:5494', 'https://100.64.0.9:5494'],
+    relayEndpoints: [pairRelayHome, pairRelayConnect],
+    code: '2345-6789',
+    fingerprint: fp,
+  });
+
+  const parsed = parsePairingUri(multiUri);
+  assert.deepEqual(parsed, {
+    endpoint: 'http://192.168.1.5:5494',
+    endpoints: ['http://192.168.1.5:5494', 'https://100.64.0.9:5494'],
+    relayEndpoints: [pairRelayHome, pairRelayConnect],
+    code: '2345-6789',
+    fingerprint: fp,
+  });
+
+  // Unpinned relay URIs must be strictly rejected
+  assert.equal(
+    parsePairingUri(`kiki://pair?endpoint=http%3A%2F%2F192.168.1.5%3A5494&relay=${encodeURIComponent(pairRelayHome)}&code=2345-6789`),
+    null,
+  );
+  assert.throws(() =>
+    formatPairingUri({
+      endpoint: 'http://192.168.1.5:5494',
+      relayEndpoints: [pairRelayHome],
+      code: '2345-6789',
+    }),
+  );
+
+  // Relay-only URI (no direct LAN endpoint) synthesizes a deterministic .kiki.peer origin
+  const relayOnlyUri = formatPairingUri({
+    relayEndpoints: [pairRelayHome],
+    code: '2345-6789',
+    fingerprint: fp,
+  });
+  const scannedRelayOnly = readScanPayload(relayOnlyUri);
+  assert.equal(scannedRelayOnly.ok, true);
+  assert.equal(scannedRelayOnly.kind, 'pair');
+  assert.match(scannedRelayOnly.origin, /^https:\/\/[a-z0-9-]+\.kiki\.peer$/);
+  assert.deepEqual(scannedRelayOnly.relayEndpoints, [pairRelayHome]);
+
+  // pair/claim response replaces temporary rt=p... relayEndpoints with persistent rt=g... Home + Standby relays
+  const storage = createMemoryStorage();
+  let capturedNativeParams = null;
+  const claimed = await claimPairingOrigin(storage, {
+    endpoint: multiUri,
+    nativeClaim: async (params) => {
+      capturedNativeParams = params;
+      return {
+        ok: true,
+        origin: 'https://127.0.0.1:49999', // ephemeral relay loopback origin must not pollute SavedServer.origin
+        serverId: '550e8400-e29b-41d4-a716-446655440099',
+        targetHomeId: '550e8400-e29b-41d4-a716-446655440099',
+        targetHostId: 'workstation-host',
+        targetLabel: 'Studio Workstation',
+        grantId: 'grant-relay-01',
+        relayEndpoints: [grantRelayHome, grantRelayStandby],
+      };
+    },
+  });
+  assert.equal(claimed.ok, true);
+  assert.deepEqual(capturedNativeParams.endpoints, ['https://192.168.1.5:5494', 'https://100.64.0.9:5494']);
+  assert.deepEqual(capturedNativeParams.relayEndpoints, [pairRelayHome, pairRelayConnect]);
+  assert.equal(claimed.origin, 'https://192.168.1.5:5494');
+  assert.deepEqual(claimed.relayEndpoints, [grantRelayHome, grantRelayStandby]);
+
+  const saved = readSavedServers(storage);
+  assert.equal(saved.length, 1);
+  assert.deepEqual(saved[0].endpoints, ['https://192.168.1.5:5494', 'https://100.64.0.9:5494']);
+  assert.deepEqual(saved[0].relayEndpoints, [grantRelayHome, grantRelayStandby]);
+  assert.equal(getServerFingerprint(saved[0], 'https://192.168.1.5:5494'), fp);
+  assert.equal(getServerFingerprint(saved[0], 'https://100.64.0.9:5494'), fp);
 });

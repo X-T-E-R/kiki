@@ -16,6 +16,7 @@ function parseArgs(argv) {
   let tarPathProvided = Boolean(tarPath);
   let outDir = DEFAULT_ASSETS_OUT;
   let forceFallback = false;
+  let requireReal = process.env.KIKI_REQUIRE_REAL_DIST === '1' || process.env.KIKI_REQUIRE_REAL_DIST === 'true';
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--tar' && argv[i + 1]) {
@@ -30,9 +31,11 @@ function parseArgs(argv) {
       outDir = path.resolve(arg.slice(6));
     } else if (arg === '--fallback') {
       forceFallback = true;
+    } else if (arg === '--require-real') {
+      requireReal = true;
     }
   }
-  return { tarPath, tarPathProvided, outDir, forceFallback };
+  return { tarPath, tarPathProvided, outDir, forceFallback, requireReal };
 }
 
 function sha256File(filePath) {
@@ -573,12 +576,32 @@ function stageExternalTar(sourceTar, outDir) {
 }
 
 function main() {
-  const { tarPath, tarPathProvided, outDir, forceFallback } = parseArgs(process.argv.slice(2));
+  const { tarPath, tarPathProvided, outDir, forceFallback, requireReal } = parseArgs(process.argv.slice(2));
+  if (requireReal && forceFallback) {
+    throw new Error('[stage-dist] --fallback cannot be combined with --require-real for release builds.');
+  }
   if (!forceFallback) {
     const selectedTar = tarPathProvided ? tarPath : DEFAULT_DIST_TAR;
+    if (!fs.existsSync(selectedTar) && path.resolve(selectedTar) === path.resolve(DEFAULT_DIST_TAR)) {
+      const builderScript = path.resolve(REPO_ROOT, '..', 'kimi-code', 'scripts', 'build-android-bundle.mjs');
+      const rootNodeModules = path.resolve(REPO_ROOT, '..', '..', 'node_modules');
+      if (requireReal || fs.existsSync(rootNodeModules)) {
+        if (!fs.existsSync(builderScript)) {
+          throw new Error(`[stage-dist] Missing Android bundle builder at ${builderScript}`);
+        }
+        console.log('[stage-dist] Building real Kiki Android distribution bundle via build-android-bundle.mjs...');
+        execFileSync(process.execPath, [builderScript], {
+          cwd: path.dirname(path.dirname(builderScript)),
+          stdio: 'inherit',
+        });
+      }
+    }
     if (fs.existsSync(selectedTar)) {
       stageExternalTar(selectedTar, outDir);
       return;
+    }
+    if (requireReal) {
+      throw new Error(`[stage-dist] Required real distribution tar was not produced at ${selectedTar}`);
     }
     console.warn(`[stage-dist] No distribution tar found at ${selectedTar}; building the self-check bundle.`);
   }

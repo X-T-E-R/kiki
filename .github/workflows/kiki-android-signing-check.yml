@@ -22,6 +22,10 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: apps/kiki-gui/mobile/package-lock.json
+      - name: Enable Corepack and install workspace dependencies for real runtime bundle
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -60,6 +64,26 @@ jobs:
           node apps/kiki-gui/mobile/scripts/android-artifact.mjs verify \
             --variant release-check --directory "$RUNNER_TEMP/kiki-android-signing-check"
           cat "$RUNNER_TEMP/kiki-android-signing-check/android-receipt.json" >> "$GITHUB_STEP_SUMMARY"
+          (
+            export JAVA_HOME="$JAVA_HOME_17_X64"
+            if [[ -z "${JAVA_HOME:-}" ]]; then
+              unset JAVA_HOME
+            fi
+            cd apps/kiki-android
+            ./gradlew :app:assembleRelease
+          )
+          HOST_APK="apps/kiki-android/kiki-app/build/outputs/apk/release/app-release.apk"
+          APKSIGNER="$ANDROID_HOME/build-tools/36.1.0/apksigner"
+          AAPT2="$ANDROID_HOME/build-tools/36.1.0/aapt2"
+          SIGN_OUT="$("$APKSIGNER" verify --verbose --print-certs "$HOST_APK")"
+          EXPECTED_CERT="$(printf '%s' "$KIKI_ANDROID_SIGNING_CERT_SHA256" | tr -d ':' | tr '[:upper:]' '[:lower:]')"
+          printf '%s\n' "$SIGN_OUT" | grep -qi "$EXPECTED_CERT"
+          "$AAPT2" dump badging "$HOST_APK" | grep -q "package: name='dev.kiki.app'"
+          unzip -l "$HOST_APK" | grep -q "assets/kiki/launcher/index.html"
+          unzip -l "$HOST_APK" | grep -q "assets/kiki/kiki-dist.tar.xz"
+          mkdir -p "$RUNNER_TEMP/kiki-android-signing-check/dev-kiki-app"
+          cp "$HOST_APK" "$RUNNER_TEMP/kiki-android-signing-check/dev-kiki-app/kiki-app-release.apk"
+          sha256sum "$RUNNER_TEMP/kiki-android-signing-check/dev-kiki-app/kiki-app-release.apk" > "$RUNNER_TEMP/kiki-android-signing-check/dev-kiki-app/kiki-app-release.apk.sha256"
       - name: Remove materialized keystore
         if: always()
         run: rm -f "$RUNNER_TEMP/kiki-android-release.keystore"

@@ -81,6 +81,15 @@ class AndroidBridgeHandler(
         }
     }
 
+    @SuppressLint("RequiresFeature")
+    fun unbind() {
+        allowedOrigin = null
+        if (listenerRegistered && WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+            runCatching { WebViewCompat.removeWebMessageListener(webView, BRIDGE_OBJECT_NAME) }
+            listenerRegistered = false
+        }
+    }
+
     fun pushEvent(eventType: String, data: JsonObject) {
         val origin = allowedOrigin ?: return
         mainHandler.post {

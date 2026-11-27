@@ -65,7 +65,7 @@ jobs:
                   ;;
               esac
               case "$path" in
-                '.github/workflows/kiki-android-ci.yml'|'apps/kiki-android/'*|'.nvmrc')
+                '.github/workflows/kiki-android-ci.yml'|'apps/kiki-android/'*|'apps/kiki-gui/mobile/'*|'apps/kiki-gui/package.json'|'.nvmrc')
                   android=true
                   ;;
               esac
@@ -163,6 +163,11 @@ jobs:
             apps/kiki-android/gradle/wrapper/gradle-wrapper.properties
       - name: Install Android SDK API 36
         run: sdkmanager 'platforms;android-36' 'build-tools;36.1.0'
-      - name: Test Android Gradle modules
+      - name: Build REMOTE_ONLY launcher bundle
+        working-directory: apps/kiki-gui/mobile
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
+      - name: Test and assemble Android host APK
         working-directory: apps/kiki-android
-        run: ./gradlew testDebugUnitTest
+        run: ./gradlew testDebugUnitTest :app:assembleDebug
