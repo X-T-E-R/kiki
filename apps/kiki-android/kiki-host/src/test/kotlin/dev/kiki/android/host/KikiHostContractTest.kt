@@ -450,6 +450,68 @@ class KikiHostContractTest {
     }
 
     @Test
+    fun mobileHostBridge_imeHeight_hostBack_cameraChooser_and_blobDownload_contracts() {
+        // 1. Frozen seam: kiki:host-back cancelable CustomEvent
+        assertTrue(KikiWebActivity.HOST_BACK_DISPATCH_SCRIPT.contains("kiki:host-back"))
+        assertTrue(KikiWebActivity.HOST_BACK_DISPATCH_SCRIPT.contains("cancelable:true"))
+
+        // 2. Frozen seam: --kiki-ime-height CSS custom property
+        val imeScript = KikiWebActivity.buildImeHeightScript(331)
+        assertTrue(imeScript.contains("--kiki-ime-height"))
+        assertTrue(imeScript.contains("331px"))
+        assertTrue(KikiWebActivity.buildImeHeightScript(-12).contains("0px"))
+
+        // 3. Frozen seam: capture="environment" launches camera directly for images, never for non-images
+        val imgTypes = KikiWebActivity.normalizeAcceptMimeTypes(arrayOf("image/*"))
+        assertTrue(KikiWebActivity.shouldLaunchCameraDirectly(true, imgTypes))
+        assertFalse(KikiWebActivity.shouldLaunchCameraDirectly(false, imgTypes))
+        val pdfTypes = KikiWebActivity.normalizeAcceptMimeTypes(arrayOf("application/pdf"))
+        assertFalse(KikiWebActivity.shouldLaunchCameraDirectly(true, pdfTypes))
+        val emptyTypes = KikiWebActivity.normalizeAcceptMimeTypes(emptyArray())
+        assertEquals(listOf("*/*"), emptyTypes.toList())
+        assertTrue(KikiWebActivity.acceptsImages(emptyTypes))
+
+        // 4. Download filename sanitization and blob download JS bridge
+        assertEquals("report.md", KikiWebActivity.sanitizeDownloadFilename("../../report.md", "text/markdown"))
+        assertEquals("kiki-download.png", KikiWebActivity.sanitizeDownloadFilename("...", "image/png"))
+        val blobScript = KikiWebActivity.buildBlobDownloadScript("blob:http://127.0.0.1:19410/abc", "export.json", "application/json")
+        assertTrue(blobScript.contains("saveDownload"))
+        assertTrue(blobScript.contains("__kikiPendingBlobDownloads"))
+
+        // 5. AndroidBridgeHandler saveDownload dispatch
+        var capturedFile = ""
+        var capturedMime = ""
+        var capturedB64 = ""
+        val res = AndroidBridgeHandler.dispatchMethod(
+            method = "saveDownload",
+            params = buildJsonObject {
+                put("filename", "notes.md")
+                put("mimeType", "text/markdown")
+                put("base64", "aGVsbG8=")
+            },
+            capabilitiesProvider = { buildJsonObject {} },
+            openPermission = {},
+            openNativePhoneSettings = {},
+            setAppearance = {},
+            setAllowWakeUnlock = {},
+            resumeScreenAutomation = {},
+            readClipboard = { null },
+            writeClipboard = {},
+            shareText = {},
+            saveDownload = { f, m, b ->
+                capturedFile = f
+                capturedMime = m
+                capturedB64 = b
+                true
+            },
+        ).jsonObject
+        assertEquals(true, res["ok"]?.jsonPrimitive?.booleanOrNull)
+        assertEquals("notes.md", capturedFile)
+        assertEquals("text/markdown", capturedMime)
+        assertEquals("aGVsbG8=", capturedB64)
+    }
+
+    @Test
     fun httpServer_204_omits_content_length_and_includes_reason_phrase() {
         val dir = Files.createTempDirectory("kiki-http-204-test-").toFile()
         val secretToken = "sec-204-token"

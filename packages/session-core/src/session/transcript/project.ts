@@ -5994,14 +5994,34 @@ export function applyTranscriptShell(
   const cursor = sessionCursorFromSnapshot(snapshot, previous);
   const lastSeq = Math.max(snapshot.session.last_seq, snapshot.as_of_seq, cursor.seq, previous?.session?.last_seq ?? 0);
   const session = lastSeq > snapshot.session.last_seq ? { ...snapshot.session, last_seq: lastSeq } : snapshot.session;
+  const busy = base.transcriptReady ? base.busy : snapshot.session.main_turn_active ?? (snapshot.in_flight_turn !== null);
+  const inFlight = snapshot.in_flight_turn;
+  const inFlightIsLagging =
+    base.transcriptReady &&
+    busy &&
+    inFlight !== null &&
+    base.abortableTurnId !== undefined &&
+    inFlight.turn_id < base.abortableTurnId;
+  const abortableTurnId = !busy
+    ? undefined
+    : inFlight === null || inFlightIsLagging
+      ? (base.transcriptReady ? base.abortableTurnId : undefined)
+      : inFlight.turn_id;
+  const abortablePromptId = !busy
+    ? undefined
+    : inFlight === null || inFlightIsLagging
+      ? (base.transcriptReady ? base.abortablePromptId : undefined)
+      : base.transcriptReady && (base.abortableTurnId === undefined || inFlight.turn_id === base.abortableTurnId)
+        ? (inFlight.current_prompt_id ?? base.abortablePromptId)
+        : inFlight.current_prompt_id;
   return {
     ...base,
     version: base.version + 1,
     session,
     cursor,
-    busy: base.transcriptReady ? base.busy : snapshot.session.main_turn_active ?? (snapshot.in_flight_turn !== null),
-    abortablePromptId: snapshot.in_flight_turn?.current_prompt_id,
-    abortableTurnId: snapshot.in_flight_turn?.turn_id,
+    busy,
+    abortablePromptId,
+    abortableTurnId,
     model: snapshot.session.agent_config.model !== '' ? snapshot.session.agent_config.model : base.model,
     profile: snapshot.session.agent_config.profile ?? base.profile,
     permissionMode: snapshot.session.agent_config.permission_mode ?? base.permissionMode,

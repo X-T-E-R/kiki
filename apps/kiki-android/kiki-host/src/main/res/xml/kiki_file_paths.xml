@@ -6,4 +6,7 @@
     <files-path
         name="kiki_inbox"
         path="kiki/inbox/" />
+    <cache-path
+        name="kiki_camera_capture"
+        path="camera/" />
 </paths>

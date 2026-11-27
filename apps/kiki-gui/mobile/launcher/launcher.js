@@ -71,6 +71,10 @@
 			hint: "Click the top-left Space menu on your computer → Pair device to view the address and pairing code.",
 			open: "Open Kiki",
 			reconnect: "Reconnect",
+			retry: "Retry",
+			cancel: "Cancel",
+			editConnection: "Edit address",
+			repair: "Re-pair",
 			switchComputer: "Switch computer",
 			pairAndOpen: "Pair & open",
 			opening: "Opening…",
@@ -107,6 +111,7 @@
 			cameraUnavailable: "Camera is unavailable here. Enter the address and pairing code below.",
 			pairRejected: "That pairing code expired or was already used. Refresh the code on your computer and try again.",
 			unreachableLan: "Could not reach {host} over LAN. Confirm Kiki is running and both devices share the same Wi-Fi, or switch to a VPN address.",
+			unreachableLocal: "Local Kiki service ({host}) is not running yet. Wait a moment for the local kernel to start, or retry.",
 			unreachableVpn: "Could not reach {host} over VPN. Confirm Tailscale or your VPN is active on both devices and Kiki is running.",
 			unreachableHttps: "Could not reach {host}. Confirm the HTTPS tunnel or reverse proxy is online and forwarding to Kiki.",
 			probeOk: "Reached {host} ({layer}). Ready to connect.",
@@ -141,6 +146,10 @@
 			hint: "点击电脑左上角空间菜单 → 配对设备，查看地址与配对码。",
 			open: "打开 Kiki",
 			reconnect: "重新连接",
+			retry: "重试",
+			cancel: "取消",
+			editConnection: "编辑连接",
+			repair: "重新配对",
 			switchComputer: "切换电脑",
 			pairAndOpen: "配对并连接",
 			opening: "正在打开…",
@@ -177,6 +186,7 @@
 			cameraUnavailable: "当前环境无法启用相机，请在下方输入地址与配对码。",
 			pairRejected: "配对码已过期或已被使用。请在电脑上刷新二维码或配对码后重试。",
 			unreachableLan: "无法通过局域网连接 {host}。请确认电脑端 Kiki 正在运行且处于同一 Wi‑Fi，或改用 VPN 地址。",
+			unreachableLocal: "本机 Kiki 服务（{host}）尚未就绪或未运行。请稍候待本地内核启动，或点击重试。",
 			unreachableVpn: "无法通过 VPN 连接 {host}。请确认手机与电脑均已开启 Tailscale 或 VPN，且 Kiki 正在运行。",
 			unreachableHttps: "无法连接 {host}。请确认外部 HTTPS 隧道或反向代理在线，并已转发至电脑上的 Kiki。",
 			probeOk: "已连通 {host}（{layer}），可直接连接。",
@@ -13262,6 +13272,7 @@
 		const codeField = document.querySelector(".code-field");
 		const qLayerBadge = document.querySelector("#layer-badge");
 		const qButton = document.querySelector("#open");
+		const cancelOpenBtn = document.querySelector("#cancel-open");
 		const switchComputerBtn = document.querySelector("#switch-computer");
 		const hint = document.querySelector("#hint");
 		const qProblem = document.querySelector("#problem");
@@ -13331,6 +13342,7 @@
 		let scannerHistoryEntry = false;
 		let managingServerId = null;
 		let unreachablePairedRecovery = null;
+		let computersTabRecovery = false;
 		let autoReconnectTimer = null;
 		let autoReconnectFlight = false;
 		let autoReconnectEpoch = 0;
@@ -13340,11 +13352,18 @@
 		let openFlightAbortController = null;
 		let pendingManualFingerprint = null;
 		const addressStatus = /* @__PURE__ */ new Map();
+		const computerStatus = /* @__PURE__ */ new Map();
 		function isNativeShell() {
 			return win.Capacitor?.isNativePlatform?.() === true;
 		}
 		function copyByReason(reason) {
 			return copy[reason] ?? copy.invalid;
+		}
+		function setOpenBusy(busy, label) {
+			button.disabled = busy;
+			if (cancelOpenBtn) cancelOpenBtn.hidden = !busy;
+			if (busy) button.textContent = label ?? copy.opening;
+			else updateInputAffordances();
 		}
 		function cancelInFlightOpen() {
 			openFlightEpoch += 1;
@@ -13357,10 +13376,7 @@
 			if (activeOpId !== null && isNativeShell()) try {
 				win.Capacitor?.nativePromise("KikiShell", "cancelOpen", { opId: activeOpId }).catch(() => {});
 			} catch {}
-			if (button.disabled) {
-				button.disabled = false;
-				updateInputAffordances();
-			}
+			setOpenBusy(false);
 		}
 		function stopAutoReconnect(clearBinding = false) {
 			autoReconnectEpoch += 1;
@@ -13372,11 +13388,18 @@
 			}
 			if (clearBinding) {
 				unreachablePairedRecovery = null;
+				computersTabRecovery = false;
 				autoReconnectAttempt = 0;
 			}
 		}
+		function canRunAutoReconnectInCurrentView() {
+			if (!unreachablePairedRecovery) return false;
+			if (!views.connect.hidden && !problem.hidden) return true;
+			if (!views.computers.hidden && computersTabRecovery) return true;
+			return false;
+		}
 		function scheduleAutoReconnect(delayMs) {
-			if (!unreachablePairedRecovery || views.connect.hidden || problem.hidden) return;
+			if (!canRunAutoReconnectInCurrentView()) return;
 			if (autoReconnectTimer !== null) {
 				clearTimeout(autoReconnectTimer);
 				autoReconnectTimer = null;
@@ -13384,13 +13407,14 @@
 			const wait = typeof delayMs === "number" ? delayMs : Math.min(1e3 * 2 ** Math.min(autoReconnectAttempt, 3), 8e3);
 			const expectedEpoch = autoReconnectEpoch;
 			const bound = unreachablePairedRecovery;
+			if (!bound) return;
 			autoReconnectTimer = setTimeout(() => {
 				autoReconnectTimer = null;
 				runAutoReconnectAttempt(bound, expectedEpoch);
 			}, wait);
 		}
 		async function runAutoReconnectAttempt(bound, expectedEpoch) {
-			if (!bound || expectedEpoch !== autoReconnectEpoch || unreachablePairedRecovery !== bound || autoReconnectFlight || views.connect.hidden || problem.hidden || button.disabled) return;
+			if (!bound || expectedEpoch !== autoReconnectEpoch || unreachablePairedRecovery !== bound || autoReconnectFlight || !canRunAutoReconnectInCurrentView() || button.disabled) return;
 			const latest = findExactSavedServerForOrigin(bound.origin, bound.serverId);
 			if (!latest || !latest.paired && !latest.targetHomeId) {
 				stopAutoReconnect(true);
@@ -13410,6 +13434,7 @@
 			unreachablePairedRecovery = currentRecovery;
 			autoReconnectFlight = true;
 			autoReconnectAttempt += 1;
+			const inComputersTab = !views.computers.hidden && computersTabRecovery;
 			try {
 				await openServer(bound.origin, `${bound.origin}/`, {
 					serverId: latest.id,
@@ -13419,6 +13444,7 @@
 					targetHostId: latest.targetHostId ?? bound.targetHostId,
 					grantId: activeGrantId,
 					fromAutoRecovery: true,
+					fromComputersTab: inComputersTab,
 					expectedAutoEpoch: expectedEpoch,
 					expectedRecovery: currentRecovery
 				});
@@ -13427,7 +13453,7 @@
 			}
 		}
 		function wakeAutoReconnect() {
-			if (!unreachablePairedRecovery || views.connect.hidden || problem.hidden) return;
+			if (!canRunAutoReconnectInCurrentView()) return;
 			autoReconnectAttempt = 0;
 			if (autoReconnectFlight || button.disabled) return;
 			scheduleAutoReconnect(0);
@@ -13438,9 +13464,9 @@
 		function setTab(name, options = {}) {
 			if (!views[name]) return;
 			if (name !== "connect") {
-				stopAutoReconnect(false);
+				if (!(name === "computers" && computersTabRecovery)) stopAutoReconnect(false);
 				if (activeStream) stopCameraScanner();
-			}
+			} else computersTabRecovery = false;
 			for (const [key, view] of Object.entries(views)) {
 				if (options.animate) view.dataset["animate"] = "true";
 				else delete view.dataset["animate"];
@@ -13471,9 +13497,19 @@
 			if (info.layer === "http") return copy.layerHttp;
 			return copy.layerLan;
 		}
+		function isLoopbackOrigin(originOrRaw) {
+			try {
+				const normalized = /^https?:\/\//i.test(originOrRaw) ? originOrRaw : `http://${originOrRaw}`;
+				const hostname = new URL(normalized).hostname.toLowerCase();
+				return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1" || hostname === "[::1]";
+			} catch {
+				return false;
+			}
+		}
 		function unreachableMessageFor(originOrRaw) {
 			const info = classifyOrigin(originOrRaw);
 			const host = info.host || hostOf(originOrRaw);
+			if (isLoopbackOrigin(originOrRaw)) return copy.unreachableLocal.replace("{host}", host);
 			if (info.layer === "vpn") return copy.unreachableVpn.replace("{host}", host);
 			if (info.layer === "https" || info.layer === "http") return copy.unreachableHttps.replace("{host}", host);
 			return copy.unreachableLan.replace("{host}", host);
@@ -13637,8 +13673,17 @@
 				saveToken: saveWebPeerToken
 			});
 		}
-		function promptForPairing(origin, message) {
+		function promptForPairing(origin, message, serverId) {
 			stopAutoReconnect(true);
+			if (serverId) {
+				computerStatus.set(serverId, {
+					text: message,
+					tone: "danger",
+					action: "pair",
+					origin
+				});
+				renderSavedServers();
+			}
 			setTab("connect");
 			input.value = editableOrigin(origin);
 			updateInputAffordances();
@@ -13648,6 +13693,15 @@
 		function reportUnreachable(origin, context = {}) {
 			const exactSaved = findExactSavedServerForOrigin(origin, context.serverId);
 			const isVerifiedPaired = Boolean(exactSaved && (exactSaved.paired || exactSaved.targetHomeId) && isServerOriginVerified(exactSaved, origin));
+			const message = context.reason === "unverified_handshake_proof" ? unverifiedHandshakeProofMessageFor(origin, exactSaved?.label ?? context.label) : unreachableMessageFor(origin);
+			const cardServerId = exactSaved?.id ?? context.serverId;
+			if (cardServerId) computerStatus.set(cardServerId, {
+				text: message,
+				tone: "danger",
+				action: "retry",
+				origin
+			});
+			const stayOnComputers = Boolean(context.keepTab && !views.computers.hidden);
 			if (isVerifiedPaired && exactSaved) {
 				const sameBinding = unreachablePairedRecovery && unreachablePairedRecovery.origin === origin && unreachablePairedRecovery.serverId === exactSaved.id;
 				unreachablePairedRecovery = {
@@ -13659,12 +13713,19 @@
 					grantId: exactSaved.grantId ?? context.grantId,
 					server: exactSaved
 				};
+				computersTabRecovery = stayOnComputers;
 				if (!sameBinding) autoReconnectAttempt = 0;
 			} else stopAutoReconnect(true);
+			if (stayOnComputers) {
+				renderSavedServers();
+				if (isVerifiedPaired) scheduleAutoReconnect();
+				return;
+			}
 			setTab("connect");
 			if (input.value.trim() === "" || isVerifiedPaired) input.value = editableOrigin(origin);
 			updateInputAffordances();
-			showProblem(context.reason === "unverified_handshake_proof" ? unverifiedHandshakeProofMessageFor(origin, exactSaved?.label ?? context.label) : unreachableMessageFor(origin));
+			showProblem(message);
+			renderSavedServers();
 			if (isVerifiedPaired) scheduleAutoReconnect();
 		}
 		async function openServer(origin, entry, options = {}) {
@@ -13681,121 +13742,148 @@
 			const isStaleOpen = () => {
 				if (callOpenEpoch !== openFlightEpoch || openFlightOpId !== callOpId || abortController.signal.aborted) return true;
 				if (options.fromAutoRecovery) {
-					if (typeof options.expectedAutoEpoch === "number" && options.expectedAutoEpoch !== autoReconnectEpoch || !unreachablePairedRecovery || unreachablePairedRecovery.origin !== origin || targetServerId && unreachablePairedRecovery.serverId !== targetServerId || options.expectedRecovery && unreachablePairedRecovery !== options.expectedRecovery || views.connect.hidden) return true;
+					if (typeof options.expectedAutoEpoch === "number" && options.expectedAutoEpoch !== autoReconnectEpoch || !unreachablePairedRecovery || unreachablePairedRecovery.origin !== origin || targetServerId && unreachablePairedRecovery.serverId !== targetServerId || options.expectedRecovery && unreachablePairedRecovery !== options.expectedRecovery || !canRunAutoReconnectInCurrentView()) return true;
 				}
 				return false;
 			};
-			button.disabled = true;
-			button.textContent = copy.opening;
-			const resolved = await resolveVerifiedServerOpen(window.localStorage, {
-				...options,
-				origin,
-				entry,
-				probe: probeServer,
-				signal: abortController.signal,
-				isStale: isStaleOpen,
-				requireMutualProof: isPairedTarget && isNativeShell(),
-				getToken: isNativeShell() ? void 0 : readWebPeerToken
-			});
-			if (isStaleOpen()) return;
-			if (!resolved.ok) {
-				if (resolved.stale || resolved.reason === "aborted") return;
-				const failedOrigin = resolved.server?.origin ?? origin;
-				button.disabled = false;
-				renderSavedServers();
-				if (resolved.reason === "identity_mismatch") promptForPairing(failedOrigin, identityMismatchMessageFor(failedOrigin, resolved.server?.label ?? options.label));
-				else if (resolved.reason === "pairing_revoked") promptForPairing(failedOrigin, pairingRevokedMessageFor(failedOrigin, resolved.server?.label ?? options.label));
-				else if (resolved.reason === "pairing_required") promptForPairing(failedOrigin, pairingRequiredMessageFor(failedOrigin, resolved.server?.label ?? options.label));
-				else {
-					input.value = editableOrigin(failedOrigin);
-					reportUnreachable(failedOrigin, {
-						serverId: resolved.server?.id ?? targetServerId,
-						label: resolved.server?.label ?? options.label,
-						targetHomeId: resolved.server?.targetHomeId ?? options.targetHomeId,
-						targetHostId: resolved.server?.targetHostId ?? options.targetHostId,
-						grantId: resolved.server?.grantId ?? options.grantId,
-						reason: resolved.reason
-					});
-				}
-				return;
-			}
-			const targetOrigin = resolved.origin;
-			const serverId = resolved.serverId;
-			if (isStaleOpen()) return;
+			let openSucceeded = false;
+			setOpenBusy(true, copy.opening);
 			try {
-				window.name = "";
-			} catch {}
-			if (isNativeShell()) try {
-				const openPayload = {
-					opId: callOpId,
-					origin: targetOrigin,
-					entry: resolved.finalEntry,
-					serverId: isPairedTarget ? serverId ?? void 0 : void 0,
-					grantId: isPairedTarget ? resolved.server?.grantId ?? options.grantId ?? void 0 : void 0,
-					targetHomeId: options.targetHomeId ?? void 0,
-					targetHostId: options.targetHostId ?? void 0
-				};
-				const resolvedFp = options.fingerprint ?? getServerFingerprint(resolved.server, targetOrigin) ?? getServerFingerprint(resolved.server, origin);
-				if (resolvedFp) openPayload["fingerprint"] = resolvedFp;
-				const res = await win.Capacitor.nativePromise("KikiShell", "open", openPayload);
-				if (isStaleOpen() || res?.["reason"] === "aborted") return;
-				if (!res || res["ok"] === false) {
-					if (openFlightOpId === callOpId) openFlightOpId = null;
-					button.disabled = false;
+				const resolved = await resolveVerifiedServerOpen(window.localStorage, {
+					...options,
+					origin,
+					entry,
+					probe: probeServer,
+					signal: abortController.signal,
+					isStale: isStaleOpen,
+					requireMutualProof: isPairedTarget && isNativeShell(),
+					getToken: isNativeShell() ? void 0 : readWebPeerToken
+				});
+				if (isStaleOpen()) return;
+				if (!resolved.ok) {
+					if (resolved.stale || resolved.reason === "aborted") return;
+					const failedOrigin = resolved.server?.origin ?? origin;
+					const failedServerId = resolved.server?.id ?? targetServerId;
+					setOpenBusy(false);
 					renderSavedServers();
-					if (res?.["reason"] === "identity_mismatch" && targetServerId) {
-						const rollback = verifySavedServerOrigin(window.localStorage, targetServerId, targetOrigin, {
-							ok: true,
-							targetHomeId: typeof res["targetHomeId"] === "string" ? res["targetHomeId"] : void 0
+					if (resolved.reason === "identity_mismatch") promptForPairing(failedOrigin, identityMismatchMessageFor(failedOrigin, resolved.server?.label ?? options.label), failedServerId);
+					else if (resolved.reason === "pairing_revoked") promptForPairing(failedOrigin, pairingRevokedMessageFor(failedOrigin, resolved.server?.label ?? options.label), failedServerId);
+					else if (resolved.reason === "pairing_required") promptForPairing(failedOrigin, pairingRequiredMessageFor(failedOrigin, resolved.server?.label ?? options.label), failedServerId);
+					else {
+						if (!options.fromComputersTab) input.value = editableOrigin(failedOrigin);
+						reportUnreachable(failedOrigin, {
+							serverId: failedServerId,
+							label: resolved.server?.label ?? options.label,
+							targetHomeId: resolved.server?.targetHomeId ?? options.targetHomeId,
+							targetHostId: resolved.server?.targetHostId ?? options.targetHostId,
+							grantId: resolved.server?.grantId ?? options.grantId,
+							reason: resolved.reason,
+							keepTab: options.fromComputersTab
 						});
+					}
+					return;
+				}
+				const targetOrigin = resolved.origin;
+				const serverId = resolved.serverId;
+				if (isStaleOpen()) return;
+				try {
+					window.name = "";
+				} catch {}
+				if (isNativeShell()) try {
+					const openPayload = {
+						opId: callOpId,
+						origin: targetOrigin,
+						entry: resolved.finalEntry,
+						serverId: isPairedTarget ? serverId ?? void 0 : void 0,
+						grantId: isPairedTarget ? resolved.server?.grantId ?? options.grantId ?? void 0 : void 0,
+						targetHomeId: options.targetHomeId ?? void 0,
+						targetHostId: options.targetHostId ?? void 0
+					};
+					const resolvedFp = options.fingerprint ?? getServerFingerprint(resolved.server, targetOrigin) ?? getServerFingerprint(resolved.server, origin);
+					if (resolvedFp) openPayload["fingerprint"] = resolvedFp;
+					const res = await win.Capacitor.nativePromise("KikiShell", "open", openPayload);
+					if (isStaleOpen() || res?.["reason"] === "aborted") return;
+					if (!res || res["ok"] === false) {
+						if (openFlightOpId === callOpId) openFlightOpId = null;
+						setOpenBusy(false);
 						renderSavedServers();
-						promptForPairing(targetOrigin, identityMismatchMessageFor(targetOrigin, rollback.server?.label ?? options.label));
-					} else if (res?.["reason"] === "pairing_revoked") promptForPairing(targetOrigin, pairingRevokedMessageFor(targetOrigin, resolved.server?.label ?? options.label));
-					else if (res?.["reason"] === "pairing_required") promptForPairing(targetOrigin, pairingRequiredMessageFor(targetOrigin, resolved.server?.label ?? options.label));
-					else reportUnreachable(targetOrigin, {
+						const failedServerId = resolved.server?.id ?? serverId ?? targetServerId;
+						if (res?.["reason"] === "identity_mismatch" && targetServerId) {
+							const rollback = verifySavedServerOrigin(window.localStorage, targetServerId, targetOrigin, {
+								ok: true,
+								targetHomeId: typeof res["targetHomeId"] === "string" ? res["targetHomeId"] : void 0
+							});
+							renderSavedServers();
+							promptForPairing(targetOrigin, identityMismatchMessageFor(targetOrigin, rollback.server?.label ?? options.label), failedServerId);
+						} else if (res?.["reason"] === "pairing_revoked") promptForPairing(targetOrigin, pairingRevokedMessageFor(targetOrigin, resolved.server?.label ?? options.label), failedServerId);
+						else if (res?.["reason"] === "pairing_required") promptForPairing(targetOrigin, pairingRequiredMessageFor(targetOrigin, resolved.server?.label ?? options.label), failedServerId);
+						else reportUnreachable(targetOrigin, {
+							serverId: failedServerId,
+							label: resolved.server?.label ?? options.label,
+							targetHomeId: resolved.server?.targetHomeId ?? options.targetHomeId,
+							targetHostId: resolved.server?.targetHostId ?? options.targetHostId,
+							grantId: resolved.server?.grantId ?? options.grantId,
+							reason: typeof res?.["reason"] === "string" ? res["reason"] : void 0,
+							keepTab: options.fromComputersTab
+						});
+						return;
+					}
+					if (openFlightOpId === callOpId) openFlightOpId = null;
+					const okServerId = resolved.server?.id ?? serverId ?? targetServerId;
+					if (okServerId) computerStatus.delete(okServerId);
+					openSucceeded = true;
+					stopAutoReconnect(true);
+					return;
+				} catch {
+					if (isStaleOpen()) return;
+					if (openFlightOpId === callOpId) openFlightOpId = null;
+					setOpenBusy(false);
+					renderSavedServers();
+					reportUnreachable(targetOrigin, {
 						serverId: resolved.server?.id ?? serverId ?? targetServerId,
 						label: resolved.server?.label ?? options.label,
 						targetHomeId: resolved.server?.targetHomeId ?? options.targetHomeId,
 						targetHostId: resolved.server?.targetHostId ?? options.targetHostId,
 						grantId: resolved.server?.grantId ?? options.grantId,
-						reason: typeof res?.["reason"] === "string" ? res["reason"] : void 0
+						keepTab: options.fromComputersTab
 					});
 					return;
 				}
-				if (openFlightOpId === callOpId) openFlightOpId = null;
-				stopAutoReconnect(true);
-				return;
-			} catch {
+				if (isPairedTarget || resolved.sessionToken) {
+					setOpenBusy(false);
+					renderSavedServers();
+					reportUnreachable(targetOrigin, {
+						serverId: resolved.server?.id ?? serverId ?? targetServerId,
+						label: resolved.server?.label ?? options.label,
+						targetHomeId: resolved.server?.targetHomeId ?? options.targetHomeId,
+						targetHostId: resolved.server?.targetHostId ?? options.targetHostId,
+						grantId: resolved.server?.grantId ?? options.grantId,
+						keepTab: options.fromComputersTab
+					});
+					return;
+				}
 				if (isStaleOpen()) return;
+				const okServerId = resolved.server?.id ?? serverId ?? targetServerId;
+				if (okServerId) computerStatus.delete(okServerId);
+				openSucceeded = true;
+				stopAutoReconnect(true);
+				window.location.assign(stripTokenFromEntry(targetOrigin, resolved.finalEntry));
+			} catch {
+				if (!isStaleOpen()) reportUnreachable(origin, {
+					serverId: targetServerId,
+					label: options.label,
+					targetHomeId: options.targetHomeId,
+					targetHostId: options.targetHostId,
+					grantId: options.grantId,
+					keepTab: options.fromComputersTab
+				});
+			} finally {
+				if (openFlightAbortController === abortController) openFlightAbortController = null;
 				if (openFlightOpId === callOpId) openFlightOpId = null;
-				button.disabled = false;
-				renderSavedServers();
-				reportUnreachable(targetOrigin, {
-					serverId: resolved.server?.id ?? serverId ?? targetServerId,
-					label: resolved.server?.label ?? options.label,
-					targetHomeId: resolved.server?.targetHomeId ?? options.targetHomeId,
-					targetHostId: resolved.server?.targetHostId ?? options.targetHostId,
-					grantId: resolved.server?.grantId ?? options.grantId
-				});
-				return;
+				if (!openSucceeded && callOpenEpoch === openFlightEpoch) setOpenBusy(false);
 			}
-			if (isPairedTarget || resolved.sessionToken) {
-				button.disabled = false;
-				renderSavedServers();
-				reportUnreachable(targetOrigin, {
-					serverId: resolved.server?.id ?? serverId ?? targetServerId,
-					label: resolved.server?.label ?? options.label,
-					targetHomeId: resolved.server?.targetHomeId ?? options.targetHomeId,
-					targetHostId: resolved.server?.targetHostId ?? options.targetHostId,
-					grantId: resolved.server?.grantId ?? options.grantId
-				});
-				return;
-			}
-			if (isStaleOpen()) return;
-			stopAutoReconnect(true);
-			window.location.assign(stripTokenFromEntry(targetOrigin, resolved.finalEntry));
 		}
-		function openSavedServer(server) {
+		function openSavedServer(server, options = {}) {
 			return openServer(server.origin, `${server.origin}/`, {
 				serverId: server.id,
 				label: server.label,
@@ -13803,18 +13891,24 @@
 				targetHomeId: server.targetHomeId,
 				targetHostId: server.targetHostId,
 				grantId: server.grantId,
-				fingerprint: getServerFingerprint(server, server.origin)
+				fingerprint: getServerFingerprint(server, server.origin),
+				fromComputersTab: options.fromComputersTab
 			});
 		}
 		async function submitConnect(parsed) {
 			showProblem("");
 			if (parsed.kind === "pair") {
-				button.disabled = true;
-				button.textContent = copy.pairing;
-				const claim = await claimPairing(parsed.endpoint ?? parsed.origin, parsed.code, parsed.fingerprint);
+				setOpenBusy(true, copy.pairing);
+				let claim;
+				try {
+					claim = await claimPairing(parsed.endpoint ?? parsed.origin, parsed.code, parsed.fingerprint);
+				} catch {
+					setOpenBusy(false);
+					showProblem(unreachableMessageFor(parsed.origin));
+					return;
+				}
 				if (!claim.ok) {
-					button.disabled = false;
-					updateInputAffordances();
+					setOpenBusy(false);
 					showProblem(claim.reason === "rejected" ? copy.pairRejected : unreachableMessageFor(parsed.origin));
 					return;
 				}
@@ -14135,6 +14229,7 @@
 			removeSavedServer(window.localStorage, server.id);
 			if (managingServerId === server.id) managingServerId = null;
 			addressStatus.delete(server.id);
+			computerStatus.delete(server.id);
 			renderSavedServers();
 			if (isNativeShell()) try {
 				win.Capacitor?.nativePromise("KikiShell", "forgetServer", {
@@ -14169,8 +14264,9 @@
 				(async () => {
 					openBtn.disabled = true;
 					openBtn.setAttribute("aria-busy", "true");
+					computerStatus.delete(server.id);
 					try {
-						await openSavedServer(server);
+						await openSavedServer(server, { fromComputersTab: true });
 					} finally {
 						openBtn.disabled = false;
 						openBtn.removeAttribute("aria-busy");
@@ -14189,6 +14285,51 @@
 			});
 			mainRow.append(openBtn, manageToggle);
 			card.append(mainRow);
+			const cardStatus = computerStatus.get(server.id);
+			if (cardStatus) {
+				const statusBox = el("div", "saved-card-status");
+				statusBox.setAttribute("role", "alert");
+				statusBox.dataset["tone"] = cardStatus.tone;
+				statusBox.append(el("p", "saved-card-status-text", cardStatus.text));
+				const statusActions = el("div", "saved-card-status-actions");
+				if (cardStatus.action === "pair") {
+					const repairBtn = el("button", "mini-button saved-card-retry", copy.repair);
+					repairBtn.type = "button";
+					repairBtn.addEventListener("click", () => {
+						promptForPairing(cardStatus.origin, cardStatus.text, server.id);
+					});
+					statusActions.append(repairBtn);
+				} else {
+					const retryBtn = el("button", "mini-button saved-card-retry", copy.retry);
+					retryBtn.type = "button";
+					retryBtn.addEventListener("click", () => {
+						(async () => {
+							retryBtn.disabled = true;
+							retryBtn.textContent = copy.opening;
+							try {
+								await openSavedServer(server, { fromComputersTab: true });
+							} finally {
+								retryBtn.disabled = false;
+								retryBtn.textContent = copy.retry;
+							}
+						})();
+					});
+					statusActions.append(retryBtn);
+				}
+				const editBtn = el("button", "mini-button saved-card-edit", copy.editConnection);
+				editBtn.type = "button";
+				editBtn.addEventListener("click", () => {
+					stopAutoReconnect(true);
+					setTab("connect", { animate: true });
+					input.value = editableOrigin(server.origin);
+					setManualExpanded(true);
+					updateInputAffordances();
+					input.focus();
+				});
+				statusActions.append(editBtn);
+				statusBox.append(statusActions);
+				card.append(statusBox);
+			}
 			if (isManaging) {
 				const manageRow = el("div", "saved-manage");
 				const addressesBtn = el("button", "text-button", copy.manageAddresses);
@@ -14228,15 +14369,21 @@
 			const original = trigger.textContent;
 			trigger.textContent = copy.testing;
 			setAddressStatus(server.id, "");
-			const probe = await probeServer(parsed.origin, isServerOriginVerified(server, parsed.origin) ? {
-				serverId: server.id,
-				targetHomeId: server.targetHomeId,
-				targetHostId: server.targetHostId,
-				grantId: server.grantId,
-				fingerprint: getServerFingerprint(server, parsed.origin)
-			} : { fingerprint: getServerFingerprint(server, parsed.origin) });
-			trigger.disabled = false;
-			trigger.textContent = original;
+			let probe;
+			try {
+				probe = await probeServer(parsed.origin, isServerOriginVerified(server, parsed.origin) ? {
+					serverId: server.id,
+					targetHomeId: server.targetHomeId,
+					targetHostId: server.targetHostId,
+					grantId: server.grantId,
+					fingerprint: getServerFingerprint(server, parsed.origin)
+				} : { fingerprint: getServerFingerprint(server, parsed.origin) });
+			} catch {
+				probe = { ok: false };
+			} finally {
+				trigger.disabled = false;
+				trigger.textContent = original;
+			}
 			if (server.paired && server.targetHomeId && probe.targetHomeId && probe.targetHomeId !== server.targetHomeId) {
 				setAddressStatus(server.id, identityMismatchMessageFor(parsed.origin, server.label), "danger");
 				return;
@@ -14407,6 +14554,10 @@
 			qrPhotoInput.value = "";
 			handlePickedQrPhoto(file);
 		});
+		cancelOpenBtn?.addEventListener("click", () => {
+			stopAutoReconnect(false);
+			updateInputAffordances();
+		});
 		switchComputerBtn?.addEventListener("click", () => {
 			stopAutoReconnect(true);
 			showProblem("");
@@ -14481,13 +14632,19 @@
 			testButton.disabled = true;
 			testButton.textContent = copy.testing;
 			const exactSaved = readSavedServers(window.localStorage).find((s) => s.origin === target.origin || s.origins?.includes(target.origin)) ?? null;
-			const probe = await probeServer(target.origin, {
-				serverId: exactSaved?.id,
-				grantId: exactSaved?.grantId,
-				fingerprint: getServerFingerprint(exactSaved, target.origin)
-			});
-			testButton.disabled = false;
-			testButton.textContent = copy.testAddress;
+			let probe;
+			try {
+				probe = await probeServer(target.origin, {
+					serverId: exactSaved?.id,
+					grantId: exactSaved?.grantId,
+					fingerprint: getServerFingerprint(exactSaved, target.origin)
+				});
+			} catch {
+				probe = { ok: false };
+			} finally {
+				testButton.disabled = false;
+				testButton.textContent = copy.testAddress;
+			}
 			if (probe.ok) if (exactSaved?.paired && isNativeShell() && probe.mutualProofVerified === false) showProbeResult(unverifiedHandshakeProofMessageFor(target.origin, exactSaved.label), "danger");
 			else showProbeResult(probeOkMessageFor(target.origin), "ok");
 			else if (probe.reason === "pairing_revoked" || probe.authRejected === true) showProbeResult(pairingRevokedMessageFor(target.origin, exactSaved?.label), "danger");
@@ -14568,8 +14725,7 @@
 		}
 		function showUnreachable(reason = "unreachable") {
 			const attempted = savedOrigin();
-			button.disabled = false;
-			updateInputAffordances();
+			setOpenBusy(false);
 			if (attempted === null) {
 				setManualExpanded(true);
 				setTab("connect");
@@ -14580,8 +14736,7 @@
 		}
 		function showPairingRecovery(kind) {
 			const attempted = savedOrigin();
-			button.disabled = false;
-			updateInputAffordances();
+			setOpenBusy(false);
 			if (attempted === null) {
 				setManualExpanded(true);
 				setTab("connect");
@@ -14589,7 +14744,7 @@
 				return;
 			}
 			const saved = findSavedServerByOrigin(attempted);
-			promptForPairing(attempted, kind === "identity_mismatch" ? identityMismatchMessageFor(attempted, saved?.label) : kind === "pairing_required" ? pairingRequiredMessageFor(attempted, saved?.label) : pairingRevokedMessageFor(attempted, saved?.label));
+			promptForPairing(attempted, kind === "identity_mismatch" ? identityMismatchMessageFor(attempted, saved?.label) : kind === "pairing_required" ? pairingRequiredMessageFor(attempted, saved?.label) : pairingRevokedMessageFor(attempted, saved?.label), saved?.id);
 		}
 		async function consumePendingPairIfAny() {
 			if (isNativeShell()) try {

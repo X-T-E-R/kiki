@@ -2,6 +2,9 @@ package dev.kiki.android.host.ui
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.Activity
+import android.app.DownloadManager
+import android.content.ContentValues
 import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Color
@@ -10,12 +13,18 @@ import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.MediaStore
+import android.util.Base64
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.CookieManager
+import android.webkit.URLUtil
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
@@ -24,11 +33,14 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsAnimationCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.webkit.ScriptHandler
@@ -47,6 +59,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import java.io.File
 
 class KikiWebActivity : ComponentActivity() {
 
@@ -56,21 +69,53 @@ class KikiWebActivity : ComponentActivity() {
     private lateinit var splashContainer: LinearLayout
     private lateinit var splashTitle: TextView
     private lateinit var splashHint: TextView
+    private lateinit var splashRetryBtn: TextView
     private var bridgeHandler: AndroidBridgeHandler? = null
 
     private var activeScriptHandler: ScriptHandler? = null
     private var loadedOriginAndToken: Pair<String, String>? = null
     private var pendingFileChooserCallback: ValueCallback<Array<Uri>>? = null
+    private var pendingCameraOutputUri: Uri? = null
+    private var pendingCameraOutputFile: File? = null
     private var lastCssInsetsScript: String = ""
+    private var lastImeCssPx: Int = -1
+    private var lastSysBarsBottomPx: Int = 0
     private var pageReadyForEvents: Boolean = false
     private val pendingShareBatches = ArrayDeque<ShareIntakeBatch>()
 
-    private val openDocumentsLauncher = registerForActivityResult(
-        ActivityResultContracts.OpenMultipleDocuments(),
-    ) { uris ->
+    private val fileChooserLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
         val cb = pendingFileChooserCallback
         pendingFileChooserCallback = null
-        cb?.onReceiveValue(uris.toTypedArray())
+        val cameraUri = pendingCameraOutputUri
+        val cameraFile = pendingCameraOutputFile
+        pendingCameraOutputUri = null
+        pendingCameraOutputFile = null
+
+        if (result.resultCode != Activity.RESULT_OK) {
+            runCatching { cameraFile?.delete() }
+            cb?.onReceiveValue(null)
+            return@registerForActivityResult
+        }
+
+        val data = result.data
+        val uris = buildList<Uri> {
+            val clip = data?.clipData
+            if (clip != null && clip.itemCount > 0) {
+                for (i in 0 until clip.itemCount) {
+                    clip.getItemAt(i)?.uri?.let { add(it) }
+                }
+            } else if (data?.data != null) {
+                add(data.data!!)
+            } else if (cameraUri != null && cameraFile != null && cameraFile.exists() && cameraFile.length() > 0L) {
+                add(cameraUri)
+            }
+        }
+        if (uris.isEmpty() || (cameraUri != null && !uris.contains(cameraUri))) {
+            runCatching { cameraFile?.delete() }
+        }
+        cb?.onReceiveValue(if (uris.isEmpty()) null else uris.toTypedArray())
     }
 
     private val requestNotifLauncher = registerForActivityResult(
@@ -138,6 +183,9 @@ class KikiWebActivity : ComponentActivity() {
         activeScriptHandler = null
         pendingFileChooserCallback?.onReceiveValue(null)
         pendingFileChooserCallback = null
+        pendingCameraOutputUri = null
+        runCatching { pendingCameraOutputFile?.delete() }
+        pendingCameraOutputFile = null
         pageReadyForEvents = false
         webView?.let { wv ->
             wv.stopLoading()
@@ -243,6 +291,31 @@ class KikiWebActivity : ComponentActivity() {
             }
         }
 
+        splashRetryBtn = TextView(this).apply {
+            text = if (zh) "重试启动" else "Retry"
+            setTextColor(tokens.paper)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            setPadding(dp(20), dp(10), dp(20), dp(10))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                topMargin = dp(20)
+            }
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(18).toFloat()
+                setColor(tokens.ink)
+            }
+            visibility = View.GONE
+            setOnClickListener {
+                loadedOriginAndToken = null
+                splashHint.text = if (zh) "正在重启本机内核…" else "Restarting local kernel…"
+                visibility = View.GONE
+                KikiRuntimeService.restartKernel(applicationContext)
+            }
+        }
+
         val nativeSettingsBtn = TextView(this).apply {
             text = if (zh) "设备设置" else "Phone settings"
             setTextColor(tokens.inkSoft)
@@ -252,7 +325,7 @@ class KikiWebActivity : ComponentActivity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             ).apply {
-                topMargin = dp(28)
+                topMargin = dp(16)
             }
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
@@ -268,6 +341,7 @@ class KikiWebActivity : ComponentActivity() {
         splashContainer.addView(progress)
         splashContainer.addView(splashTitle)
         splashContainer.addView(splashHint)
+        splashContainer.addView(splashRetryBtn)
         splashContainer.addView(nativeSettingsBtn)
 
         rootFrame.addView(splashContainer)
@@ -330,6 +404,7 @@ class KikiWebActivity : ComponentActivity() {
                 injectRuntimeHelpersAndTokenFallback(view, ready)
                 applyLatestCssInsets()
                 splashContainer.visibility = View.GONE
+                splashRetryBtn.visibility = View.GONE
                 view.visibility = View.VISIBLE
                 pageReadyForEvents = true
                 pushPermissionSnapshot()
@@ -342,10 +417,35 @@ class KikiWebActivity : ComponentActivity() {
                 if (!url.startsWith(ready.origin)) return
                 applyLatestCssInsets()
                 splashContainer.visibility = View.GONE
+                splashRetryBtn.visibility = View.GONE
                 view.visibility = View.VISIBLE
                 pageReadyForEvents = true
                 flushPendingShareBatches()
             }
+
+            override fun onReceivedError(
+                view: WebView,
+                request: WebResourceRequest,
+                error: WebResourceError,
+            ) {
+                super.onReceivedError(view, request, error)
+                if (!request.isForMainFrame) return
+                val zh = HostStrings.isChinese(this@KikiWebActivity)
+                loadedOriginAndToken = null
+                pageReadyForEvents = false
+                splashHint.text = if (zh) {
+                    "本机 Kiki 服务未响应，请稍候或点按重试。"
+                } else {
+                    "Local Kiki service is not responding yet. Wait a moment or tap Retry."
+                }
+                splashRetryBtn.visibility = View.VISIBLE
+                splashContainer.visibility = View.VISIBLE
+                view.visibility = View.INVISIBLE
+            }
+        }
+
+        wv.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
+            handleWebDownload(wv, url, userAgent, contentDisposition, mimeType)
         }
 
         wv.webChromeClient = object : WebChromeClient() {
@@ -356,17 +456,45 @@ class KikiWebActivity : ComponentActivity() {
             ): Boolean {
                 pendingFileChooserCallback?.onReceiveValue(null)
                 pendingFileChooserCallback = filePathCallback
-                val accept = fileChooserParams.acceptTypes
-                    ?.map { it.trim() }
-                    ?.filter { it.isNotEmpty() && it.contains("/") }
-                    ?.toTypedArray()
-                    ?.takeIf { it.isNotEmpty() }
-                    ?: arrayOf("*/*")
+                pendingCameraOutputUri = null
+                runCatching { pendingCameraOutputFile?.delete() }
+                pendingCameraOutputFile = null
+
+                val mimeTypes = normalizeAcceptMimeTypes(fileChooserParams.acceptTypes)
+                val allowImage = acceptsImages(mimeTypes)
+                val captureEnabled = fileChooserParams.isCaptureEnabled
+                val cameraIntent = if (allowImage) createCameraCaptureIntent() else null
+
+                val launchIntent: Intent = if (shouldLaunchCameraDirectly(captureEnabled, mimeTypes) && cameraIntent != null) {
+                    cameraIntent
+                } else {
+                    val docIntent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = if (mimeTypes.size == 1) mimeTypes[0] else "*/*"
+                        if (mimeTypes.size > 1) {
+                            putExtra(Intent.EXTRA_MIME_TYPES, mimeTypes)
+                        }
+                        if (fileChooserParams.mode == FileChooserParams.MODE_OPEN_MULTIPLE) {
+                            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                        }
+                    }
+                    if (cameraIntent != null) {
+                        Intent.createChooser(docIntent, null).apply {
+                            putExtra(Intent.EXTRA_INITIAL_INTENTS, arrayOf(cameraIntent))
+                        }
+                    } else {
+                        docIntent
+                    }
+                }
+
                 return runCatching {
-                    openDocumentsLauncher.launch(accept)
+                    fileChooserLauncher.launch(launchIntent)
                     true
                 }.getOrElse {
                     pendingFileChooserCallback = null
+                    pendingCameraOutputUri = null
+                    runCatching { pendingCameraOutputFile?.delete() }
+                    pendingCameraOutputFile = null
                     false
                 }
             }
@@ -384,8 +512,110 @@ class KikiWebActivity : ComponentActivity() {
                 }
             },
             onAppearanceChanged = ::applySystemBarsAppearance,
+            onSaveDownload = ::saveDownloadToDevice,
         )
         return wv
+    }
+
+    private fun createCameraCaptureIntent(): Intent? {
+        return runCatching {
+            val captureDir = File(cacheDir, "camera").apply { mkdirs() }
+            val photoFile = File.createTempFile("kiki_capture_", ".jpg", captureDir)
+            val uri = FileProvider.getUriForFile(this, "${packageName}.fileprovider", photoFile)
+            val intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
+                putExtra(MediaStore.EXTRA_OUTPUT, uri)
+                addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            if (intent.resolveActivity(packageManager) == null) {
+                runCatching { photoFile.delete() }
+                return null
+            }
+            pendingCameraOutputFile = photoFile
+            pendingCameraOutputUri = uri
+            intent
+        }.getOrNull()
+    }
+
+    private fun handleWebDownload(
+        wv: WebView,
+        url: String?,
+        userAgent: String?,
+        contentDisposition: String?,
+        mimeType: String?,
+    ) {
+        if (url.isNullOrBlank()) return
+        val effectiveMime = mimeType?.takeIf { it.isNotBlank() } ?: "application/octet-stream"
+        val guessed = sanitizeDownloadFilename(
+            URLUtil.guessFileName(url, contentDisposition, effectiveMime),
+            effectiveMime,
+        )
+        if (url.startsWith("blob:", ignoreCase = true) || url.startsWith("data:", ignoreCase = true)) {
+            wv.evaluateJavascript(buildBlobDownloadScript(url, guessed, effectiveMime), null)
+            return
+        }
+        val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return
+        val scheme = uri.scheme?.lowercase()
+        if (scheme != "http" && scheme != "https") return
+        val dm = getSystemService(DOWNLOAD_SERVICE) as? DownloadManager ?: return
+        runCatching {
+            val req = DownloadManager.Request(uri).apply {
+                setMimeType(effectiveMime)
+                val cookies = CookieManager.getInstance().getCookie(url)
+                if (!cookies.isNullOrBlank()) addRequestHeader("Cookie", cookies)
+                if (!userAgent.isNullOrBlank()) addRequestHeader("User-Agent", userAgent)
+                setTitle(guessed)
+                setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, guessed)
+            }
+            dm.enqueue(req)
+            val zh = HostStrings.isChinese(this)
+            Toast.makeText(
+                this,
+                if (zh) "开始下载 $guessed" else "Downloading $guessed",
+                Toast.LENGTH_SHORT,
+            ).show()
+        }
+    }
+
+    private fun saveDownloadToDevice(filename: String, mimeType: String, base64: String): Boolean {
+        val effectiveMime = mimeType.ifBlank { "application/octet-stream" }
+        val safeName = sanitizeDownloadFilename(filename, effectiveMime)
+        return runCatching {
+            val bytes = Base64.decode(base64, Base64.DEFAULT)
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, safeName)
+                put(MediaStore.MediaColumns.MIME_TYPE, effectiveMime)
+                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val resolver = contentResolver
+            val itemUri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: return false
+            try {
+                resolver.openOutputStream(itemUri)?.use { out ->
+                    out.write(bytes)
+                } ?: run {
+                    resolver.delete(itemUri, null, null)
+                    return false
+                }
+                val doneValues = ContentValues().apply {
+                    put(MediaStore.MediaColumns.IS_PENDING, 0)
+                }
+                resolver.update(itemUri, doneValues, null, null)
+            } catch (t: Throwable) {
+                resolver.delete(itemUri, null, null)
+                throw t
+            }
+            val zh = HostStrings.isChinese(this)
+            runOnUiThread {
+                Toast.makeText(
+                    this,
+                    if (zh) "已保存到下载：$safeName" else "Saved to Downloads: $safeName",
+                    Toast.LENGTH_SHORT,
+                ).show()
+            }
+            true
+        }.getOrDefault(false)
     }
 
     private fun setupInsetsForwarding() {
@@ -394,27 +624,50 @@ class KikiWebActivity : ComponentActivity() {
                 WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout(),
             )
             val ime = windowInsets.getInsets(WindowInsetsCompat.Type.ime())
+            lastSysBarsBottomPx = sysBars.bottom
             val density = resources.displayMetrics.density.coerceAtLeast(1f)
-
             val imeCssPx = ((ime.bottom - sysBars.bottom).coerceAtLeast(0) / density).toInt()
 
-            // The frame keeps the WebView clear of the system bars, cutout and
-            // keyboard, so the page never sits under any of them. The bar
-            // insets are therefore not published as `--kiki-safe-*`: the GUI
-            // pads by those variables (`--kiki-safe-top-inset`), and would add
-            // an empty band the height of each bar inside the WebView.
-            rootFrame.setPadding(sysBars.left, sysBars.top, sysBars.right, maxOf(sysBars.bottom, ime.bottom))
+            // The frame keeps the WebView clear of the system bars and display
+            // cutout (so `--kiki-safe-*` are omitted to avoid double bar bands).
+            // IME occlusion is forwarded solely via `--kiki-ime-height` (and
+            // WindowInsetsAnimationCompat) rather than mutating native bottom
+            // padding, preventing double-compensation and per-frame relayout.
+            rootFrame.setPadding(sysBars.left, sysBars.top, sysBars.right, sysBars.bottom)
 
-            lastCssInsetsScript = """
-                (function() {
-                  var r = document.documentElement;
-                  if (!r) return;
-                  r.style.setProperty('--kiki-ime-height', '${imeCssPx}px');
-                })();
-            """.trimIndent()
-            applyLatestCssInsets()
+            publishImeHeightCss(imeCssPx)
             WindowInsetsCompat.CONSUMED
         }
+
+        ViewCompat.setWindowInsetsAnimationCallback(
+            rootFrame,
+            object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_CONTINUE_ON_SUBTREE) {
+                override fun onProgress(
+                    insets: WindowInsetsCompat,
+                    runningAnimations: MutableList<WindowInsetsAnimationCompat>,
+                ): WindowInsetsCompat {
+                    val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+                    val sysBottom = insets.getInsets(
+                        WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout(),
+                    ).bottom.takeIf { it > 0 } ?: lastSysBarsBottomPx
+                    val density = resources.displayMetrics.density.coerceAtLeast(1f)
+                    val imeCssPx = ((ime.bottom - sysBottom).coerceAtLeast(0) / density).toInt()
+                    publishImeHeightCss(imeCssPx)
+                    return insets
+                }
+
+                override fun onEnd(animation: WindowInsetsAnimationCompat) {
+                    ViewCompat.requestApplyInsets(rootFrame)
+                }
+            },
+        )
+    }
+
+    private fun publishImeHeightCss(imeCssPx: Int) {
+        if (imeCssPx == lastImeCssPx && lastCssInsetsScript.isNotEmpty()) return
+        lastImeCssPx = imeCssPx
+        lastCssInsetsScript = buildImeHeightScript(imeCssPx)
+        applyLatestCssInsets()
     }
 
     private fun applyLatestCssInsets() {
@@ -430,10 +683,19 @@ class KikiWebActivity : ComponentActivity() {
             object : OnBackPressedCallback(true) {
                 override fun handleOnBackPressed() {
                     val wv = webView
-                    if (wv != null && wv.visibility == View.VISIBLE && wv.canGoBack()) {
-                        wv.goBack()
-                    } else {
+                    if (wv == null || wv.visibility != View.VISIBLE) {
                         moveTaskToBack(true)
+                        return
+                    }
+                    wv.evaluateJavascript(HOST_BACK_DISPATCH_SCRIPT) { result ->
+                        if (result == "false") {
+                            return@evaluateJavascript
+                        }
+                        if (wv.canGoBack()) {
+                            wv.goBack()
+                        } else {
+                            moveTaskToBack(true)
+                        }
                     }
                 }
             },
@@ -445,25 +707,38 @@ class KikiWebActivity : ComponentActivity() {
         val zh = HostStrings.isChinese(this)
         when (state) {
             is KernelState.Idle, is KernelState.Starting -> {
-                splashHint.text = if (zh) "正在启动本机内核" else "Starting local kernel"
+                splashHint.text = if (zh) "正在启动本机内核…" else "Starting local kernel…"
+                splashRetryBtn.visibility = View.GONE
             }
 
             is KernelState.BackingOff -> {
-                splashHint.text = if (zh) "正在重连内核" else "Reconnecting to kernel"
+                splashHint.text = if (zh) {
+                    "本机 Kiki 内核启动中（第 ${state.attempt} 次重试）…"
+                } else {
+                    "Reconnecting local kernel (attempt ${state.attempt})…"
+                }
+                splashRetryBtn.visibility = View.VISIBLE
                 splashContainer.visibility = View.VISIBLE
             }
 
             is KernelState.CircuitBroken -> {
-                splashHint.text = state.reason
+                splashHint.text = if (zh) {
+                    "本机 Kiki 服务未能启动：${state.reason}"
+                } else {
+                    "Local Kiki service failed to start: ${state.reason}"
+                }
+                splashRetryBtn.visibility = View.VISIBLE
                 splashContainer.visibility = View.VISIBLE
             }
 
             is KernelState.Stopped -> {
-                splashHint.text = if (zh) "内核已停止" else "Kernel stopped"
+                splashHint.text = if (zh) "本机内核已停止" else "Local kernel stopped"
+                splashRetryBtn.visibility = View.VISIBLE
                 splashContainer.visibility = View.VISIBLE
             }
 
             is KernelState.Ready -> {
+                splashRetryBtn.visibility = View.GONE
                 val pair = state.origin to state.localOwnerToken
                 if (loadedOriginAndToken != pair) {
                     loadedOriginAndToken = pair
@@ -545,8 +820,36 @@ class KikiWebActivity : ComponentActivity() {
                   readClipboard: function() { return callNative('readClipboard', {}); },
                   writeClipboard: function(text) { return callNative('writeClipboard', { text: String(text || '') }); },
                   share: function(payload) { return callNative('share', payload || {}); },
-                  takeShareIntake: function(id) { return callNative('takeShareIntake', { id: String(id || '') }); }
+                  takeShareIntake: function(id) { return callNative('takeShareIntake', { id: String(id || '') }); },
+                  saveDownload: function(payload) { return callNative('saveDownload', payload || {}); }
                 };
+              }
+              if (!window.__kikiBlobDownloadHookInstalled) {
+                window.__kikiBlobDownloadHookInstalled = true;
+                var pendingDownloads = new Map();
+                window.__kikiPendingBlobDownloads = pendingDownloads;
+                document.addEventListener('click', function(ev) {
+                  var target = ev.target;
+                  var anchor = target && typeof target.closest === 'function' ? target.closest('a[download]') : null;
+                  if (!anchor) return;
+                  var href = anchor.href || '';
+                  if (href.indexOf('blob:') === 0) {
+                    pendingDownloads.set(href, anchor.getAttribute('download') || '');
+                  }
+                }, true);
+                if (typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
+                  var origRevoke = URL.revokeObjectURL.bind(URL);
+                  URL.revokeObjectURL = function(url) {
+                    if (typeof url === 'string' && pendingDownloads.has(url)) {
+                      setTimeout(function() {
+                        pendingDownloads.delete(url);
+                        try { origRevoke(url); } catch (_) {}
+                      }, 5000);
+                      return;
+                    }
+                    return origRevoke(url);
+                  };
+                }
               }
               if (!window.__kikiAppearanceObserverInstalled && window.KikiAndroid && typeof window.KikiAndroid.postMessage === 'function') {
                 window.__kikiAppearanceObserverInstalled = true;
@@ -613,6 +916,81 @@ class KikiWebActivity : ComponentActivity() {
     }
 
     companion object {
+        const val HOST_BACK_DISPATCH_SCRIPT: String =
+            "(function(){try{return window.dispatchEvent(new CustomEvent('kiki:host-back',{cancelable:true}));}catch(_){return true;}})()"
+
+        fun buildImeHeightScript(imeCssPx: Int): String {
+            val safePx = imeCssPx.coerceAtLeast(0)
+            return "(function(){var r=document.documentElement;if(r)r.style.setProperty('--kiki-ime-height','${safePx}px');})();"
+        }
+
+        fun normalizeAcceptMimeTypes(acceptTypes: Array<out String?>?): Array<String> {
+            val cleaned = acceptTypes
+                .orEmpty()
+                .filterNotNull()
+                .flatMap { it.split(",") }
+                .map { it.trim() }
+                .filter { it.isNotEmpty() && it.contains("/") }
+                .distinct()
+            return if (cleaned.isEmpty()) arrayOf("*/*") else cleaned.toTypedArray()
+        }
+
+        fun acceptsImages(mimeTypes: Array<String>): Boolean =
+            mimeTypes.any { it.equals("*/*", ignoreCase = true) || it.startsWith("image/", ignoreCase = true) }
+
+        fun shouldLaunchCameraDirectly(isCaptureEnabled: Boolean, mimeTypes: Array<String>): Boolean =
+            isCaptureEnabled && acceptsImages(mimeTypes)
+
+        fun sanitizeDownloadFilename(rawName: String?, mimeType: String?): String {
+            val cleaned = (rawName ?: "")
+                .substringAfterLast('/')
+                .substringAfterLast('\\')
+                .replace(Regex("[\\r\\n\\t\\u0000<>:\"|?*]"), "_")
+                .trim()
+                .trim('.')
+            if (cleaned.isNotEmpty()) return cleaned
+            val ext = when {
+                mimeType?.contains("png", ignoreCase = true) == true -> "png"
+                mimeType?.contains("jpeg", ignoreCase = true) == true -> "jpg"
+                mimeType?.contains("json", ignoreCase = true) == true -> "json"
+                mimeType?.contains("markdown", ignoreCase = true) == true -> "md"
+                mimeType?.contains("pdf", ignoreCase = true) == true -> "pdf"
+                mimeType?.contains("text/", ignoreCase = true) == true -> "txt"
+                else -> "bin"
+            }
+            return "kiki-download.$ext"
+        }
+
+        fun buildBlobDownloadScript(url: String, fallbackFilename: String, mimeType: String): String {
+            val urlJson = JsonPrimitive(url).toString()
+            val nameJson = JsonPrimitive(fallbackFilename).toString()
+            val mimeJson = JsonPrimitive(mimeType).toString()
+            return """
+                (function() {
+                  var url = $urlJson;
+                  var fallbackName = $nameJson;
+                  var fallbackMime = $mimeJson;
+                  var map = window.__kikiPendingBlobDownloads;
+                  var pickedName = (map && typeof map.get === 'function' && map.get(url)) || fallbackName;
+                  fetch(url).then(function(r) { return r.blob(); }).then(function(blob) {
+                    var reader = new FileReader();
+                    reader.onloadend = function() {
+                      var res = typeof reader.result === 'string' ? reader.result : '';
+                      var comma = res.indexOf(',');
+                      var b64 = comma >= 0 ? res.slice(comma + 1) : '';
+                      if (!b64 || !window.kikiAndroid || typeof window.kikiAndroid.saveDownload !== 'function') return;
+                      window.kikiAndroid.saveDownload({
+                        filename: pickedName,
+                        mimeType: blob.type || fallbackMime,
+                        base64: b64
+                      });
+                    };
+                    reader.readAsDataURL(blob);
+                  }).catch(function() {});
+                })();
+            """.trimIndent()
+        }
+
         fun buildDocumentStartScript(origin: String, token: String): String {
             val originJson = JsonPrimitive(origin).toString()
             val tokenJson = JsonPrimitive(token).toString()

@@ -42,6 +42,7 @@ class AndroidBridgeHandler(
     private val host: KikiHostEnvironment,
     private val requestNotificationsPermission: () -> Unit,
     private val onAppearanceChanged: (Boolean) -> Unit = {},
+    private val onSaveDownload: (filename: String, mimeType: String, base64: String) -> Boolean = { _, _, _ -> false },
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val json = Json { ignoreUnknownKeys = true }
@@ -190,6 +191,7 @@ class AndroidBridgeHandler(
             }
         },
         takeShareIntake = { intakeId -> host.shareIntakeStore.takeBatchItems(intakeId) },
+        saveDownload = onSaveDownload,
     )
 
     @SuppressLint("BatteryLife")
@@ -257,6 +259,7 @@ class AndroidBridgeHandler(
 
     companion object {
         const val BRIDGE_OBJECT_NAME = "KikiAndroid"
+        const val MAX_DOWNLOAD_BASE64_CHARS = 68_000_000
 
         internal fun dispatchMethod(
             method: String,
@@ -271,6 +274,7 @@ class AndroidBridgeHandler(
             writeClipboard: (String) -> Unit,
             shareText: (String) -> Unit,
             takeShareIntake: (String) -> List<SharedIntakeItem> = { emptyList() },
+            saveDownload: (filename: String, mimeType: String, base64: String) -> Boolean = { _, _, _ -> false },
         ): JsonElement = when (method) {
             "capabilities", "getPermissions" -> capabilitiesProvider()
 
@@ -332,6 +336,20 @@ class AndroidBridgeHandler(
                             item.text?.let { put("text", it) }
                         })
                     }
+                }
+            }
+
+            "saveDownload" -> {
+                val filename = params["filename"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val mimeType = params["mimeType"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val base64 = params["base64"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                require(base64.isNotEmpty() && base64.length <= MAX_DOWNLOAD_BASE64_CHARS) {
+                    "invalid_download_payload"
+                }
+                val saved = saveDownload(filename, mimeType, base64)
+                buildJsonObject {
+                    put("ok", saved)
+                    put("filename", filename)
                 }
             }
 

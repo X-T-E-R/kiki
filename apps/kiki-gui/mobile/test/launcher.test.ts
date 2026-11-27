@@ -546,6 +546,166 @@ describe('compiled mobile launcher RFC vectors and jsQR fallback', () => {
       server.close();
     }
   });
+
+  it('surfaces probe failure on the active Computers tab card, never wedges #open in Opening, supports cancel, and reprobes on online/visibilitychange (P1-10)', async () => {
+    const launcherDir = join(mobileRoot, 'launcher');
+    const server = createServer((req, res) => {
+      const path = (req.url ?? '/').split('?')[0];
+      if (path === '/' || path === '/index.html') {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        res.end(readFileSync(join(launcherDir, 'index.html'), 'utf8'));
+        return;
+      }
+      if (path === '/launcher.js') {
+        res.writeHead(200, { 'content-type': 'application/javascript; charset=utf-8' });
+        res.end(readFileSync(join(launcherDir, 'launcher.js'), 'utf8'));
+        return;
+      }
+      if (path === '/launcher.css') {
+        res.writeHead(200, { 'content-type': 'text/css; charset=utf-8' });
+        res.end(readFileSync(join(launcherDir, 'launcher.css'), 'utf8'));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
+    const browser = await chromium.launch({ headless: true });
+    try {
+      const addr = server.address();
+      const port = typeof addr === 'object' && addr ? addr.port : 0;
+      const page = await browser.newPage();
+      await page.addInitScript(() => {
+        localStorage.setItem(
+          'kiki.shell.servers',
+          JSON.stringify([
+            {
+              id: 'home-p1-10',
+              label: 'Studio P1-10',
+              origin: 'http://192.168.31.221:59918',
+              origins: ['http://192.168.31.221:59918'],
+              verifiedOrigins: ['http://192.168.31.221:59918'],
+              paired: true,
+              targetHomeId: 'home-p1-10',
+              targetHostId: 'host-p1-10',
+              grantId: 'grant-p1-10',
+              updatedAt: 2,
+            },
+            {
+              id: 'home-local-daemon',
+              label: 'Phone Local',
+              origin: 'http://127.0.0.1:19410',
+              origins: ['http://127.0.0.1:19410'],
+              verifiedOrigins: ['http://127.0.0.1:19410'],
+              paired: true,
+              targetHomeId: 'home-local-daemon',
+              targetHostId: 'host-local',
+              grantId: 'grant-local',
+              updatedAt: 1,
+            },
+          ]),
+        );
+        const w = window as unknown as Record<string, unknown>;
+        w['__probeMode'] = 'fail';
+        w['__probeCount'] = 0;
+        w['__openedOrigins'] = [];
+        w['__holdProbeResolve'] = null;
+        w['Capacitor'] = {
+          isNativePlatform: () => true,
+          nativePromise: async (_plugin: string, method: string, payload?: Record<string, unknown>) => {
+            if (method === 'consumePendingPair') return {};
+            if (method === 'probe') {
+              w['__probeCount'] = Number(w['__probeCount']) + 1;
+              if (w['__probeMode'] === 'hold') {
+                return new Promise((resolve) => {
+                  w['__holdProbeResolve'] = resolve;
+                });
+              }
+              if (w['__probeMode'] === 'throw') {
+                throw new Error('simulated bridge failure');
+              }
+              if (w['__probeMode'] === 'ok') {
+                return {
+                  ok: true,
+                  status: 200,
+                  inboundEnabled: true,
+                  targetHomeId: String(payload?.['serverId'] ?? ''),
+                  targetHostId: 'host-p1-10',
+                  mutualProofVerified: true,
+                };
+              }
+              return { ok: false };
+            }
+            if (method === 'open') {
+              (w['__openedOrigins'] as string[]).push(String(payload?.['origin'] ?? ''));
+              return { ok: true, origin: payload?.['origin'] };
+            }
+            return { ok: true };
+          },
+        };
+      });
+
+      await page.goto(`http://127.0.0.1:${port}/index.html#change`, { waitUntil: 'networkidle' });
+      await page.waitForSelector('#view-computers:not([hidden])');
+
+      // 1. Clicking unreachable computer on Computers tab shows error right on the card and stays on Computers tab
+      await page.click('#recent-open');
+      await page.waitForSelector('.saved-card[data-server-id="home-p1-10"] .saved-card-status');
+      const cardState = await page.evaluate(() => ({
+        computersHidden: (document.querySelector('#view-computers') as HTMLElement).hidden,
+        statusText: document.querySelector('.saved-card[data-server-id="home-p1-10"] .saved-card-status-text')?.textContent ?? '',
+        openDisabled: (document.querySelector('#open') as HTMLButtonElement).disabled,
+        openText: document.querySelector('#open')?.textContent ?? '',
+      }));
+      expect(cardState.computersHidden).toBe(false);
+      expect(cardState.statusText).toContain('192.168.31.221:59918');
+      expect(cardState.openDisabled).toBe(false);
+      expect(cardState.openText).not.toContain('Opening');
+
+      // 2. Local loopback failure (127.0.0.1:19410) shows local-daemon message instead of LAN/Wi-Fi message
+      await page.click('.saved-card[data-server-id="home-local-daemon"] .recent-row');
+      await page.waitForSelector('.saved-card[data-server-id="home-local-daemon"] .saved-card-status');
+      const localCardText = await page.textContent('.saved-card[data-server-id="home-local-daemon"] .saved-card-status-text');
+      expect(localCardText ?? '').toMatch(/Local Kiki service|本机 Kiki 服务/);
+      expect(localCardText ?? '').not.toMatch(/Wi-Fi|局域网/);
+
+      // 3. Online event on Computers tab triggers host reprobe and opens automatically when host recovers
+      await page.click('#recent-open');
+      await page.waitForSelector('.saved-card[data-server-id="home-p1-10"] .saved-card-status');
+      await page.evaluate(() => {
+        const w = window as unknown as Record<string, unknown>;
+        w['__probeMode'] = 'ok';
+        window.dispatchEvent(new Event('online'));
+      });
+      await page.waitForFunction(() => ((window as unknown as { __openedOrigins: string[] }).__openedOrigins.length > 0));
+      const opened = await page.evaluate(() => (window as unknown as { __openedOrigins: string[] }).__openedOrigins);
+      expect(opened).toContain('http://192.168.31.221:59918');
+
+      // 4. Cancel affordance resets #open cleanly while a probe is in flight on Connect tab
+      await page.click('button.tab[data-tab="connect"]');
+      await page.waitForSelector('#view-connect:not([hidden])');
+      await page.click('#manual-toggle');
+      await page.fill('#server', '192.168.31.221:59918');
+      await page.evaluate(() => {
+        (window as unknown as Record<string, unknown>)['__probeMode'] = 'hold';
+      });
+      await page.click('#open');
+      await page.waitForSelector('#cancel-open:not([hidden])');
+      expect(await page.evaluate(() => (document.querySelector('#open') as HTMLButtonElement).disabled)).toBe(true);
+      await page.click('#cancel-open');
+      const afterCancel = await page.evaluate(() => ({
+        openDisabled: (document.querySelector('#open') as HTMLButtonElement).disabled,
+        cancelHidden: (document.querySelector('#cancel-open') as HTMLElement).hidden,
+        openText: document.querySelector('#open')?.textContent ?? '',
+      }));
+      expect(afterCancel.openDisabled).toBe(false);
+      expect(afterCancel.cancelHidden).toBe(true);
+      expect(afterCancel.openText).not.toContain('Opening');
+    } finally {
+      await browser.close();
+      server.close();
+    }
+  });
 });
 
 describe('Android Java and iOS Swift native pairing parity against RFC vectors', () => {
@@ -681,11 +841,16 @@ ${originHelpers}
     expect(mainActivity).toContain('onPermissionRequest');
     expect(mainActivity).toContain('handleWebPermissionRequest');
     expect(mainActivity).not.toContain('super.onPermissionRequest');
+    expect(mainActivity).toContain('onShowFileChooser');
+    expect(mainActivity).toContain('ACTION_IMAGE_CAPTURE');
+    expect(mainActivity).toContain('--kiki-ime-height');
+    expect(mainActivity).toContain('WindowInsetsAnimationCompat');
 
     const javaPlugin = readFileSync(
       join(mobileRoot, 'android/app/src/main/java/ai/easyagent/kiki/KikiShellPlugin.java'),
       'utf8',
     );
+    expect(javaPlugin).toContain('kiki:host-back');
     expect(javaPlugin).toContain('PermissionRequest.RESOURCE_VIDEO_CAPTURE');
     expect(javaPlugin).toContain('kiki-handshake-invited-v1:');
     expect(javaPlugin).toContain('upgradeOriginForTlsPin');

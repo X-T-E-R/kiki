@@ -89,6 +89,7 @@ interface OpenServerOptions {
   grantId?: string;
   fingerprint?: string;
   fromAutoRecovery?: boolean;
+  fromComputersTab?: boolean;
   expectedAutoEpoch?: number;
   expectedRecovery?: RecoveryBinding;
 }
@@ -116,6 +117,7 @@ function bootstrapLauncherUi(): void {
   const codeField = document.querySelector<HTMLElement>('.code-field');
   const qLayerBadge = document.querySelector<HTMLElement>('#layer-badge');
   const qButton = document.querySelector<HTMLButtonElement>('#open');
+  const cancelOpenBtn = document.querySelector<HTMLButtonElement>('#cancel-open');
   const switchComputerBtn = document.querySelector<HTMLButtonElement>('#switch-computer');
   const hint = document.querySelector<HTMLElement>('#hint');
   const qProblem = document.querySelector<HTMLElement>('#problem');
@@ -218,6 +220,7 @@ function bootstrapLauncherUi(): void {
   let scannerHistoryEntry = false;
   let managingServerId: string | null = null;
   let unreachablePairedRecovery: RecoveryBinding | null = null;
+  let computersTabRecovery = false;
   let autoReconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let autoReconnectFlight = false;
   let autoReconnectEpoch = 0;
@@ -227,6 +230,10 @@ function bootstrapLauncherUi(): void {
   let openFlightAbortController: AbortController | null = null;
   let pendingManualFingerprint: { origin: string; fingerprint: string } | null = null;
   const addressStatus = new Map<string, { text: string; tone?: string }>();
+  const computerStatus = new Map<
+    string,
+    { text: string; tone: 'danger' | 'ok'; action: 'retry' | 'pair'; origin: string }
+  >();
 
   function isNativeShell(): boolean {
     return win.Capacitor?.isNativePlatform?.() === true;
@@ -234,6 +241,18 @@ function bootstrapLauncherUi(): void {
 
   function copyByReason(reason: string): string {
     return (copy as Record<string, string>)[reason] ?? copy.invalid;
+  }
+
+  function setOpenBusy(busy: boolean, label?: string): void {
+    button.disabled = busy;
+    if (cancelOpenBtn) {
+      cancelOpenBtn.hidden = !busy;
+    }
+    if (busy) {
+      button.textContent = label ?? copy.opening;
+    } else {
+      updateInputAffordances();
+    }
   }
 
   function cancelInFlightOpen(): void {
@@ -250,10 +269,7 @@ function bootstrapLauncherUi(): void {
       } catch {
       }
     }
-    if (button.disabled) {
-      button.disabled = false;
-      updateInputAffordances();
-    }
+    setOpenBusy(false);
   }
 
   function stopAutoReconnect(clearBinding = false): void {
@@ -266,12 +282,20 @@ function bootstrapLauncherUi(): void {
     }
     if (clearBinding) {
       unreachablePairedRecovery = null;
+      computersTabRecovery = false;
       autoReconnectAttempt = 0;
     }
   }
 
+  function canRunAutoReconnectInCurrentView(): boolean {
+    if (!unreachablePairedRecovery) return false;
+    if (!views.connect.hidden && !problem.hidden) return true;
+    if (!views.computers.hidden && computersTabRecovery) return true;
+    return false;
+  }
+
   function scheduleAutoReconnect(delayMs?: number): void {
-    if (!unreachablePairedRecovery || views.connect.hidden || problem.hidden) return;
+    if (!canRunAutoReconnectInCurrentView()) return;
     if (autoReconnectTimer !== null) {
       clearTimeout(autoReconnectTimer);
       autoReconnectTimer = null;
@@ -282,6 +306,7 @@ function bootstrapLauncherUi(): void {
         : Math.min(1000 * 2 ** Math.min(autoReconnectAttempt, 3), 8000);
     const expectedEpoch = autoReconnectEpoch;
     const bound = unreachablePairedRecovery;
+    if (!bound) return;
     autoReconnectTimer = setTimeout(() => {
       autoReconnectTimer = null;
       void runAutoReconnectAttempt(bound, expectedEpoch);
@@ -297,8 +322,7 @@ function bootstrapLauncherUi(): void {
       expectedEpoch !== autoReconnectEpoch ||
       unreachablePairedRecovery !== bound ||
       autoReconnectFlight ||
-      views.connect.hidden ||
-      problem.hidden ||
+      !canRunAutoReconnectInCurrentView() ||
       button.disabled
     ) {
       return;
@@ -322,6 +346,7 @@ function bootstrapLauncherUi(): void {
     unreachablePairedRecovery = currentRecovery;
     autoReconnectFlight = true;
     autoReconnectAttempt += 1;
+    const inComputersTab = !views.computers.hidden && computersTabRecovery;
     try {
       await openServer(bound.origin, `${bound.origin}/`, {
         serverId: latest.id,
@@ -331,6 +356,7 @@ function bootstrapLauncherUi(): void {
         targetHostId: latest.targetHostId ?? bound.targetHostId,
         grantId: activeGrantId,
         fromAutoRecovery: true,
+        fromComputersTab: inComputersTab,
         expectedAutoEpoch: expectedEpoch,
         expectedRecovery: currentRecovery,
       });
@@ -342,7 +368,7 @@ function bootstrapLauncherUi(): void {
   }
 
   function wakeAutoReconnect(): void {
-    if (!unreachablePairedRecovery || views.connect.hidden || problem.hidden) return;
+    if (!canRunAutoReconnectInCurrentView()) return;
     autoReconnectAttempt = 0;
     if (autoReconnectFlight || button.disabled) return;
     scheduleAutoReconnect(0);
@@ -358,8 +384,12 @@ function bootstrapLauncherUi(): void {
   ): void {
     if (!views[name]) return;
     if (name !== 'connect') {
-      stopAutoReconnect(false);
+      if (!(name === 'computers' && computersTabRecovery)) {
+        stopAutoReconnect(false);
+      }
       if (activeStream) stopCameraScanner();
+    } else {
+      computersTabRecovery = false;
     }
     for (const [key, view] of Object.entries(views)) {
       if (options.animate) view.dataset['animate'] = 'true';
@@ -401,9 +431,20 @@ function bootstrapLauncherUi(): void {
     return copy.layerLan;
   }
 
+  function isLoopbackOrigin(originOrRaw: string): boolean {
+    try {
+      const normalized = /^https?:\/\//i.test(originOrRaw) ? originOrRaw : `http://${originOrRaw}`;
+      const hostname = new URL(normalized).hostname.toLowerCase();
+      return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1' || hostname === '[::1]';
+    } catch {
+      return false;
+    }
+  }
+
   function unreachableMessageFor(originOrRaw: string): string {
     const info = classifyOrigin(originOrRaw);
     const host = info.host || hostOf(originOrRaw);
+    if (isLoopbackOrigin(originOrRaw)) return copy.unreachableLocal.replace('{host}', host);
     if (info.layer === 'vpn') return copy.unreachableVpn.replace('{host}', host);
     if (info.layer === 'https' || info.layer === 'http') return copy.unreachableHttps.replace('{host}', host);
     return copy.unreachableLan.replace('{host}', host);
@@ -622,8 +663,17 @@ function bootstrapLauncherUi(): void {
     });
   }
 
-  function promptForPairing(origin: string, message: string): void {
+  function promptForPairing(origin: string, message: string, serverId?: string): void {
     stopAutoReconnect(true);
+    if (serverId) {
+      computerStatus.set(serverId, {
+        text: message,
+        tone: 'danger',
+        action: 'pair',
+        origin,
+      });
+      renderSavedServers();
+    }
     setTab('connect');
     input.value = editableOrigin(origin);
     updateInputAffordances();
@@ -640,6 +690,7 @@ function bootstrapLauncherUi(): void {
       targetHostId?: string;
       grantId?: string;
       reason?: string;
+      keepTab?: boolean;
     } = {},
   ): void {
     const exactSaved = findExactSavedServerForOrigin(origin, context.serverId);
@@ -648,6 +699,20 @@ function bootstrapLauncherUi(): void {
         (exactSaved.paired || exactSaved.targetHomeId) &&
         isServerOriginVerified(exactSaved, origin),
     );
+    const message =
+      context.reason === 'unverified_handshake_proof'
+        ? unverifiedHandshakeProofMessageFor(origin, exactSaved?.label ?? context.label)
+        : unreachableMessageFor(origin);
+    const cardServerId = exactSaved?.id ?? context.serverId;
+    if (cardServerId) {
+      computerStatus.set(cardServerId, {
+        text: message,
+        tone: 'danger',
+        action: 'retry',
+        origin,
+      });
+    }
+    const stayOnComputers = Boolean(context.keepTab && !views.computers.hidden);
     if (isVerifiedPaired && exactSaved) {
       const sameBinding =
         unreachablePairedRecovery &&
@@ -662,22 +727,27 @@ function bootstrapLauncherUi(): void {
         grantId: exactSaved.grantId ?? context.grantId,
         server: exactSaved,
       };
+      computersTabRecovery = stayOnComputers;
       if (!sameBinding) {
         autoReconnectAttempt = 0;
       }
     } else {
       stopAutoReconnect(true);
     }
+    if (stayOnComputers) {
+      renderSavedServers();
+      if (isVerifiedPaired) {
+        scheduleAutoReconnect();
+      }
+      return;
+    }
     setTab('connect');
     if (input.value.trim() === '' || isVerifiedPaired) {
       input.value = editableOrigin(origin);
     }
     updateInputAffordances();
-    const message =
-      context.reason === 'unverified_handshake_proof'
-        ? unverifiedHandshakeProofMessageFor(origin, exactSaved?.label ?? context.label)
-        : unreachableMessageFor(origin);
     showProblem(message);
+    renderSavedServers();
     if (isVerifiedPaired) {
       scheduleAutoReconnect();
     }
@@ -723,7 +793,7 @@ function bootstrapLauncherUi(): void {
           unreachablePairedRecovery.origin !== origin ||
           (targetServerId && unreachablePairedRecovery.serverId !== targetServerId) ||
           (options.expectedRecovery && unreachablePairedRecovery !== options.expectedRecovery) ||
-          views.connect.hidden
+          !canRunAutoReconnectInCurrentView()
         ) {
           return true;
         }
@@ -731,142 +801,173 @@ function bootstrapLauncherUi(): void {
       return false;
     };
 
-    button.disabled = true;
-    button.textContent = copy.opening;
-
-    const resolved = await resolveVerifiedServerOpen(window.localStorage, {
-      ...options,
-      origin,
-      entry,
-      probe: probeServer,
-      signal: abortController.signal,
-      isStale: isStaleOpen,
-      requireMutualProof: isPairedTarget && isNativeShell(),
-      getToken: isNativeShell() ? undefined : readWebPeerToken,
-    });
-
-    if (isStaleOpen()) {
-      return;
-    }
-
-    if (!resolved.ok) {
-      if (resolved.stale || resolved.reason === 'aborted') {
-        return;
-      }
-      const failedOrigin = resolved.server?.origin ?? origin;
-      button.disabled = false;
-      renderSavedServers();
-      if (resolved.reason === 'identity_mismatch') {
-        promptForPairing(
-          failedOrigin,
-          identityMismatchMessageFor(failedOrigin, resolved.server?.label ?? options.label),
-        );
-      } else if (resolved.reason === 'pairing_revoked') {
-        promptForPairing(
-          failedOrigin,
-          pairingRevokedMessageFor(failedOrigin, resolved.server?.label ?? options.label),
-        );
-      } else if (resolved.reason === 'pairing_required') {
-        promptForPairing(
-          failedOrigin,
-          pairingRequiredMessageFor(failedOrigin, resolved.server?.label ?? options.label),
-        );
-      } else {
-        input.value = editableOrigin(failedOrigin);
-        reportUnreachable(failedOrigin, {
-          serverId: resolved.server?.id ?? targetServerId,
-          label: resolved.server?.label ?? options.label,
-          targetHomeId: resolved.server?.targetHomeId ?? options.targetHomeId,
-          targetHostId: resolved.server?.targetHostId ?? options.targetHostId,
-          grantId: resolved.server?.grantId ?? options.grantId,
-          reason: resolved.reason,
-        });
-      }
-      return;
-    }
-
-    const targetOrigin = resolved.origin;
-    const serverId = resolved.serverId;
-
-    if (isStaleOpen()) {
-      return;
-    }
+    let openSucceeded = false;
+    setOpenBusy(true, copy.opening);
 
     try {
-      window.name = '';
-    } catch {
-    }
+      const resolved = await resolveVerifiedServerOpen(window.localStorage, {
+        ...options,
+        origin,
+        entry,
+        probe: probeServer,
+        signal: abortController.signal,
+        isStale: isStaleOpen,
+        requireMutualProof: isPairedTarget && isNativeShell(),
+        getToken: isNativeShell() ? undefined : readWebPeerToken,
+      });
 
-    if (isNativeShell()) {
-      try {
-        const openPayload: Record<string, unknown> = {
-          opId: callOpId,
-          origin: targetOrigin,
-          entry: resolved.finalEntry,
-          serverId: isPairedTarget ? (serverId ?? undefined) : undefined,
-          grantId: isPairedTarget
-            ? (resolved.server?.grantId ?? options.grantId ?? undefined)
-            : undefined,
-          targetHomeId: options.targetHomeId ?? undefined,
-          targetHostId: options.targetHostId ?? undefined,
-        };
-        const resolvedFp =
-          options.fingerprint ??
-          getServerFingerprint(resolved.server, targetOrigin) ??
-          getServerFingerprint(resolved.server, origin);
-        if (resolvedFp) {
-          openPayload['fingerprint'] = resolvedFp;
-        }
-        const res = await win.Capacitor!.nativePromise('KikiShell', 'open', openPayload);
-        if (isStaleOpen() || res?.['reason'] === 'aborted') {
-          return;
-        }
-        if (!res || res['ok'] === false) {
-          if (openFlightOpId === callOpId) openFlightOpId = null;
-          button.disabled = false;
-          renderSavedServers();
-          if (res?.['reason'] === 'identity_mismatch' && targetServerId) {
-            const rollback = verifySavedServerOrigin(window.localStorage, targetServerId, targetOrigin, {
-              ok: true,
-              targetHomeId:
-                typeof res['targetHomeId'] === 'string' ? res['targetHomeId'] : undefined,
-            });
-            renderSavedServers();
-            promptForPairing(
-              targetOrigin,
-              identityMismatchMessageFor(targetOrigin, rollback.server?.label ?? options.label),
-            );
-          } else if (res?.['reason'] === 'pairing_revoked') {
-            promptForPairing(
-              targetOrigin,
-              pairingRevokedMessageFor(targetOrigin, resolved.server?.label ?? options.label),
-            );
-          } else if (res?.['reason'] === 'pairing_required') {
-            promptForPairing(
-              targetOrigin,
-              pairingRequiredMessageFor(targetOrigin, resolved.server?.label ?? options.label),
-            );
-          } else {
-            reportUnreachable(targetOrigin, {
-              serverId: resolved.server?.id ?? serverId ?? targetServerId,
-              label: resolved.server?.label ?? options.label,
-              targetHomeId: resolved.server?.targetHomeId ?? options.targetHomeId,
-              targetHostId: resolved.server?.targetHostId ?? options.targetHostId,
-              grantId: resolved.server?.grantId ?? options.grantId,
-              reason: typeof res?.['reason'] === 'string' ? res['reason'] : undefined,
-            });
-          }
-          return;
-        }
-        if (openFlightOpId === callOpId) openFlightOpId = null;
-        stopAutoReconnect(true);
+      if (isStaleOpen()) {
         return;
-      } catch {
-        if (isStaleOpen()) {
+      }
+
+      if (!resolved.ok) {
+        if (resolved.stale || resolved.reason === 'aborted') {
           return;
         }
-        if (openFlightOpId === callOpId) openFlightOpId = null;
-        button.disabled = false;
+        const failedOrigin = resolved.server?.origin ?? origin;
+        const failedServerId = resolved.server?.id ?? targetServerId;
+        setOpenBusy(false);
+        renderSavedServers();
+        if (resolved.reason === 'identity_mismatch') {
+          promptForPairing(
+            failedOrigin,
+            identityMismatchMessageFor(failedOrigin, resolved.server?.label ?? options.label),
+            failedServerId,
+          );
+        } else if (resolved.reason === 'pairing_revoked') {
+          promptForPairing(
+            failedOrigin,
+            pairingRevokedMessageFor(failedOrigin, resolved.server?.label ?? options.label),
+            failedServerId,
+          );
+        } else if (resolved.reason === 'pairing_required') {
+          promptForPairing(
+            failedOrigin,
+            pairingRequiredMessageFor(failedOrigin, resolved.server?.label ?? options.label),
+            failedServerId,
+          );
+        } else {
+          if (!options.fromComputersTab) {
+            input.value = editableOrigin(failedOrigin);
+          }
+          reportUnreachable(failedOrigin, {
+            serverId: failedServerId,
+            label: resolved.server?.label ?? options.label,
+            targetHomeId: resolved.server?.targetHomeId ?? options.targetHomeId,
+            targetHostId: resolved.server?.targetHostId ?? options.targetHostId,
+            grantId: resolved.server?.grantId ?? options.grantId,
+            reason: resolved.reason,
+            keepTab: options.fromComputersTab,
+          });
+        }
+        return;
+      }
+
+      const targetOrigin = resolved.origin;
+      const serverId = resolved.serverId;
+
+      if (isStaleOpen()) {
+        return;
+      }
+
+      try {
+        window.name = '';
+      } catch {
+      }
+
+      if (isNativeShell()) {
+        try {
+          const openPayload: Record<string, unknown> = {
+            opId: callOpId,
+            origin: targetOrigin,
+            entry: resolved.finalEntry,
+            serverId: isPairedTarget ? (serverId ?? undefined) : undefined,
+            grantId: isPairedTarget
+              ? (resolved.server?.grantId ?? options.grantId ?? undefined)
+              : undefined,
+            targetHomeId: options.targetHomeId ?? undefined,
+            targetHostId: options.targetHostId ?? undefined,
+          };
+          const resolvedFp =
+            options.fingerprint ??
+            getServerFingerprint(resolved.server, targetOrigin) ??
+            getServerFingerprint(resolved.server, origin);
+          if (resolvedFp) {
+            openPayload['fingerprint'] = resolvedFp;
+          }
+          const res = await win.Capacitor!.nativePromise('KikiShell', 'open', openPayload);
+          if (isStaleOpen() || res?.['reason'] === 'aborted') {
+            return;
+          }
+          if (!res || res['ok'] === false) {
+            if (openFlightOpId === callOpId) openFlightOpId = null;
+            setOpenBusy(false);
+            renderSavedServers();
+            const failedServerId = resolved.server?.id ?? serverId ?? targetServerId;
+            if (res?.['reason'] === 'identity_mismatch' && targetServerId) {
+              const rollback = verifySavedServerOrigin(window.localStorage, targetServerId, targetOrigin, {
+                ok: true,
+                targetHomeId:
+                  typeof res['targetHomeId'] === 'string' ? res['targetHomeId'] : undefined,
+              });
+              renderSavedServers();
+              promptForPairing(
+                targetOrigin,
+                identityMismatchMessageFor(targetOrigin, rollback.server?.label ?? options.label),
+                failedServerId,
+              );
+            } else if (res?.['reason'] === 'pairing_revoked') {
+              promptForPairing(
+                targetOrigin,
+                pairingRevokedMessageFor(targetOrigin, resolved.server?.label ?? options.label),
+                failedServerId,
+              );
+            } else if (res?.['reason'] === 'pairing_required') {
+              promptForPairing(
+                targetOrigin,
+                pairingRequiredMessageFor(targetOrigin, resolved.server?.label ?? options.label),
+                failedServerId,
+              );
+            } else {
+              reportUnreachable(targetOrigin, {
+                serverId: failedServerId,
+                label: resolved.server?.label ?? options.label,
+                targetHomeId: resolved.server?.targetHomeId ?? options.targetHomeId,
+                targetHostId: resolved.server?.targetHostId ?? options.targetHostId,
+                grantId: resolved.server?.grantId ?? options.grantId,
+                reason: typeof res?.['reason'] === 'string' ? res['reason'] : undefined,
+                keepTab: options.fromComputersTab,
+              });
+            }
+            return;
+          }
+          if (openFlightOpId === callOpId) openFlightOpId = null;
+          const okServerId = resolved.server?.id ?? serverId ?? targetServerId;
+          if (okServerId) computerStatus.delete(okServerId);
+          openSucceeded = true;
+          stopAutoReconnect(true);
+          return;
+        } catch {
+          if (isStaleOpen()) {
+            return;
+          }
+          if (openFlightOpId === callOpId) openFlightOpId = null;
+          setOpenBusy(false);
+          renderSavedServers();
+          reportUnreachable(targetOrigin, {
+            serverId: resolved.server?.id ?? serverId ?? targetServerId,
+            label: resolved.server?.label ?? options.label,
+            targetHomeId: resolved.server?.targetHomeId ?? options.targetHomeId,
+            targetHostId: resolved.server?.targetHostId ?? options.targetHostId,
+            grantId: resolved.server?.grantId ?? options.grantId,
+            keepTab: options.fromComputersTab,
+          });
+          return;
+        }
+      }
+
+      if (isPairedTarget || resolved.sessionToken) {
+        setOpenBusy(false);
         renderSavedServers();
         reportUnreachable(targetOrigin, {
           serverId: resolved.server?.id ?? serverId ?? targetServerId,
@@ -874,32 +975,47 @@ function bootstrapLauncherUi(): void {
           targetHomeId: resolved.server?.targetHomeId ?? options.targetHomeId,
           targetHostId: resolved.server?.targetHostId ?? options.targetHostId,
           grantId: resolved.server?.grantId ?? options.grantId,
+          keepTab: options.fromComputersTab,
         });
         return;
       }
-    }
 
-    if (isPairedTarget || resolved.sessionToken) {
-      button.disabled = false;
-      renderSavedServers();
-      reportUnreachable(targetOrigin, {
-        serverId: resolved.server?.id ?? serverId ?? targetServerId,
-        label: resolved.server?.label ?? options.label,
-        targetHomeId: resolved.server?.targetHomeId ?? options.targetHomeId,
-        targetHostId: resolved.server?.targetHostId ?? options.targetHostId,
-        grantId: resolved.server?.grantId ?? options.grantId,
-      });
-      return;
+      if (isStaleOpen()) {
+        return;
+      }
+      const okServerId = resolved.server?.id ?? serverId ?? targetServerId;
+      if (okServerId) computerStatus.delete(okServerId);
+      openSucceeded = true;
+      stopAutoReconnect(true);
+      window.location.assign(stripTokenFromEntry(targetOrigin, resolved.finalEntry));
+    } catch {
+      if (!isStaleOpen()) {
+        reportUnreachable(origin, {
+          serverId: targetServerId,
+          label: options.label,
+          targetHomeId: options.targetHomeId,
+          targetHostId: options.targetHostId,
+          grantId: options.grantId,
+          keepTab: options.fromComputersTab,
+        });
+      }
+    } finally {
+      if (openFlightAbortController === abortController) {
+        openFlightAbortController = null;
+      }
+      if (openFlightOpId === callOpId) {
+        openFlightOpId = null;
+      }
+      if (!openSucceeded && callOpenEpoch === openFlightEpoch) {
+        setOpenBusy(false);
+      }
     }
-
-    if (isStaleOpen()) {
-      return;
-    }
-    stopAutoReconnect(true);
-    window.location.assign(stripTokenFromEntry(targetOrigin, resolved.finalEntry));
   }
 
-  function openSavedServer(server: SavedServer): Promise<void> {
+  function openSavedServer(
+    server: SavedServer,
+    options: { fromComputersTab?: boolean } = {},
+  ): Promise<void> {
     return openServer(server.origin, `${server.origin}/`, {
       serverId: server.id,
       label: server.label,
@@ -908,6 +1024,7 @@ function bootstrapLauncherUi(): void {
       targetHostId: server.targetHostId,
       grantId: server.grantId,
       fingerprint: getServerFingerprint(server, server.origin),
+      fromComputersTab: options.fromComputersTab,
     });
   }
 
@@ -915,16 +1032,21 @@ function bootstrapLauncherUi(): void {
     showProblem('');
 
     if (parsed.kind === 'pair') {
-      button.disabled = true;
-      button.textContent = copy.pairing;
-      const claim = await claimPairing(
-        parsed.endpoint ?? parsed.origin,
-        parsed.code,
-        parsed.fingerprint,
-      );
+      setOpenBusy(true, copy.pairing);
+      let claim: Awaited<ReturnType<typeof claimPairing>>;
+      try {
+        claim = await claimPairing(
+          parsed.endpoint ?? parsed.origin,
+          parsed.code,
+          parsed.fingerprint,
+        );
+      } catch {
+        setOpenBusy(false);
+        showProblem(unreachableMessageFor(parsed.origin));
+        return;
+      }
       if (!claim.ok) {
-        button.disabled = false;
-        updateInputAffordances();
+        setOpenBusy(false);
         showProblem(
           claim.reason === 'rejected' ? copy.pairRejected : unreachableMessageFor(parsed.origin),
         );
@@ -1290,6 +1412,7 @@ function bootstrapLauncherUi(): void {
     removeSavedServer(window.localStorage, server.id);
     if (managingServerId === server.id) managingServerId = null;
     addressStatus.delete(server.id);
+    computerStatus.delete(server.id);
     renderSavedServers();
     if (isNativeShell()) {
       try {
@@ -1332,8 +1455,9 @@ function bootstrapLauncherUi(): void {
       void (async () => {
         openBtn.disabled = true;
         openBtn.setAttribute('aria-busy', 'true');
+        computerStatus.delete(server.id);
         try {
-          await openSavedServer(server);
+          await openSavedServer(server, { fromComputersTab: true });
         } finally {
           openBtn.disabled = false;
           openBtn.removeAttribute('aria-busy');
@@ -1357,6 +1481,53 @@ function bootstrapLauncherUi(): void {
 
     mainRow.append(openBtn, manageToggle);
     card.append(mainRow);
+
+    const cardStatus = computerStatus.get(server.id);
+    if (cardStatus) {
+      const statusBox = el('div', 'saved-card-status');
+      statusBox.setAttribute('role', 'alert');
+      statusBox.dataset['tone'] = cardStatus.tone;
+      statusBox.append(el('p', 'saved-card-status-text', cardStatus.text));
+
+      const statusActions = el('div', 'saved-card-status-actions');
+      if (cardStatus.action === 'pair') {
+        const repairBtn = el('button', 'mini-button saved-card-retry', copy.repair);
+        repairBtn.type = 'button';
+        repairBtn.addEventListener('click', () => {
+          promptForPairing(cardStatus.origin, cardStatus.text, server.id);
+        });
+        statusActions.append(repairBtn);
+      } else {
+        const retryBtn = el('button', 'mini-button saved-card-retry', copy.retry);
+        retryBtn.type = 'button';
+        retryBtn.addEventListener('click', () => {
+          void (async () => {
+            retryBtn.disabled = true;
+            retryBtn.textContent = copy.opening;
+            try {
+              await openSavedServer(server, { fromComputersTab: true });
+            } finally {
+              retryBtn.disabled = false;
+              retryBtn.textContent = copy.retry;
+            }
+          })();
+        });
+        statusActions.append(retryBtn);
+      }
+      const editBtn = el('button', 'mini-button saved-card-edit', copy.editConnection);
+      editBtn.type = 'button';
+      editBtn.addEventListener('click', () => {
+        stopAutoReconnect(true);
+        setTab('connect', { animate: true });
+        input.value = editableOrigin(server.origin);
+        setManualExpanded(true);
+        updateInputAffordances();
+        input.focus();
+      });
+      statusActions.append(editBtn);
+      statusBox.append(statusActions);
+      card.append(statusBox);
+    }
 
     if (isManaging) {
       const manageRow = el('div', 'saved-manage');
@@ -1407,22 +1578,28 @@ function bootstrapLauncherUi(): void {
     const original = trigger.textContent;
     trigger.textContent = copy.testing;
     setAddressStatus(server.id, '');
-    const probe = await probeServer(
-      parsed.origin,
-      isServerOriginVerified(server, parsed.origin)
-        ? {
-            serverId: server.id,
-            targetHomeId: server.targetHomeId,
-            targetHostId: server.targetHostId,
-            grantId: server.grantId,
-            fingerprint: getServerFingerprint(server, parsed.origin),
-          }
-        : {
-            fingerprint: getServerFingerprint(server, parsed.origin),
-          },
-    );
-    trigger.disabled = false;
-    trigger.textContent = original;
+    let probe: HandshakeProbeResult;
+    try {
+      probe = await probeServer(
+        parsed.origin,
+        isServerOriginVerified(server, parsed.origin)
+          ? {
+              serverId: server.id,
+              targetHomeId: server.targetHomeId,
+              targetHostId: server.targetHostId,
+              grantId: server.grantId,
+              fingerprint: getServerFingerprint(server, parsed.origin),
+            }
+          : {
+              fingerprint: getServerFingerprint(server, parsed.origin),
+            },
+      );
+    } catch {
+      probe = { ok: false };
+    } finally {
+      trigger.disabled = false;
+      trigger.textContent = original;
+    }
     if (
       server.paired &&
       server.targetHomeId &&
@@ -1650,6 +1827,11 @@ function bootstrapLauncherUi(): void {
     void handlePickedQrPhoto(file);
   });
 
+  cancelOpenBtn?.addEventListener('click', () => {
+    stopAutoReconnect(false);
+    updateInputAffordances();
+  });
+
   switchComputerBtn?.addEventListener('click', () => {
     stopAutoReconnect(true);
     showProblem('');
@@ -1743,13 +1925,19 @@ function bootstrapLauncherUi(): void {
       readSavedServers(window.localStorage).find(
         (s) => s.origin === target.origin || s.origins?.includes(target.origin),
       ) ?? null;
-    const probe = await probeServer(target.origin, {
-      serverId: exactSaved?.id,
-      grantId: exactSaved?.grantId,
-      fingerprint: getServerFingerprint(exactSaved, target.origin),
-    });
-    testButton.disabled = false;
-    testButton.textContent = copy.testAddress;
+    let probe: HandshakeProbeResult;
+    try {
+      probe = await probeServer(target.origin, {
+        serverId: exactSaved?.id,
+        grantId: exactSaved?.grantId,
+        fingerprint: getServerFingerprint(exactSaved, target.origin),
+      });
+    } catch {
+      probe = { ok: false };
+    } finally {
+      testButton.disabled = false;
+      testButton.textContent = copy.testAddress;
+    }
     if (probe.ok) {
       if (exactSaved?.paired && isNativeShell() && probe.mutualProofVerified === false) {
         showProbeResult(
@@ -1877,8 +2065,7 @@ function bootstrapLauncherUi(): void {
 
   function showUnreachable(reason = 'unreachable'): void {
     const attempted = savedOrigin();
-    button.disabled = false;
-    updateInputAffordances();
+    setOpenBusy(false);
     if (attempted === null) {
       setManualExpanded(true);
       setTab('connect');
@@ -1890,8 +2077,7 @@ function bootstrapLauncherUi(): void {
 
   function showPairingRecovery(kind: 'pairing_revoked' | 'identity_mismatch' | 'pairing_required'): void {
     const attempted = savedOrigin();
-    button.disabled = false;
-    updateInputAffordances();
+    setOpenBusy(false);
     if (attempted === null) {
       setManualExpanded(true);
       setTab('connect');
@@ -1905,7 +2091,7 @@ function bootstrapLauncherUi(): void {
         : kind === 'pairing_required'
           ? pairingRequiredMessageFor(attempted, saved?.label)
           : pairingRevokedMessageFor(attempted, saved?.label);
-    promptForPairing(attempted, message);
+    promptForPairing(attempted, message, saved?.id);
   }
 
   async function consumePendingPairIfAny(): Promise<boolean> {
