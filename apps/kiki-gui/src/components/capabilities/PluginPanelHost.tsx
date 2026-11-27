@@ -57,6 +57,7 @@ export function PluginPanelHost({
   workspaceId,
   target,
   variant = 'card',
+  visible = true,
   className,
 }: {
   readonly pluginId: string;
@@ -77,6 +78,8 @@ export function PluginPanelHost({
   readonly target?: PluginUsageTarget;
   /** `'card'` preserves `/capabilities` drawer sizing; `'workspace'` fills 100% inside `PreviewWorkspace`. */
   readonly variant?: 'card' | 'workspace';
+  /** Whether the hosting tab/workspace is currently visible to the user. */
+  readonly visible?: boolean;
   readonly className?: string;
 }) {
   const connection =
@@ -163,12 +166,27 @@ export function PluginPanelHost({
     streamScopeRef.current = { ...streamScopeRef.current, identity: streamIdentity, version: streamScopeRef.current.version + 1 };
   }
 
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
+  const lastVisibilityRef = useRef<{ readonly loadSeq: number; readonly visible: boolean } | null>(null);
+
   // Init once the frame document has loaded, and again when the pinned
   // session changes under an already-loaded panel.
   useEffect(() => {
     if (loadSeq === 0) return;
-    post({ channel: CHANNEL, kind: 'init', sessionId: sessionId ?? null });
+    post({ channel: CHANNEL, kind: 'init', sessionId: sessionId ?? null, visible: visibleRef.current });
   }, [loadSeq, sessionId, post]);
+
+  // Notify an already-loaded panel whenever host tab/workspace visibility changes.
+  useEffect(() => {
+    if (loadSeq === 0) return;
+    const previous = lastVisibilityRef.current;
+    if (previous !== null && previous.loadSeq === loadSeq && previous.visible === visible) return;
+    const hadSameLoad = previous !== null && previous.loadSeq === loadSeq;
+    lastVisibilityRef.current = { loadSeq, visible };
+    if (!hadSameLoad) return;
+    post({ channel: CHANNEL, kind: 'visibility', visible });
+  }, [loadSeq, visible, post]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {

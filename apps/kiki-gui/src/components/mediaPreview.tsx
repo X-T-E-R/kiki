@@ -37,8 +37,12 @@ import {
   movePreviewTab,
   openPreviewTab,
   previewTabKey,
+  promoteResidentPluginEntry,
+  removeResidentPluginEntries,
+  type PluginTab,
   type PreviewTab,
   type PreviewTabsState,
+  type ResidentPluginEntry,
 } from '../state/previewWorkspace';
 import type { AgentForest, SessionController, SessionViewState } from '@kiki/session-core/session';
 import type { AgentWorkspaceNavigation } from './agent-workspace';
@@ -55,7 +59,7 @@ import { isOnKikiComputer } from './imageActions';
 import { ActiveDraftKeyProvider, attachmentName } from './mediaParts';
 import { remoteImageUrl } from './RemoteImageGate';
 import { blockGalleryImages, canonicalGalleryItem, galleryImageId, orderedGalleryImages, type GalleryImage } from './mediaGallery';
-import type { PreviewCloseAction } from './MediaPreviewOverlays';
+import type { PreviewCloseAction, ShellPreviewHostPayload } from './MediaPreviewOverlays';
 import {
   MediaPreviewContext,
   type MediaPreviewApi,
@@ -114,6 +118,37 @@ export function affectedByClose(state: PreviewTabsState, action: CloseAction, cw
     case 'all':
       return state.tabs.map(getFilePath).filter((p): p is string => p !== undefined);
   }
+}
+
+function affectedPluginKeysByClose(
+  state: PreviewTabsState,
+  action: CloseAction,
+  cwd?: string,
+): ReadonlySet<string> {
+  const keys = new Set<string>();
+  switch (action.kind) {
+    case 'tab': {
+      const targetKey = previewTabKey(action.key, cwd);
+      const match = state.tabs.find((tab) => previewTabKey(tab, cwd) === targetKey);
+      if (match?.kind === 'plugin') keys.add(previewTabKey(match, cwd));
+      break;
+    }
+    case 'others': {
+      const targetKey = previewTabKey(action.key, cwd);
+      for (const tab of state.tabs) {
+        const key = previewTabKey(tab, cwd);
+        if (key !== targetKey && tab.kind === 'plugin') keys.add(key);
+      }
+      break;
+    }
+    case 'all': {
+      for (const tab of state.tabs) {
+        if (tab.kind === 'plugin') keys.add(previewTabKey(tab, cwd));
+      }
+      break;
+    }
+  }
+  return keys;
 }
 
 export function MediaPreviewProvider({
@@ -253,11 +288,22 @@ export function MediaPreviewProvider({
     });
   }, []);
 
+  const tabsStateRef = useRef(tabsState);
+  tabsStateRef.current = tabsState;
+  const promoteResidentPluginRef = useRef<(tab: PluginTab) => void>(() => {});
+
   useNavSnapshotAdapter<PreviewReadingSnapshot>(previewKey, {
     ready: sessionId !== undefined,
     capture: () => ({ tabsState, panelOpen, positions }),
     restore: (snapshot) => {
       setNavigation(undefined);
+      if (snapshot.panelOpen) {
+        const restoredActive = snapshot.tabsState.tabs.find(
+          (tab): tab is PluginTab =>
+            tab.kind === 'plugin' && previewTabKey(tab, cwd) === snapshot.tabsState.active,
+        );
+        if (restoredActive !== undefined) promoteResidentPluginRef.current(restoredActive);
+      }
       setTabsState((current) => {
         const kept = current.tabs.filter(
           (tab) =>
@@ -275,6 +321,36 @@ export function MediaPreviewProvider({
       setPositions(snapshot.positions);
     },
   });
+  const prevPreviewKeyRef = useRef(previewKey);
+  useEffect(() => {
+    if (prevPreviewKeyRef.current === previewKey) return;
+    prevPreviewKeyRef.current = previewKey;
+    const nextSnapshot = initialSnapshot;
+    const nextTabsState = nextSnapshot?.tabsState ?? EMPTY_PREVIEW_TABS;
+    if (nextSnapshot?.panelOpen) {
+      const restoredActive = nextTabsState.tabs.find(
+        (tab): tab is PluginTab =>
+          tab.kind === 'plugin' && previewTabKey(tab, cwd) === nextTabsState.active,
+      );
+      if (restoredActive !== undefined) promoteResidentPluginRef.current(restoredActive);
+    }
+    setNavigation(undefined);
+    setTabsState((current) => {
+      const kept = current.tabs.filter(
+        (tab) =>
+          tab.kind === 'resource' &&
+          tab.resource.source.kind === 'host-file' &&
+          dirtyPaths.has(tab.resource.source.path) &&
+          !nextTabsState.tabs.some((candidate) => previewTabKey(candidate, cwd) === previewTabKey(tab, cwd)),
+      );
+      if (kept.length === 0) return nextTabsState;
+      const active = nextTabsState.active ?? previewTabKey(kept[0]!, cwd);
+      return { tabs: [...nextTabsState.tabs, ...kept], active };
+    });
+    setPanelOpen(Boolean(nextSnapshot?.panelOpen && nextTabsState.tabs.length > 0));
+    setPreviewMaximized(false);
+    setPositions(nextSnapshot?.positions ?? {});
+  }, [previewKey, initialSnapshot, dirtyPaths, cwd]);
   const overlayStage = useMediaQuery('(max-width: 1023px)');
   const collapsePanel = useCallback(() => {
     setPanelOpen(false);
@@ -304,8 +380,10 @@ export function MediaPreviewProvider({
   const previewVisible = panelOpen && tabsState.tabs.length > 0;
   const effectiveMaximized = previewVisible && previewMaximized && !overlayStage;
   const shellPreviewOwner = useMemo(() => ({}), []);
+  const ownsShellPreviewHost =
+    registerSessionOpener && shell?.registerPreviewHost !== undefined;
   const ownsShellPreview =
-    registerSessionOpener && shell?.slots.preview !== null && shell?.slots.preview !== undefined;
+    registerSessionOpener && shell?.registerPreview !== undefined;
   const registerShellPreview = shell?.registerPreview;
   const unregisterShellPreview = shell?.unregisterPreview;
   useLayoutEffect(() => {
@@ -318,6 +396,54 @@ export function MediaPreviewProvider({
       unregisterShellPreview(shellPreviewOwner);
     };
   }, [ownsShellPreview, unregisterShellPreview, shellPreviewOwner]);
+
+  const localResidentSeqRef = useRef(0);
+  const [localResidentState, setLocalResidentState] = useState<{
+    readonly client: unknown;
+    readonly entries: readonly ResidentPluginEntry[];
+  }>(() => ({ client: clientIdentity, entries: [] }));
+  useEffect(() => {
+    setLocalResidentState((current) =>
+      current.client === clientIdentity ? current : { client: clientIdentity, entries: [] },
+    );
+  }, [clientIdentity]);
+  const localResidentPluginTabs = useMemo<readonly PluginTab[]>(
+    () => (localResidentState.client === clientIdentity ? localResidentState.entries.map((entry) => entry.tab) : []),
+    [localResidentState, clientIdentity],
+  );
+  const shellPromoteResident = shell?.promoteResidentPluginTab;
+  const shellRemoveResident = shell?.removeResidentPluginTabs;
+  const promoteResidentPlugin = useCallback(
+    (tab: PluginTab) => {
+      if (ownsShellPreviewHost && shellPromoteResident !== undefined) {
+        shellPromoteResident(clientIdentity, tab);
+        return;
+      }
+      const seq = ++localResidentSeqRef.current;
+      setLocalResidentState((current) => {
+        const base = current.client === clientIdentity ? current.entries : [];
+        const nextEntries = promoteResidentPluginEntry(base, tab, seq);
+        if (current.client === clientIdentity && nextEntries === current.entries) return current;
+        return { client: clientIdentity, entries: nextEntries };
+      });
+    },
+    [ownsShellPreviewHost, shellPromoteResident, clientIdentity],
+  );
+  promoteResidentPluginRef.current = promoteResidentPlugin;
+  const removeResidentPlugins = useCallback(
+    (keys: ReadonlySet<string>) => {
+      if (keys.size === 0) return;
+      if (ownsShellPreviewHost && shellRemoveResident !== undefined) {
+        shellRemoveResident(keys);
+        return;
+      }
+      setLocalResidentState((current) => {
+        const nextEntries = removeResidentPluginEntries(current.entries, keys);
+        return nextEntries === current.entries ? current : { client: current.client, entries: nextEntries };
+      });
+    },
+    [ownsShellPreviewHost, shellRemoveResident],
+  );
 
   const [navigation, setNavigation] = useState<FileReference | undefined>();
   const openResource = useCallback(
@@ -388,9 +514,11 @@ export function MediaPreviewProvider({
 
   const openPluginPanel = useCallback((pluginId: string, panelId: string, title?: string) => {
     setNavigation(undefined);
-    setTabsState((state) => openPreviewTab(state, { kind: 'plugin', pluginId, panelId, title }, cwd));
+    const tab: PluginTab = { kind: 'plugin', pluginId, panelId, title };
+    promoteResidentPlugin(tab);
+    setTabsState((state) => openPreviewTab(state, tab, cwd));
     revealPreview();
-  }, [cwd, revealPreview]);
+  }, [cwd, promoteResidentPlugin, revealPreview]);
 
   const togglePanel = useCallback(() => {
     setPanelOpen((value) => {
@@ -412,12 +540,15 @@ export function MediaPreviewProvider({
 
   const requestClose = useCallback(
     (action: CloseAction) => {
-      const affected = affectedByClose(tabsState, action, cwd);
+      const currentTabs = tabsStateRef.current;
+      const affected = affectedByClose(currentTabs, action, cwd);
       const dirty = affected.filter((path) => dirtyPaths.has(path));
       if (dirty.length > 0) {
         setConfirmClose({ dirty, action });
         return;
       }
+      const closedPlugins = affectedPluginKeysByClose(currentTabs, action, cwd);
+      if (closedPlugins.size > 0) removeResidentPlugins(closedPlugins);
       setTabsState((state) => {
         const next = applyCloseAction(state, action, cwd);
         if (next.tabs.length === 0) {
@@ -427,24 +558,31 @@ export function MediaPreviewProvider({
         return next;
       });
     },
-    [cwd, tabsState, dirtyPaths],
+    [cwd, dirtyPaths, removeResidentPlugins],
   );
 
   const confirmCloseRun = useCallback(() => {
-    setConfirmClose((pending) => {
-      if (pending !== null) {
-        setTabsState((state) => {
-          const next = applyCloseAction(state, pending.action, cwd);
-          if (next.tabs.length === 0) {
-            setPanelOpen(false);
-            setPreviewMaximized(false);
-          }
-          return next;
-        });
+    if (confirmClose === null) return;
+    const action = confirmClose.action;
+    setConfirmClose(null);
+    const closedPlugins = affectedPluginKeysByClose(tabsStateRef.current, action, cwd);
+    if (closedPlugins.size > 0) removeResidentPlugins(closedPlugins);
+    setTabsState((state) => {
+      const next = applyCloseAction(state, action, cwd);
+      if (next.tabs.length === 0) {
+        setPanelOpen(false);
+        setPreviewMaximized(false);
       }
-      return null;
+      return next;
     });
-  }, [cwd]);
+  }, [confirmClose, cwd, removeResidentPlugins]);
+
+  const handleActivate = useCallback((key: string) => {
+    setNavigation(undefined);
+    const target = tabsState.tabs.find((tab) => previewTabKey(tab, cwd) === key);
+    if (target?.kind === 'plugin') promoteResidentPlugin(target);
+    setTabsState((state) => ({ ...state, active: key }));
+  }, [cwd, promoteResidentPlugin, tabsState.tabs]);
 
   const handleMove = useCallback((key: string, targetIndex: number) => {
     setTabsState((state) => movePreviewTab(state, key, targetIndex, cwd));
@@ -599,7 +737,104 @@ export function MediaPreviewProvider({
 
   const phoneMode = usePhoneMode();
   const panelHidden = !panelOpen;
-  const panelOverlay = phoneMode || shell?.slots.preview === null || shell?.slots.preview === undefined;
+  const panelOverlay =
+    phoneMode || (!ownsShellPreviewHost && (shell?.slots.preview === null || shell?.slots.preview === undefined));
+  const hasResidentPlugins = ownsShellPreviewHost
+    ? (shell?.residentPluginCount ?? 0) > 0
+    : localResidentPluginTabs.length > 0;
+  const shouldMountWorkspace = tabsState.tabs.length > 0 || hasResidentPlugins;
+  const handleOpenImage = useCallback(
+    (src: string, name?: string, sourcePath?: string) => {
+      setImage({ src, name, sourcePath, client: clientIdentity, sessionId, agentId: snapshotAgentId });
+    },
+    [clientIdentity, sessionId, snapshotAgentId],
+  );
+  const shellHostPayload = useMemo<ShellPreviewHostPayload | null>(() => {
+    if (!ownsShellPreviewHost || !shouldMountWorkspace) return null;
+    return {
+      surface: {
+        previewKey,
+        tabsState,
+        navigation,
+        dirtyPaths,
+        width,
+        panelHidden,
+        panelOverlay,
+        phoneMode,
+        effectiveMaximized,
+        togglePreviewMaximized,
+        exitPreviewMaximized,
+        sessionViewState: workspaceSessionState ?? sessionViewState,
+        agentForest,
+        onOpenSubagent,
+        controller,
+        workspaceNavigation,
+        onCancelTask,
+        onStopAgentTask,
+        onActivate: handleActivate,
+        onRequestClose: requestClose,
+        onMove: handleMove,
+        collapsePanel,
+        onWidthChange: handleWidthChange,
+        onOpenImage: handleOpenImage,
+        reportDirty,
+        positions,
+        reportPosition,
+        cwd,
+        sessionId,
+      },
+      api,
+      activeDraftKey,
+    };
+  }, [
+    ownsShellPreviewHost,
+    shouldMountWorkspace,
+    previewKey,
+    tabsState,
+    navigation,
+    dirtyPaths,
+    width,
+    panelHidden,
+    panelOverlay,
+    phoneMode,
+    effectiveMaximized,
+    togglePreviewMaximized,
+    exitPreviewMaximized,
+    workspaceSessionState,
+    sessionViewState,
+    agentForest,
+    onOpenSubagent,
+    controller,
+    workspaceNavigation,
+    onCancelTask,
+    onStopAgentTask,
+    handleActivate,
+    requestClose,
+    handleMove,
+    collapsePanel,
+    handleWidthChange,
+    handleOpenImage,
+    reportDirty,
+    positions,
+    reportPosition,
+    cwd,
+    sessionId,
+    api,
+    activeDraftKey,
+  ]);
+  const registerShellPreviewHost = shell?.registerPreviewHost;
+  const unregisterShellPreviewHost = shell?.unregisterPreviewHost;
+  useLayoutEffect(() => {
+    if (!ownsShellPreviewHost || registerShellPreviewHost === undefined) return;
+    registerShellPreviewHost(shellPreviewOwner, shellHostPayload);
+  }, [ownsShellPreviewHost, registerShellPreviewHost, shellPreviewOwner, shellHostPayload]);
+  useLayoutEffect(() => {
+    if (!ownsShellPreviewHost || unregisterShellPreviewHost === undefined) return;
+    return () => {
+      unregisterShellPreviewHost(shellPreviewOwner);
+    };
+  }, [ownsShellPreviewHost, unregisterShellPreviewHost, shellPreviewOwner]);
+
   const activeGallery =
     gallery !== null &&
     gallery.client === clientIdentity &&
@@ -616,7 +851,7 @@ export function MediaPreviewProvider({
       ? image
       : null;
   const hasActiveOverlays =
-    tabsState.tabs.length > 0 ||
+    (!ownsShellPreviewHost && shouldMountWorkspace) ||
     confirmClose !== null ||
     activeGallery !== null ||
     activeImage !== null;
@@ -629,6 +864,8 @@ export function MediaPreviewProvider({
           <LazyMediaPreviewOverlays
             previewKey={previewKey}
             tabsState={tabsState}
+            residentPluginTabs={localResidentPluginTabs}
+            renderWorkspacePanel={!ownsShellPreviewHost}
             navigation={navigation}
             dirtyPaths={dirtyPaths}
             width={width}
@@ -645,12 +882,12 @@ export function MediaPreviewProvider({
             workspaceNavigation={workspaceNavigation}
             onCancelTask={onCancelTask}
             onStopAgentTask={onStopAgentTask}
-            onActivate={(key) => { setNavigation(undefined); setTabsState((state) => ({ ...state, active: key })); }}
+            onActivate={handleActivate}
             onRequestClose={requestClose}
             onMove={handleMove}
             collapsePanel={collapsePanel}
             onWidthChange={handleWidthChange}
-            onOpenImage={(src, name, sourcePath) => { setImage({ src, name, sourcePath, client: clientIdentity, sessionId, agentId: snapshotAgentId }); }}
+            onOpenImage={handleOpenImage}
             reportDirty={reportDirty}
             positions={positions}
             reportPosition={reportPosition}

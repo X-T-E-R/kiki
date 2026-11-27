@@ -7,15 +7,20 @@ import { useI18n } from '../i18n';
 import { lazyComponent } from '../lib/lazyComponent';
 import { anyOverlayOpen } from '../lib/uiBusy';
 import { useOptionalConnection } from '../state/connection';
-import type { PreviewTabsState } from '../state/previewWorkspace';
+import {
+  DEFAULT_PREVIEW_WIDTH,
+  EMPTY_PREVIEW_TABS,
+  type PluginTab,
+  type PreviewTabsState,
+} from '../state/previewWorkspace';
 import type { PreviewWorkspaceProps } from './PreviewWorkspace';
 import type { AgentWorkspaceNavigation } from './agent-workspace';
 import { httpImageLink, mediaOutcomeKey, resolveImageMime } from './imageActions';
 import { imagePreviewLabel, safeImagePreviewName } from './imagePreviewName';
 import type { GalleryImage } from './mediaGallery';
 import type { AnnotationRecord, MediaLightboxThumbnail } from './MediaLightbox';
-import { useSessionMedia } from './mediaParts';
-import { useMediaPreview } from './mediaPreviewContext';
+import { ActiveDraftKeyProvider, useSessionMedia } from './mediaParts';
+import { MediaPreviewContext, useMediaPreview, type MediaPreviewApi } from './mediaPreviewContext';
 import {
   LazyMediaLightbox,
   LazyPreviewWorkspace,
@@ -37,9 +42,10 @@ export type PreviewCloseAction =
   | { readonly kind: 'others'; readonly key: string }
   | { readonly kind: 'all' };
 
-export interface MediaPreviewOverlaysProps {
+export interface PreviewWorkspaceSurfaceProps {
   readonly previewKey: string;
   readonly tabsState: PreviewTabsState;
+  readonly residentPluginTabs: readonly PluginTab[];
   readonly navigation: PreviewWorkspaceProps['navigation'];
   readonly dirtyPaths: ReadonlySet<string>;
   readonly width: number;
@@ -67,35 +73,23 @@ export interface MediaPreviewOverlaysProps {
   readonly reportPosition: (key: string, position: { top: number; left?: number }) => void;
   readonly cwd?: string;
   readonly sessionId?: string;
-  readonly renderDesktopPortal: (panel: ReactNode) => ReactNode;
-  readonly confirmClose: { readonly dirty: readonly string[]; readonly action: PreviewCloseAction } | null;
-  readonly confirmCloseRun: () => void;
-  readonly onCancelConfirmClose: () => void;
-  readonly activeGallery: {
-    readonly images: readonly GalleryImage[];
-    readonly selected: number;
-    readonly targetAgentId?: string;
-    readonly seededId?: string;
-    readonly seededSrc?: string;
-  } | null;
-  readonly onSelectGallery: (selected: number) => void;
-  readonly onCloseGallery: () => void;
-  readonly activeImage: {
-    readonly src: string;
-    readonly name?: string;
-    readonly sourcePath?: string;
-    readonly targetAgentId?: string;
-  } | null;
-  readonly onCloseImage: () => void;
-  readonly localKikiComputer: boolean;
-  readonly lightboxAnnotations: Readonly<Record<string, AnnotationRecord>>;
-  readonly setLightboxAnnotations: React.Dispatch<React.SetStateAction<Record<string, AnnotationRecord>>>;
-  readonly attachAnnotatedImageFor: (targetAgentId?: string) => ((blob: Blob, filename: string) => Promise<boolean> | boolean) | undefined;
+  readonly renderDesktopPortal?: (panel: ReactNode) => ReactNode;
 }
 
-export function MediaPreviewOverlays({
+export interface ShellPreviewHostPayload {
+  readonly surface: Omit<PreviewWorkspaceSurfaceProps, 'residentPluginTabs' | 'renderDesktopPortal'>;
+  readonly api: MediaPreviewApi;
+  readonly activeDraftKey?: string;
+}
+
+const NOOP = () => {};
+const EMPTY_DIRTY_PATHS: ReadonlySet<string> = new Set();
+const EMPTY_POSITIONS: Readonly<Record<string, { top: number; left?: number }>> = {};
+
+export function PreviewWorkspaceSurface({
   previewKey,
   tabsState,
+  residentPluginTabs,
   navigation,
   dirtyPaths,
   width,
@@ -124,44 +118,40 @@ export function MediaPreviewOverlays({
   cwd,
   sessionId,
   renderDesktopPortal,
-  confirmClose,
-  confirmCloseRun,
-  onCancelConfirmClose,
-  activeGallery,
-  onSelectGallery,
-  onCloseGallery,
-  activeImage,
-  onCloseImage,
-  localKikiComputer,
-  lightboxAnnotations,
-  setLightboxAnnotations,
-  attachAnnotatedImageFor,
-}: MediaPreviewOverlaysProps) {
+}: PreviewWorkspaceSurfaceProps) {
   const { t } = useI18n();
   const [drawerHostEl, setDrawerHostEl] = useState<HTMLDivElement | null>(null);
+  const hasTabs = tabsState.tabs.length > 0;
+  const shouldMount = hasTabs || residentPluginTabs.length > 0;
+  const effectiveHidden = panelHidden || !hasTabs;
 
-  const panel = tabsState.tabs.length > 0 ? (
+  if (!shouldMount) {
+    return null;
+  }
+
+  const panel = (
     <PreviewLoadBoundary
       resetKey={previewKey}
       renderFailure={(error) => (
         <PreviewPanelLoadFailure
           error={error}
           width={width}
-          hidden={panelHidden}
+          hidden={effectiveHidden}
           overlay={panelOverlay}
           onCollapse={collapsePanel}
         />
       )}
     >
-      <Suspense fallback={<PreviewPanelLoadingShell width={width} hidden={panelHidden} overlay={panelOverlay} />}>
+      <Suspense fallback={<PreviewPanelLoadingShell width={width} hidden={effectiveHidden} overlay={panelOverlay} />}>
         <LazyPreviewWorkspace
           tabs={tabsState.tabs}
+          residentPluginTabs={residentPluginTabs}
           active={tabsState.active}
           navigation={navigation}
           dirtyPaths={dirtyPaths}
           width={width}
-          hidden={panelHidden}
-          isFullscreen={effectiveMaximized}
+          hidden={effectiveHidden}
+          isFullscreen={effectiveMaximized && !effectiveHidden}
           onToggleFullscreen={togglePreviewMaximized}
           onExitFullscreen={exitPreviewMaximized}
           sessionViewState={sessionViewState}
@@ -188,7 +178,7 @@ export function MediaPreviewOverlays({
         />
       </Suspense>
     </PreviewLoadBoundary>
-  ) : null;
+  );
 
   const portalContainer =
     drawerHostEl !== null && drawerHostEl.closest('.kiki-drawer-indent') === null
@@ -197,8 +187,8 @@ export function MediaPreviewOverlays({
 
   return (
     <>
-      <div ref={setDrawerHostEl} className="contents" />
-      {panel !== null && phoneMode && !panelHidden ? (
+      {phoneMode ? <div ref={setDrawerHostEl} className="contents" /> : null}
+      {phoneMode && !effectiveHidden ? (
         <Drawer.Root
           open
           modal="trap-focus"
@@ -228,7 +218,168 @@ export function MediaPreviewOverlays({
             </Drawer.Viewport>
           </Drawer.Portal>
         </Drawer.Root>
-      ) : panel !== null ? renderDesktopPortal(panel) : null}
+      ) : renderDesktopPortal !== undefined ? renderDesktopPortal(panel) : panel}
+    </>
+  );
+}
+
+export function ShellPreviewWorkspaceHost({
+  host,
+  residentPluginTabs,
+  fallbackSessionId,
+}: {
+  readonly host: ShellPreviewHostPayload | null;
+  readonly residentPluginTabs: readonly PluginTab[];
+  readonly fallbackSessionId?: string;
+}) {
+  if (host === null && residentPluginTabs.length === 0) return null;
+  const surfaceProps: PreviewWorkspaceSurfaceProps = host !== null
+    ? { ...host.surface, residentPluginTabs }
+    : {
+        previewKey: 'preview:shell-resident',
+        tabsState: EMPTY_PREVIEW_TABS,
+        residentPluginTabs,
+        navigation: undefined,
+        dirtyPaths: EMPTY_DIRTY_PATHS,
+        width: DEFAULT_PREVIEW_WIDTH,
+        panelHidden: true,
+        panelOverlay: false,
+        phoneMode: false,
+        effectiveMaximized: false,
+        togglePreviewMaximized: NOOP,
+        exitPreviewMaximized: NOOP,
+        onActivate: NOOP,
+        onRequestClose: NOOP,
+        onMove: NOOP,
+        collapsePanel: NOOP,
+        onWidthChange: NOOP,
+        onOpenImage: NOOP,
+        reportDirty: NOOP,
+        positions: EMPTY_POSITIONS,
+        reportPosition: NOOP,
+        sessionId: fallbackSessionId,
+      };
+  return (
+    <ActiveDraftKeyProvider sessionId={surfaceProps.sessionId} draftKey={host?.activeDraftKey}>
+      <MediaPreviewContext.Provider value={host?.api ?? null}>
+        <PreviewWorkspaceSurface {...surfaceProps} />
+      </MediaPreviewContext.Provider>
+    </ActiveDraftKeyProvider>
+  );
+}
+
+export interface MediaPreviewOverlaysProps extends PreviewWorkspaceSurfaceProps {
+  readonly renderWorkspacePanel?: boolean;
+  readonly confirmClose: { readonly dirty: readonly string[]; readonly action: PreviewCloseAction } | null;
+  readonly confirmCloseRun: () => void;
+  readonly onCancelConfirmClose: () => void;
+  readonly activeGallery: {
+    readonly images: readonly GalleryImage[];
+    readonly selected: number;
+    readonly targetAgentId?: string;
+    readonly seededId?: string;
+    readonly seededSrc?: string;
+  } | null;
+  readonly onSelectGallery: (selected: number) => void;
+  readonly onCloseGallery: () => void;
+  readonly activeImage: {
+    readonly src: string;
+    readonly name?: string;
+    readonly sourcePath?: string;
+    readonly targetAgentId?: string;
+  } | null;
+  readonly onCloseImage: () => void;
+  readonly localKikiComputer: boolean;
+  readonly lightboxAnnotations: Readonly<Record<string, AnnotationRecord>>;
+  readonly setLightboxAnnotations: React.Dispatch<React.SetStateAction<Record<string, AnnotationRecord>>>;
+  readonly attachAnnotatedImageFor: (targetAgentId?: string) => ((blob: Blob, filename: string) => Promise<boolean> | boolean) | undefined;
+}
+
+export function MediaPreviewOverlays({
+  previewKey,
+  tabsState,
+  residentPluginTabs,
+  navigation,
+  dirtyPaths,
+  width,
+  panelHidden,
+  panelOverlay,
+  phoneMode,
+  effectiveMaximized,
+  togglePreviewMaximized,
+  exitPreviewMaximized,
+  sessionViewState,
+  agentForest,
+  onOpenSubagent,
+  controller,
+  workspaceNavigation,
+  onCancelTask,
+  onStopAgentTask,
+  onActivate,
+  onRequestClose,
+  onMove,
+  collapsePanel,
+  onWidthChange,
+  onOpenImage,
+  reportDirty,
+  positions,
+  reportPosition,
+  cwd,
+  sessionId,
+  renderDesktopPortal,
+  renderWorkspacePanel = true,
+  confirmClose,
+  confirmCloseRun,
+  onCancelConfirmClose,
+  activeGallery,
+  onSelectGallery,
+  onCloseGallery,
+  activeImage,
+  onCloseImage,
+  localKikiComputer,
+  lightboxAnnotations,
+  setLightboxAnnotations,
+  attachAnnotatedImageFor,
+}: MediaPreviewOverlaysProps) {
+  const { t } = useI18n();
+
+  return (
+    <>
+      {renderWorkspacePanel ? (
+        <PreviewWorkspaceSurface
+          previewKey={previewKey}
+          tabsState={tabsState}
+          residentPluginTabs={residentPluginTabs}
+          navigation={navigation}
+          dirtyPaths={dirtyPaths}
+          width={width}
+          panelHidden={panelHidden}
+          panelOverlay={panelOverlay}
+          phoneMode={phoneMode}
+          effectiveMaximized={effectiveMaximized}
+          togglePreviewMaximized={togglePreviewMaximized}
+          exitPreviewMaximized={exitPreviewMaximized}
+          sessionViewState={sessionViewState}
+          agentForest={agentForest}
+          onOpenSubagent={onOpenSubagent}
+          controller={controller}
+          workspaceNavigation={workspaceNavigation}
+          onCancelTask={onCancelTask}
+          onStopAgentTask={onStopAgentTask}
+          onActivate={onActivate}
+          onRequestClose={onRequestClose}
+          onMove={onMove}
+          collapsePanel={collapsePanel}
+          onWidthChange={onWidthChange}
+          onOpenImage={onOpenImage}
+          reportDirty={reportDirty}
+          positions={positions}
+          reportPosition={reportPosition}
+          cwd={cwd}
+          sessionId={sessionId}
+          renderDesktopPortal={renderDesktopPortal}
+        />
+      ) : null}
       {confirmClose !== null ? (
         <ConfirmDialog
           open

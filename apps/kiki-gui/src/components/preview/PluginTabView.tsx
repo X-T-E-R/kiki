@@ -147,6 +147,7 @@ export function PreviewPluginView({
           sessionId={sessionId}
           workspaceId={undefined}
           variant="workspace"
+          visible={visible}
         />
       </div>
     </div>

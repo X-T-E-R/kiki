@@ -17,6 +17,12 @@ import {
 } from './previewResource';
 
 export const DEFAULT_PREVIEW_WIDTH = 480;
+export const MAX_RESIDENT_PLUGIN_TABS = 6;
+
+export interface ResidentPluginEntry {
+  readonly tab: PluginTab;
+  readonly lastUsed: number;
+}
 
 export interface ResourceTab {
   readonly kind: 'resource';
@@ -266,4 +272,54 @@ export function movePreviewTab(
   if (removed === undefined) return state;
   tabs.splice(to, 0, removed);
   return { ...state, tabs };
+}
+
+/**
+ * Promote a plugin tab in the bounded resident pool while preserving existing
+ * array indices so mounted `<PreviewPluginView>` siblings never reorder in the
+ * DOM (reordering an iframe reloads its document). When at capacity, evicts
+ * the least-recently-used entry and appends the new tab at the end.
+ */
+export function promoteResidentPluginEntry(
+  entries: readonly ResidentPluginEntry[],
+  tab: PluginTab,
+  seq: number,
+  limit = MAX_RESIDENT_PLUGIN_TABS,
+): readonly ResidentPluginEntry[] {
+  const key = previewTabKey(tab);
+  const existingIndex = entries.findIndex((entry) => previewTabKey(entry.tab) === key);
+  if (existingIndex !== -1) {
+    const existing = entries[existingIndex]!;
+    const nextTab: PluginTab =
+      tab.title !== undefined && tab.title.trim() !== ''
+        ? tab
+        : existing.tab;
+    if (existing.lastUsed === seq && existing.tab === nextTab) return entries;
+    const updated = [...entries];
+    updated[existingIndex] = { tab: nextTab, lastUsed: seq };
+    return updated;
+  }
+  const kept = entries.length >= limit && limit > 0
+    ? (() => {
+        let oldestIndex = 0;
+        for (let index = 1; index < entries.length; index += 1) {
+          if (entries[index]!.lastUsed < entries[oldestIndex]!.lastUsed) {
+            oldestIndex = index;
+          }
+        }
+        return entries.filter((_, index) => index !== oldestIndex);
+      })()
+    : entries;
+  if (limit <= 0) return [];
+  return [...kept, { tab, lastUsed: seq }];
+}
+
+/** Remove explicitly closed plugin tabs from the resident pool without reordering survivors. */
+export function removeResidentPluginEntries(
+  entries: readonly ResidentPluginEntry[],
+  removedKeys: ReadonlySet<string>,
+): readonly ResidentPluginEntry[] {
+  if (removedKeys.size === 0 || entries.length === 0) return entries;
+  const next = entries.filter((entry) => !removedKeys.has(previewTabKey(entry.tab)));
+  return next.length === entries.length ? entries : next;
 }

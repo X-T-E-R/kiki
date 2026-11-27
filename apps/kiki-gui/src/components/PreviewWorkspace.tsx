@@ -27,6 +27,7 @@ import {
 import {
   normalizeTabInput,
   previewTabKey,
+  type PluginTab,
   type PreviewTab as PreviewTabModel,
 } from '#/state/previewWorkspace';
 import { AgentWorkspace, type AgentWorkspaceNavigation } from './agent-workspace/AgentWorkspace';
@@ -72,8 +73,11 @@ function comparableHostPath(rawPath: string, cwd: string | undefined): string {
     : normalized;
 }
 
+const EMPTY_RESIDENT_PLUGIN_TABS: readonly PluginTab[] = [];
+
 export interface PreviewWorkspaceProps {
   readonly tabs: readonly (string | PreviewTabModel)[];
+  readonly residentPluginTabs?: readonly PluginTab[];
   readonly active: string | null;
   readonly navigation?: FileReference;
   readonly dirtyPaths: ReadonlySet<string>;
@@ -126,6 +130,7 @@ export interface PreviewWorkspaceProps {
 
 export function PreviewWorkspace({
   tabs,
+  residentPluginTabs = EMPTY_RESIDENT_PLUGIN_TABS,
   active,
   navigation,
   dirtyPaths,
@@ -201,6 +206,8 @@ export function PreviewWorkspace({
     () => tabs.map((tab) => normalizeTabInput(tab, cwd)),
     [tabs, cwd],
   );
+  const effectiveHidden = hidden || normalizedTabs.length === 0;
+  const effectiveFullscreen = isFullscreen && !effectiveHidden;
   const resolvedActive = useMemo(() => {
     if (active === null || active === '') return null;
     if (normalizedTabs.some((tab) => previewTabKey(tab, cwd) === active)) return active;
@@ -210,7 +217,7 @@ export function PreviewWorkspace({
 
   useEffect(() => {
     const el = workspaceRef.current;
-    if (el === null || hidden) return undefined;
+    if (el === null || effectiveHidden) return undefined;
     const measure = () => {
       const zoom = cssZoomFactor();
       const raw = el.getBoundingClientRect().width || el.clientWidth;
@@ -224,12 +231,12 @@ export function PreviewWorkspace({
     const observer = new ResizeObserver(measure);
     observer.observe(el);
     return () => { observer.disconnect(); };
-  }, [hidden, isFullscreen, width, normalizedTabs.length]);
+  }, [effectiveHidden, effectiveFullscreen, width, normalizedTabs.length]);
 
   const effectivePaneWidth =
     measuredPaneWidth !== null && measuredPaneWidth > 0
       ? measuredPaneWidth
-      : isFullscreen
+      : effectiveFullscreen
         ? unzoomedViewport().width
         : width;
   const widthTier = previewWidthTier(effectivePaneWidth, phoneMode);
@@ -260,9 +267,29 @@ export function PreviewWorkspace({
     () => new Set(normalizedTabs.map((tab) => previewTabKey(tab, cwd))),
     [normalizedTabs, cwd],
   );
+  const mountedPluginTabs = useMemo(() => {
+    const openPlugins = new Map<string, PluginTab>();
+    for (const tab of normalizedTabs) {
+      if (tab.kind === 'plugin') openPlugins.set(previewTabKey(tab, cwd), tab);
+    }
+    const list: Array<{ readonly tab: PluginTab; readonly key: string; readonly isResident: boolean }> = [];
+    const added = new Set<string>();
+    for (const resident of residentPluginTabs) {
+      const key = previewTabKey(resident, cwd);
+      if (added.has(key)) continue;
+      added.add(key);
+      list.push({ tab: openPlugins.get(key) ?? resident, key, isResident: true });
+    }
+    for (const [key, tab] of openPlugins) {
+      if (added.has(key)) continue;
+      added.add(key);
+      list.push({ tab, key, isResident: false });
+    }
+    return list;
+  }, [normalizedTabs, residentPluginTabs, cwd]);
   const [seenTabs, setSeenTabs] = useState<ReadonlySet<string>>(() => new Set());
   const nextSeen = new Set([...seenTabs].filter((key) => openTabKeys.has(key)));
-  if (!hidden && resolvedActive !== null && resolvedActive !== '' && openTabKeys.has(resolvedActive)) {
+  if (!effectiveHidden && resolvedActive !== null && resolvedActive !== '' && openTabKeys.has(resolvedActive)) {
     nextSeen.add(resolvedActive);
   }
   if (nextSeen.size !== seenTabs.size || [...nextSeen].some((key) => !seenTabs.has(key))) setSeenTabs(nextSeen);
@@ -315,7 +342,7 @@ export function PreviewWorkspace({
   // The shared rail owns the first Escape even if this listener runs before
   // SessionView's rail closer. The next unclaimed Escape exits fullscreen.
   useEffect(() => {
-    if (!isFullscreen) return;
+    if (!effectiveFullscreen) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented || anyOverlayOpen()) return;
       const sharedRail = workspaceNavigation?.sharedRail;
@@ -333,7 +360,7 @@ export function PreviewWorkspace({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => { window.removeEventListener('keydown', onKeyDown); };
-  }, [exitFullscreen, isFullscreen, workspaceNavigation?.sharedRail]);
+  }, [exitFullscreen, effectiveFullscreen, workspaceNavigation?.sharedRail]);
 
   const resolvePreviewBounds = useCallback((handle: HTMLElement) => {
     const workspaceEl = workspaceRef.current ?? handle.closest<HTMLElement>('[data-preview-workspace]');
@@ -366,16 +393,16 @@ export function PreviewWorkspace({
     },
   });
 
-  if (normalizedTabs.length === 0) {
+  if (normalizedTabs.length === 0 && mountedPluginTabs.length === 0) {
     return null;
   }
 
-  const containerClasses = isFullscreen && overlay
+  const containerClasses = effectiveFullscreen && overlay
     ? 'fixed inset-0 z-40 flex h-full w-full flex-col bg-panel'
-    : `preview-workspace ${overlay ? 'preview-workspace--overlay' : ''} ${isFullscreen ? 'preview-workspace--fullscreen' : ''}`;
+    : `preview-workspace ${overlay ? 'preview-workspace--overlay' : ''} ${effectiveFullscreen ? 'preview-workspace--fullscreen' : ''}`;
 
-  const hiddenStyle = hidden ? { display: 'none' as const } : undefined;
-  const containerStyle = isFullscreen ? hiddenStyle : {
+  const hiddenStyle = effectiveHidden ? { display: 'none' as const } : undefined;
+  const containerStyle = effectiveFullscreen ? hiddenStyle : {
     width: narrow ? '100%' : width,
     maxWidth: narrow ? 'none' : undefined,
     ...hiddenStyle,
@@ -386,7 +413,7 @@ export function PreviewWorkspace({
     sharedRail !== undefined &&
     sharedRail.available !== false &&
     !phoneMode &&
-    isFullscreen &&
+    effectiveFullscreen &&
     !narrow;
 
   return (
@@ -394,13 +421,13 @@ export function PreviewWorkspace({
       ref={workspaceRef}
       data-preview-workspace
       data-preview-width-tier={widthTier}
-      data-preview-fullscreen={isFullscreen ? '' : undefined}
-      hidden={hidden}
+      data-preview-fullscreen={effectiveFullscreen ? '' : undefined}
+      hidden={effectiveHidden}
       aria-label={t('preview.title')}
       className={containerClasses}
       style={containerStyle}
     >
-      {!isFullscreen && !phoneMode ? (
+      {!effectiveFullscreen && !phoneMode && normalizedTabs.length > 0 ? (
         <div
           className="preview-workspace__resizer"
           role="separator"
@@ -408,33 +435,35 @@ export function PreviewWorkspace({
           aria-label={t('preview.resetWidth')}
           tabIndex={0}
           title={t('preview.resetWidth')}
-          onPointerDown={(event) => { if (!isFullscreen) startResize(event); }}
+          onPointerDown={(event) => { if (!effectiveFullscreen) startResize(event); }}
           onKeyDown={onResizerKeyDown}
           onDoubleClick={resetPreviewWidth}
         />
       ) : null}
-      <PreviewTabStrip
-        tabs={normalizedTabs}
-        active={resolvedActive}
-        dirtyPaths={dirtyPaths}
-        tabReadStates={tabReadStates}
-        agentForest={agentForest}
-        cwd={cwd}
-        sessionId={sessionId}
-        phoneMode={phoneMode}
-        widthTier={widthTier}
-        unifiedHead={unifiedHead}
-        actionsSlotRef={actionsSlotRef}
-        isFullscreen={isFullscreen}
-        onToggleFullscreen={toggleFullscreen}
-        railOpen={sharedRail?.open}
-        onToggleRail={showStripRailToggle ? sharedRail.toggle : undefined}
-        onCollapse={onCollapse}
-        onActivate={onActivate}
-        onClose={onClose}
-        onMove={onMove}
-        onOpenContextMenu={(tab, x, y) => { setMenu({ tab, x, y }); }}
-      />
+      {normalizedTabs.length > 0 ? (
+        <PreviewTabStrip
+          tabs={normalizedTabs}
+          active={resolvedActive}
+          dirtyPaths={dirtyPaths}
+          tabReadStates={tabReadStates}
+          agentForest={agentForest}
+          cwd={cwd}
+          sessionId={sessionId}
+          phoneMode={phoneMode}
+          widthTier={widthTier}
+          unifiedHead={unifiedHead}
+          actionsSlotRef={actionsSlotRef}
+          isFullscreen={effectiveFullscreen}
+          onToggleFullscreen={toggleFullscreen}
+          railOpen={sharedRail?.open}
+          onToggleRail={showStripRailToggle ? sharedRail.toggle : undefined}
+          onCollapse={onCollapse}
+          onActivate={onActivate}
+          onClose={onClose}
+          onMove={onMove}
+          onOpenContextMenu={(tab, x, y) => { setMenu({ tab, x, y }); }}
+        />
+      ) : null}
       <PreviewHeaderSlotProvider value={headerSlotValue}>
       {normalizedTabs.map((tab) => {
         const key = previewTabKey(tab, cwd);
@@ -470,7 +499,7 @@ export function PreviewWorkspace({
                   sessionState={sessionViewState}
                   forest={agentForest}
                   navigation={workspaceNavigation}
-                  visible={isTabActive && !hidden}
+                  visible={isTabActive && !effectiveHidden}
                   suppressRailToggle={showStripRailToggle}
                   onCancelTask={onCancelTask}
                   onStopAgentTask={onStopAgentTask}
@@ -489,7 +518,7 @@ export function PreviewWorkspace({
               key={key}
               tabKey={key}
               name={tab.name}
-              visible={isTabActive && !hidden}
+              visible={isTabActive && !effectiveHidden}
               position={tabPosition}
               onScrollPosition={onScrollPosition === undefined ? undefined : (position) => { onScrollPosition(key, position); }}
             />
@@ -503,29 +532,13 @@ export function PreviewWorkspace({
               tabKey={key}
               url={tab.url}
               title={tab.title}
-              visible={isTabActive && !hidden}
+              visible={isTabActive && !effectiveHidden}
               externalReloadNonce={reloadNonces[key]}
             />
           );
         }
         if (tab.kind === 'plugin') {
-          if (!seenTabs.has(key)) return null;
-          return (
-            <PreviewPluginView
-              key={key}
-              tabKey={key}
-              pluginId={tab.pluginId}
-              panelId={tab.panelId}
-              title={tab.title}
-              sessionId={sessionId}
-              visible={isTabActive && !hidden}
-              isFullscreen={isFullscreen}
-              onToggleFullscreen={toggleFullscreen}
-              onCollapse={onCollapse}
-              onCloseTab={() => { onClose(key); }}
-              externalReloadNonce={reloadNonces[key]}
-            />
-          );
+          return null;
         }
         if (!seenTabs.has(key)) return null;
         return (
@@ -535,7 +548,7 @@ export function PreviewWorkspace({
             resource={tab.resource}
             size={tab.size}
             workspaceRoot={cwd}
-            visible={isTabActive && !hidden}
+            visible={isTabActive && !effectiveHidden}
             navigation={
               tab.resource.source.kind === 'host-file' &&
               navigation !== undefined &&
@@ -558,6 +571,27 @@ export function PreviewWorkspace({
             position={tabPosition}
             onScrollPosition={onScrollPosition === undefined ? undefined : (position) => { onScrollPosition(key, position); }}
             sessionId={sessionId}
+          />
+        );
+      })}
+      {mountedPluginTabs.map(({ tab, key, isResident }) => {
+        if (!isResident && !seenTabs.has(key)) return null;
+        const isTabOpen = openTabKeys.has(key);
+        const isTabActive = isTabOpen && key === resolvedActive;
+        return (
+          <PreviewPluginView
+            key={key}
+            tabKey={key}
+            pluginId={tab.pluginId}
+            panelId={tab.panelId}
+            title={tab.title}
+            sessionId={sessionId}
+            visible={isTabActive && !effectiveHidden}
+            isFullscreen={effectiveFullscreen}
+            onToggleFullscreen={toggleFullscreen}
+            onCollapse={onCollapse}
+            onCloseTab={() => { onClose(key); }}
+            externalReloadNonce={reloadNonces[key]}
           />
         );
       })}

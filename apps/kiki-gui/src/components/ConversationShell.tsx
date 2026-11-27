@@ -35,6 +35,7 @@ import {
   memo,
   useCallback,
   useContext,
+  useEffect,
   useId,
   useLayoutEffect,
   useMemo,
@@ -47,8 +48,25 @@ import { Outlet, useMatch } from 'react-router-dom';
 
 const MemoOutlet = memo(Outlet);
 
+import { lazyComponent } from '../lib/lazyComponent';
+import * as connectionState from '../state/connection';
+import {
+  promoteResidentPluginEntry,
+  removeResidentPluginEntries,
+  type PluginTab,
+  type ResidentPluginEntry,
+} from '../state/previewWorkspace';
+import type { ShellPreviewHostPayload } from './MediaPreviewOverlays';
 import { SeatFileDropContext, type SeatFileDrop } from './seatFileDrop';
 import { ToastAnchor } from './Toasts';
+
+const LazyShellPreviewWorkspaceHost = lazyComponent(() =>
+  import('./MediaPreviewOverlays').then((m) => m.ShellPreviewWorkspaceHost),
+);
+
+if (import.meta.env.MODE === 'test') {
+  await LazyShellPreviewWorkspaceHost.preload();
+}
 
 export type ConversationPhase = 'hero' | 'settling' | 'active';
 
@@ -89,6 +107,11 @@ interface ConversationShellContextValue {
   readonly previewPresentation?: ConversationPreviewPresentation;
   readonly registerPreview?: (owner: object, presentation: ConversationPreviewPresentation) => void;
   readonly unregisterPreview?: (owner: object) => void;
+  readonly residentPluginCount?: number;
+  readonly registerPreviewHost?: (owner: object, payload: ShellPreviewHostPayload | null) => void;
+  readonly unregisterPreviewHost?: (owner: object) => void;
+  readonly promoteResidentPluginTab?: (client: unknown, tab: PluginTab) => void;
+  readonly removeResidentPluginTabs?: (keys: ReadonlySet<string>) => void;
   readonly registerSeat: (seat: ConversationSeat) => void;
   readonly unregisterSeat: (seat: ConversationSeat) => void;
 }
@@ -246,6 +269,12 @@ export function ConversationShell() {
   const [preview, previewRef] = useSlotRef();
   const [column, columnRef] = useSlotRef();
 
+  const connection =
+    'useOptionalConnection' in connectionState && typeof connectionState.useOptionalConnection === 'function'
+      ? connectionState.useOptionalConnection()
+      : null;
+  const connectionClient = connection?.client;
+
   const [previewPresentation, setPreviewPresentation] = useState<ConversationPreviewPresentation>(
     DEFAULT_PREVIEW_PRESENTATION,
   );
@@ -267,6 +296,60 @@ export function ConversationShell() {
     );
   }, []);
 
+  const [previewHost, setPreviewHost] = useState<{
+    readonly owner: object;
+    readonly payload: ShellPreviewHostPayload;
+  } | null>(null);
+  const previewHostOwnerRef = useRef<object | null>(null);
+  const registerPreviewHost = useCallback((owner: object, payload: ShellPreviewHostPayload | null) => {
+    previewHostOwnerRef.current = owner;
+    setPreviewHost((current) => {
+      if (payload === null) return current?.owner === owner ? null : current;
+      if (current !== null && current.owner === owner && current.payload === payload) return current;
+      return { owner, payload };
+    });
+  }, []);
+  const unregisterPreviewHost = useCallback((owner: object) => {
+    if (previewHostOwnerRef.current !== owner) return;
+    previewHostOwnerRef.current = null;
+    setPreviewHost((current) => (current?.owner === owner ? null : current));
+  }, []);
+
+  const residentSeqRef = useRef(0);
+  const [residentState, setResidentState] = useState<{
+    readonly client: unknown;
+    readonly entries: readonly ResidentPluginEntry[];
+  }>(() => ({ client: connectionClient, entries: [] }));
+  useEffect(() => {
+    setResidentState((current) =>
+      current.client === connectionClient ? current : { client: connectionClient, entries: [] },
+    );
+  }, [connectionClient]);
+  const activeResidentEntries = useMemo(
+    () => (residentState.client === connectionClient ? residentState.entries : []),
+    [residentState, connectionClient],
+  );
+  const residentPluginTabs = useMemo<readonly PluginTab[]>(
+    () => activeResidentEntries.map((entry) => entry.tab),
+    [activeResidentEntries],
+  );
+  const promoteResidentPluginTab = useCallback((client: unknown, tab: PluginTab) => {
+    const seq = ++residentSeqRef.current;
+    setResidentState((current) => {
+      const base = current.client === client ? current.entries : [];
+      const nextEntries = promoteResidentPluginEntry(base, tab, seq);
+      if (current.client === client && nextEntries === current.entries) return current;
+      return { client, entries: nextEntries };
+    });
+  }, []);
+  const removeResidentPluginTabs = useCallback((keys: ReadonlySet<string>) => {
+    if (keys.size === 0) return;
+    setResidentState((current) => {
+      const nextEntries = removeResidentPluginEntries(current.entries, keys);
+      return nextEntries === current.entries ? current : { client: current.client, entries: nextEntries };
+    });
+  }, []);
+
   const dropRef = useRef<((files: readonly File[]) => void) | null>(null);
   const registerDrop = useCallback((drop: (files: readonly File[]) => void) => {
     dropRef.current = drop;
@@ -281,12 +364,18 @@ export function ConversationShell() {
     [fileDragActive, column, registerDrop],
   );
 
+  const residentPluginCount = residentPluginTabs.length;
   const contextValue = useMemo<ConversationShellContextValue>(
     () => ({
       slots: { header, dock, heroFooter, rail, footer, preview },
       previewPresentation,
       registerPreview,
       unregisterPreview,
+      residentPluginCount,
+      registerPreviewHost,
+      unregisterPreviewHost,
+      promoteResidentPluginTab,
+      removeResidentPluginTabs,
       registerSeat,
       unregisterSeat,
     }),
@@ -300,6 +389,11 @@ export function ConversationShell() {
       previewPresentation,
       registerPreview,
       unregisterPreview,
+      residentPluginCount,
+      registerPreviewHost,
+      unregisterPreviewHost,
+      promoteResidentPluginTab,
+      removeResidentPluginTabs,
       registerSeat,
       unregisterSeat,
     ],
@@ -436,7 +530,16 @@ export function ConversationShell() {
             {/* Hero: the card floats mid-column, so the column's own corner. */}
             {phase === 'hero' && !centerCovered ? <ToastAnchor className="toast-anchor" /> : null}
           </div>
-          <div ref={previewRef} className="conversation-preview-slot" />
+          <div ref={previewRef} className="conversation-preview-slot">
+            {(previewHost !== null && previewHost.payload.surface.tabsState.tabs.length > 0) ||
+            residentPluginTabs.length > 0 ? (
+              <LazyShellPreviewWorkspaceHost
+                host={previewHost?.payload ?? null}
+                residentPluginTabs={residentPluginTabs}
+                fallbackSessionId={routeSessionId}
+              />
+            ) : null}
+          </div>
           <div ref={railRef} className="conversation-rail-slot" />
         </div>
       </div>

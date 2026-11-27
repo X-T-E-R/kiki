@@ -71,6 +71,7 @@ interface TestPanelProps {
   readonly sessionId?: string;
   readonly workspaceId?: string;
   readonly variant?: 'card' | 'workspace';
+  readonly visible?: boolean;
 }
 
 function panelElement(queryClient: QueryClient, props: TestPanelProps = {}) {
@@ -82,6 +83,7 @@ function panelElement(queryClient: QueryClient, props: TestPanelProps = {}) {
         sessionId={props.sessionId}
         workspaceId={props.workspaceId}
         variant={props.variant}
+        visible={props.visible}
       />
     </QueryClientProvider>
   );
@@ -133,7 +135,7 @@ describe('PluginPanelHost document source', () => {
     await act(async () => { frame.dispatchEvent(new Event('load')); });
     await act(async () => { frame.dispatchEvent(new Event('load')); });
     expect(post).toHaveBeenCalledTimes(2);
-    expect(post).toHaveBeenLastCalledWith({ channel: 'kiki.panel.v1', kind: 'init', sessionId: null }, '*');
+    expect(post).toHaveBeenLastCalledWith({ channel: 'kiki.panel.v1', kind: 'init', sessionId: null, visible: true }, '*');
   });
 
   it('keeps using srcDoc when the server document has no URL', async () => {
@@ -529,7 +531,56 @@ describe('PluginPanelHost streams', () => {
     expect(liveStream.stream.close).not.toHaveBeenCalled();
     expect(channel.port1.close).not.toHaveBeenCalled();
     expect(getPluginPanelDocument).toHaveBeenCalledTimes(1);
-    expect(post).toHaveBeenLastCalledWith({ channel: 'kiki.panel.v1', kind: 'init', sessionId: 'session-b' }, '*');
+    expect(post).toHaveBeenLastCalledWith({ channel: 'kiki.panel.v1', kind: 'init', sessionId: 'session-b', visible: true }, '*');
+  });
+
+  it('includes visible in init and posts visibility changes without re-initializing or closing streams', async () => {
+    const liveStream = makeStream();
+    openPluginPanelStream.mockResolvedValueOnce(liveStream.stream);
+    const frame = await renderPanel(
+      { html: '<p>workspace panel</p>' },
+      { sessionId: 'session-a', variant: 'workspace', visible: true },
+    );
+    const post = vi.spyOn(frame.contentWindow!, 'postMessage');
+    await act(async () => { frame.dispatchEvent(new Event('load')); });
+    expect(post).toHaveBeenLastCalledWith(
+      { channel: 'kiki.panel.v1', kind: 'init', sessionId: 'session-a', visible: true },
+      '*',
+    );
+    await act(async () => {
+      request(frame, { channel: 'kiki.panel.v1', kind: 'request', id: 76, method: 'plugin.openStream', stream: 'capture' });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const { root, queryClient } = renderings.get(frame)!;
+    post.mockClear();
+    await act(async () => {
+      root.render(panelElement(queryClient, { sessionId: 'session-a', variant: 'workspace', visible: false }));
+    });
+    expect(post.mock.calls).toEqual([
+      [{ channel: 'kiki.panel.v1', kind: 'visibility', visible: false }, '*'],
+    ]);
+    expect(liveStream.stream.close).not.toHaveBeenCalled();
+
+    post.mockClear();
+    await act(async () => {
+      root.render(panelElement(queryClient, { sessionId: 'session-a', variant: 'workspace', visible: true }));
+    });
+    expect(post.mock.calls).toEqual([
+      [{ channel: 'kiki.panel.v1', kind: 'visibility', visible: true }, '*'],
+    ]);
+    expect(liveStream.stream.close).not.toHaveBeenCalled();
+
+    // Changing both sessionId and visible sends updated init(visible: false) and visibility(false).
+    post.mockClear();
+    await act(async () => {
+      root.render(panelElement(queryClient, { sessionId: 'session-b', variant: 'workspace', visible: false }));
+    });
+    expect(post.mock.calls).toEqual([
+      [{ channel: 'kiki.panel.v1', kind: 'init', sessionId: 'session-b', visible: false }, '*'],
+      [{ channel: 'kiki.panel.v1', kind: 'visibility', visible: false }, '*'],
+    ]);
+    expect(liveStream.stream.close).not.toHaveBeenCalled();
   });
 
   it('closes a pending open after iframe reload and on component unmount', async () => {

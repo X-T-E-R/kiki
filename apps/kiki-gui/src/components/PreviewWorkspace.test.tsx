@@ -43,6 +43,12 @@ import { PreviewWebView } from './preview/WebTabView';
 import { DEFAULT_PREVIEW_WIDTH, readWorkspaceTextViaSession } from './preview/shared';
 import type { KikiClient } from '../lib/client';
 import { anyOverlayOpen } from '../lib/uiBusy';
+import {
+  MAX_RESIDENT_PLUGIN_TABS,
+  promoteResidentPluginEntry,
+  removeResidentPluginEntries,
+  type ResidentPluginEntry,
+} from '../state/previewWorkspace';
 import { ConversationShell, useConversationShell, useRegisterSeat } from './ConversationShell';
 
 const FILES: Record<string, string> = {
@@ -106,6 +112,7 @@ vi.mock('../state/connection', async (importOriginal) => {
     getPluginPanelDocument: vi.fn((pluginId: string, panelId: string) =>
       Promise.resolve({ html: `<!doctype html><html><body><div data-mock-panel="${pluginId}:${panelId}">Live Phone</div></body></html>` }),
     ),
+    openPluginPanelStream: vi.fn(),
   };
   connectionMock.activeClient = fakeClient;
   connectionMock.defaultClient = fakeClient;
@@ -3648,6 +3655,319 @@ describe('PreviewWorkspace plugin panel tabs & session bridge', () => {
     expect(workspace().querySelector('[data-preview-tab="plugin:kiki-phone:preview"]')?.textContent).toContain(
       'Phone Preview',
     );
+  });
+
+  function makeLivePluginStream() {
+    return {
+      result: { started: true },
+      sendBinary: vi.fn(() => true),
+      sendText: vi.fn(() => true),
+      close: vi.fn(),
+      onBinary: vi.fn(() => () => {}),
+      onText: vi.fn(() => () => {}),
+      onClose: vi.fn(() => () => {}),
+    };
+  }
+
+  function makeTestMessageChannelClass() {
+    return class TestMessageChannel {
+      readonly port1 = {
+        onmessage: null as ((event: MessageEvent<unknown>) => void) | null,
+        start: vi.fn(),
+        close: vi.fn(),
+        postMessage: vi.fn(),
+      };
+      readonly port2 = {
+        onmessage: null as ((event: MessageEvent<unknown>) => void) | null,
+        start: vi.fn(),
+        close: vi.fn(),
+        postMessage: vi.fn(),
+      };
+    };
+  }
+
+  function dispatchPanelStreamOpen(frame: HTMLIFrameElement, id: number): void {
+    const event = new MessageEvent('message', {
+      data: { channel: 'kiki.panel.v1', kind: 'request', id, method: 'plugin.openStream', stream: 'screen' },
+      origin: 'null',
+    });
+    Object.defineProperty(event, 'source', { value: frame.contentWindow });
+    window.dispatchEvent(event);
+  }
+
+  it('keeps a live plugin iframe and stream alive across keyed session switches in ConversationShell while keeping Session B hidden, and unmounts on explicit close', async () => {
+    const client = connectionMock.defaultClient as {
+      getPluginPanelDocument: ReturnType<typeof vi.fn>;
+      openPluginPanelStream: ReturnType<typeof vi.fn>;
+    };
+    client.getPluginPanelDocument.mockClear();
+    client.openPluginPanelStream.mockReset();
+    const liveStream = makeLivePluginStream();
+    client.openPluginPanelStream.mockResolvedValue(liveStream);
+    vi.stubGlobal('MessageChannel', makeTestMessageChannelClass());
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const probe = makeRoot();
+
+    function KeyedSessionRoute() {
+      const location = useLocation();
+      const sessionId = location.pathname.replace(/^\/s\//u, '');
+      return (
+        <MediaPreviewProvider key={sessionId} sessionId={sessionId} cwd="/work">
+          <PluginOpenProbe />
+        </MediaPreviewProvider>
+      );
+    }
+
+    const router = createMemoryRouter(
+      [
+        {
+          element: <ConversationShell />,
+          children: [{ path: '/s/:id', element: <KeyedSessionRoute /> }],
+        },
+      ],
+      { initialEntries: ['/s/sess-a'] },
+    );
+
+    try {
+      await renderSettled(
+        probe.root,
+        <QueryClientProvider client={queryClient}>
+          <RouterProvider router={router} />
+        </QueryClientProvider>,
+      );
+
+      // Open plugin panel in Session A and start an active stream.
+      await act(async () => {
+        probe.container.querySelector<HTMLButtonElement>('[data-open-phone-panel]')!.click();
+      });
+      await flushMicrotasks();
+
+      const initialIframe = workspace().querySelector<HTMLIFrameElement>('iframe[data-plugin-panel="kiki-phone:preview"]')!;
+      expect(initialIframe).not.toBeNull();
+      const post = vi.spyOn(initialIframe.contentWindow!, 'postMessage');
+      await act(async () => {
+        initialIframe.dispatchEvent(new Event('load'));
+      });
+      await flushMicrotasks();
+      await act(async () => {
+        dispatchPanelStreamOpen(initialIframe, 101);
+      });
+      await flushMicrotasks();
+
+      expect(client.getPluginPanelDocument).toHaveBeenCalledTimes(1);
+      expect(client.openPluginPanelStream).toHaveBeenCalledTimes(1);
+      expect(post).toHaveBeenLastCalledWith(
+        expect.objectContaining({ channel: 'kiki.panel.v1', kind: 'response', id: 101, ok: true }),
+        '*',
+        expect.any(Array),
+      );
+
+      // Switch to Session B (keyed SessionView unmount + remount, 0 tabs in Session B).
+      post.mockClear();
+      await act(async () => {
+        await router.navigate('/s/sess-b');
+      });
+      await flushMicrotasks();
+
+      expect(tabs()).toEqual([]);
+      expect(document.querySelector('[data-mobile-preview-sheet]')).toBeNull();
+      const hiddenWorkspace = workspace();
+      expect(hiddenWorkspace.hidden).toBe(true);
+      expect(hiddenWorkspace.style.display).toBe('none');
+      expect(hiddenWorkspace.querySelector('iframe[data-plugin-panel="kiki-phone:preview"]')).toBe(initialIframe);
+      expect(liveStream.close).not.toHaveBeenCalled();
+      expect(post).toHaveBeenCalledWith(
+        { channel: 'kiki.panel.v1', kind: 'init', sessionId: 'sess-b', visible: false },
+        '*',
+      );
+      expect(post).toHaveBeenCalledWith(
+        { channel: 'kiki.panel.v1', kind: 'visibility', visible: false },
+        '*',
+      );
+
+      // Opening the same plugin panel in Session B reuses the mounted iframe & stream in 0ms.
+      post.mockClear();
+      await act(async () => {
+        probe.container.querySelector<HTMLButtonElement>('[data-open-phone-panel]')!.click();
+      });
+      await flushMicrotasks();
+
+      expect(workspace().hidden).toBe(false);
+      expect(workspace().style.display).not.toBe('none');
+      expect(tabs()).toEqual(['plugin:kiki-phone:preview']);
+      expect(workspace().querySelector('iframe[data-plugin-panel="kiki-phone:preview"]')).toBe(initialIframe);
+      expect(client.getPluginPanelDocument).toHaveBeenCalledTimes(1);
+      expect(client.openPluginPanelStream).toHaveBeenCalledTimes(1);
+      expect(liveStream.close).not.toHaveBeenCalled();
+      expect(post).toHaveBeenCalledWith(
+        { channel: 'kiki.panel.v1', kind: 'visibility', visible: true },
+        '*',
+      );
+
+      // Explicit close [×] removes it from resident keep-alive, unmounts the iframe, and closes the stream.
+      await act(async () => {
+        workspace().querySelector<HTMLButtonElement>('[data-preview-tab="plugin:kiki-phone:preview"] button')!.click();
+      });
+      await flushMicrotasks();
+
+      expect(document.querySelector('[data-preview-workspace]')).toBeNull();
+      expect(document.querySelector('iframe[data-plugin-panel="kiki-phone:preview"]')).toBeNull();
+      expect(liveStream.close).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('keeps resident plugin iframe alive across same-provider session switches without ConversationShell and resets on connection change', async () => {
+    clearNavHistory();
+    const clientA = {
+      ...(connectionMock.defaultClient as object),
+      getPluginPanelDocument: vi.fn((pluginId: string, panelId: string) =>
+        Promise.resolve({ html: `<!doctype html><html><body><div>${pluginId}:${panelId}</div></body></html>` }),
+      ),
+      openPluginPanelStream: vi.fn(),
+    };
+    const liveStream = makeLivePluginStream();
+    clientA.openPluginPanelStream.mockResolvedValue(liveStream);
+    connectionMock.activeClient = clientA;
+    vi.stubGlobal('MessageChannel', makeTestMessageChannelClass());
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const probe = makeRoot();
+    let triggerConnectionRender!: () => void;
+
+    function StandaloneSessionPage() {
+      const [, setConnectionTick] = useState(0);
+      triggerConnectionRender = () => { setConnectionTick((n) => n + 1); };
+      const location = useLocation();
+      const action = useNavigationType();
+      const sessionId = location.pathname.replace(/^\/s\//u, '');
+      useLayoutEffect(() => {
+        recordNavigation({ location, scope: { homeId: 'main', scopeId: 'local' }, action });
+      }, [location, action]);
+      return (
+        <MediaPreviewProvider sessionId={sessionId} cwd="/work">
+          <PluginOpenProbe />
+        </MediaPreviewProvider>
+      );
+    }
+
+    const router = createMemoryRouter(
+      [{ path: '/s/:id', element: <StandaloneSessionPage /> }],
+      { initialEntries: ['/s/sess-a'] },
+    );
+
+    try {
+      await renderSettled(
+        probe.root,
+        <QueryClientProvider client={queryClient}>
+          <RouterProvider router={router} />
+        </QueryClientProvider>,
+      );
+
+      await act(async () => {
+        probe.container.querySelector<HTMLButtonElement>('[data-open-phone-panel]')!.click();
+      });
+      await flushMicrotasks();
+
+      const initialIframe = workspace().querySelector<HTMLIFrameElement>('iframe[data-plugin-panel="kiki-phone:preview"]')!;
+      expect(initialIframe).not.toBeNull();
+      await act(async () => {
+        initialIframe.dispatchEvent(new Event('load'));
+      });
+      await flushMicrotasks();
+      await act(async () => {
+        dispatchPanelStreamOpen(initialIframe, 201);
+      });
+      await flushMicrotasks();
+      expect(clientA.getPluginPanelDocument).toHaveBeenCalledTimes(1);
+      expect(clientA.openPluginPanelStream).toHaveBeenCalledTimes(1);
+
+      // Navigate to Session B (same MediaPreviewProvider instance restores EMPTY_PREVIEW_TABS).
+      await act(async () => {
+        await router.navigate('/s/sess-b');
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      await flushMicrotasks();
+
+      expect(tabs()).toEqual([]);
+      expect(workspace().hidden).toBe(true);
+      expect(workspace().style.display).toBe('none');
+      expect(workspace().querySelector('iframe[data-plugin-panel="kiki-phone:preview"]')).toBe(initialIframe);
+      expect(liveStream.close).not.toHaveBeenCalled();
+
+      // Navigate back to Session A: exact same iframe is revealed without re-fetching or reopening the stream.
+      await act(async () => {
+        await router.navigate(-1);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      await flushMicrotasks();
+
+      expect(workspace().hidden).toBe(false);
+      expect(tabs()).toEqual(['plugin:kiki-phone:preview']);
+      expect(workspace().querySelector('iframe[data-plugin-panel="kiki-phone:preview"]')).toBe(initialIframe);
+      expect(clientA.getPluginPanelDocument).toHaveBeenCalledTimes(1);
+      expect(clientA.openPluginPanelStream).toHaveBeenCalledTimes(1);
+
+      // Switching servers/connections resets resident plugin tabs and tears down old-server streams.
+      await act(async () => {
+        await router.navigate('/s/sess-b');
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      await flushMicrotasks();
+      expect(workspace().querySelector('iframe[data-plugin-panel="kiki-phone:preview"]')).toBe(initialIframe);
+
+      connectionMock.activeClient = {
+        ...(connectionMock.defaultClient as object),
+        getPluginPanelDocument: vi.fn(),
+        openPluginPanelStream: vi.fn(),
+      };
+      await act(async () => {
+        triggerConnectionRender();
+      });
+      await flushMicrotasks();
+
+      expect(document.querySelector('[data-preview-workspace]')).toBeNull();
+      expect(document.querySelector('iframe[data-plugin-panel="kiki-phone:preview"]')).toBeNull();
+      expect(liveStream.close).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+      clearNavHistory();
+    }
+  });
+
+  it('bounds resident plugin entries to 6 with LRU eviction while preserving DOM mount order', () => {
+    let entries: readonly ResidentPluginEntry[] = [];
+    for (let i = 1; i <= MAX_RESIDENT_PLUGIN_TABS; i += 1) {
+      entries = promoteResidentPluginEntry(
+        entries,
+        { kind: 'plugin', pluginId: `p${i}`, panelId: 'main', title: `Panel ${i}` },
+        i,
+      );
+    }
+    expect(entries.map((e) => e.tab.pluginId)).toEqual(['p1', 'p2', 'p3', 'p4', 'p5', 'p6']);
+
+    // Re-promoting p1 updates lastUsed in place without shifting its index (no DOM iframe reorder).
+    entries = promoteResidentPluginEntry(
+      entries,
+      { kind: 'plugin', pluginId: 'p1', panelId: 'main', title: 'Panel 1 Updated' },
+      7,
+    );
+    expect(entries.map((e) => e.tab.pluginId)).toEqual(['p1', 'p2', 'p3', 'p4', 'p5', 'p6']);
+    expect(entries[0]?.tab.title).toBe('Panel 1 Updated');
+
+    // Adding p7 evicts p2 (least recently used), keeping all survivors in original relative order.
+    entries = promoteResidentPluginEntry(
+      entries,
+      { kind: 'plugin', pluginId: 'p7', panelId: 'main', title: 'Panel 7' },
+      8,
+    );
+    expect(entries.map((e) => e.tab.pluginId)).toEqual(['p1', 'p3', 'p4', 'p5', 'p6', 'p7']);
+
+    // Removing explicitly closed keys preserves survivor order.
+    entries = removeResidentPluginEntries(entries, new Set(['plugin:p3:main', 'plugin:p6:main']));
+    expect(entries.map((e) => e.tab.pluginId)).toEqual(['p1', 'p4', 'p5', 'p7']);
   });
 });
 
