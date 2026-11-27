@@ -2568,6 +2568,43 @@ describe('truncation pipeline', () => {
     expect(results[0]?.isError).toBe(true);
     expect(results[0]?.output).toContain('timed out after');
   });
+
+  it('stamps foregroundStartedAt when a serialized task leaves the scheduler rather than when the batch was prepared', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const firstEntered = deferred<void>();
+      const finishFirst = deferred<void>();
+      const observedStartedAt: number[] = [];
+      registry.register(
+        new TestTool('SerializedRun', {
+          accesses: ToolAccesses.all(),
+          execute: async (ctx, args) => {
+            observedStartedAt.push(ctx.foregroundStartedAt ?? -1);
+            if (args['first'] === true) {
+              firstEntered.resolve();
+              await finishFirst.promise;
+            }
+            return { output: 'ok' };
+          },
+        }),
+      );
+
+      const batchPromise = execute([
+        toolCall('call-seq-1', 'SerializedRun', { first: true }),
+        toolCall('call-seq-2', 'SerializedRun', { first: false }),
+      ]);
+      await firstEntered.promise;
+      await vi.advanceTimersByTimeAsync(75_000);
+      finishFirst.resolve();
+      const results = await batchPromise;
+
+      expect(results.map((item) => item.isError)).toEqual([undefined, undefined]);
+      expect(observedStartedAt).toHaveLength(2);
+      expect(observedStartedAt[1]! - observedStartedAt[0]!).toBeGreaterThanOrEqual(75_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 function toPosix(path: string): string {

@@ -49,6 +49,7 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
   declare readonly _serviceBrand: undefined;
   private readonly pending = new Map<string, PendingInstruction>();
   private pendingGeneration = 0;
+  private readonly selfMutatedScopes = new Set<string>();
   private readonly telemetryFired = new Set<string>();
   private readonly loaded = new Map<string, { item: PendingInstruction; mtimeMs: number; size: number; dirRevision: number }>();
   private readonly loadFlights = new Map<string, Promise<PendingInstruction | undefined>>();
@@ -73,13 +74,23 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
     this._register(dispatcher.hooks.onDidRestore.register('agentsMdReminder', async (_ctx, next) => {
       this.pendingGeneration++;
       this.pending.clear();
+      this.selfMutatedScopes.clear();
       await next();
     }));
     this._register(toolExecutor.onWillExecuteTool((event) => {
-      if (!event.execution.accesses?.some((access) => access.kind === 'file' && access.workspaceRoot !== true && (access.operation === 'write' || access.operation === 'readwrite'))) return;
+      const accesses = event.execution.accesses ?? [];
+      if (!accesses.some((access) => access.kind === 'file' && access.workspaceRoot !== true && (access.operation === 'write' || access.operation === 'readwrite'))) return;
       event.waitUntil((async () => {
-        const actions = await this.discoverActionsFor(event.execution.accesses ?? [], event.args);
-        if (!actions.some((action) => action.kind === 'full')) return;
+        const actions = await this.discoverActionsFor(accesses, event.args);
+        const blocking = actions.some((action) =>
+          action.kind === 'full' &&
+          !this.selfMutatedScopes.has(instructionScopeKey(action.item.file.runtimeId, action.item.file.scope, action.item.pathClass)),
+        );
+        if (!blocking) {
+          if (actions.length > 0) this.queue(actions.map((action) => action.item));
+          await this.recordSelfMutatingScopes(accesses, event.args);
+          return;
+        }
         this.queue(actions.map((action) => action.item));
         event.veto({ isError: true, output: 'No files were changed. Applicable directory instructions have not yet been disclosed in this context. The host will disclose them before the next step; review them and retry this operation.' });
       })());
@@ -101,6 +112,7 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
   }
 
   async flushStepHead(): Promise<void> {
+    this.selfMutatedScopes.clear();
     const generation = this.pendingGeneration;
     const candidates: PendingInstruction[] = [];
     for (const item of this.pending.values()) {
@@ -329,6 +341,32 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
     return (await this.discoverActionsFor(accesses, args)).map((action) => action.item);
   }
 
+  private async recordSelfMutatingScopes(accesses: readonly import('#/tool/toolContract').ToolResourceAccess[], args: unknown): Promise<void> {
+    const rawScopeDirs = accesses.flatMap((access) => {
+      if (access.kind !== 'file' || access.workspaceRoot === true || basename(access.path).toLowerCase() !== 'agents.md') return [];
+      if (access.operation !== 'write' && access.operation !== 'readwrite') return [];
+      const directory = dirname(access.path);
+      return [basename(directory).toLowerCase() === '.kiki' ? dirname(directory) : directory];
+    });
+    if (rawScopeDirs.length === 0) return;
+    const lease = this.acquire(stringArg(args, 'host'));
+    try {
+      const { runtimeId } = lease.runtime.identity;
+      const { pathClass } = lease.runtime.environment;
+      for (const rawDir of rawScopeDirs) {
+        this.selfMutatedScopes.add(instructionScopeKey(runtimeId, rawDir, pathClass));
+        try {
+          const realDir = this.discovery.resolveRealPath !== undefined
+            ? await this.discovery.resolveRealPath(lease, rawDir)
+            : normalize(await lease.runtime.fs!.realpath(rawDir));
+          this.selfMutatedScopes.add(instructionScopeKey(runtimeId, realDir, pathClass));
+        } catch {}
+      }
+    } finally {
+      lease.dispose();
+    }
+  }
+
   private async afterTool(ctx: ToolDidExecuteContext): Promise<void> {
     if (ctx.outcome !== 'executed') return;
     const accesses = ctx.accesses ?? [];
@@ -386,6 +424,11 @@ function preferredInstructions(items: readonly (PendingInstruction | undefined)[
     if (!selected.has(key)) selected.set(key, item);
   }
   return [...selected.values()];
+}
+
+function instructionScopeKey(runtimeId: string, scopeDir: string, pathClass: 'posix' | 'win32'): string {
+  const normalized = stripTrailingSlash(normalize(scopeDir));
+  return `${runtimeId}:${pathClass === 'win32' ? normalized.toLowerCase() : normalized}`;
 }
 
 function stripTrailingSlash(path: string): string {

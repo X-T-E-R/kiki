@@ -488,13 +488,11 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       return settleError(call.args, call.output, 'preflight-rejected');
     }
 
-    const foregroundStartedAt = Date.now();
-
     if (options.executionWaits?.[call.toolCall.id] !== undefined) {
       if (call.tool.resumeExecutionWait === undefined) return settleError(call.args, 'The saved observer is unavailable; its original task was not restarted.', 'preflight-rejected');
       return { task: { accesses: ToolAccesses.none(), execute: signal => this.runSingleExecution(call, {
         approvalRule: call.toolName, execute: ctx => call.tool.resumeExecutionWait!(call.args, ctx),
-      }, undefined, options, signal, call.tool.foregroundPolicy, foregroundStartedAt) } };
+      }, undefined, options, signal, call.tool.foregroundPolicy) } };
     }
 
     const skipUnstartedOnInput = options.skipUnstartedToolsOnInput === true;
@@ -643,7 +641,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
         task: {
           accesses: execution.schedulingAccesses ?? execution.accesses ?? ToolAccesses.all(),
           execute: async (taskSignal) =>
-            this.runSingleExecution(call, execution, executionMetadata, options, taskSignal, effectiveForegroundPolicy, foregroundStartedAt),
+            this.runSingleExecution(call, execution, executionMetadata, options, taskSignal, effectiveForegroundPolicy),
         },
         resolvedAccesses: execution.accesses,
         stopBatchAfterThis: execution.stopBatchAfterThis,
@@ -776,8 +774,8 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
     options: ToolExecutorExecuteOptions,
     signal: AbortSignal,
     foregroundPolicy: ToolForegroundPolicy,
-    foregroundStartedAt: number,
   ): Promise<ToolExecutionRunResult> {
+    const foregroundStartedAt = Date.now();
     if (signal.aborted) {
       return {
         result: makeErrorToolResult(

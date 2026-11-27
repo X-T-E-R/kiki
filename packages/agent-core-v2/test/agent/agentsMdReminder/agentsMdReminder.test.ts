@@ -1833,6 +1833,78 @@ describe('agentsMdReminder first write disclosure', () => {
     expect(retryWrite.isError).not.toBe(true);
     expect(writeExecute).toHaveBeenCalledTimes(1);
   });
+
+  it('does not self-veto sibling writes in the same batch when an agent edits an already-disclosed AGENTS.md, while still gating undisclosed AGENTS.md', async () => {
+    const h = createHarness({ withRealExecutor: true });
+    const targetDir = join(workDir, 'external-prompt-repo');
+    const subDir = join(targetDir, 'agents');
+    await mkdir(subDir, { recursive: true });
+    const agentsMdPath = await writeAgentsMd(targetDir, 'Initial rule v1.');
+    const executedPaths: string[] = [];
+
+    const editTool: ExecutableTool<{ path: string; content: string }> = {
+      name: 'Edit',
+      foregroundPolicy: 'instant',
+      description: 'Edits file',
+      parameters: {
+        type: 'object',
+        properties: { path: { type: 'string' }, content: { type: 'string' } },
+        required: ['path', 'content'],
+      },
+      resolveExecution: (args) => ({
+        accesses: ToolAccesses.readWriteFile(args.path),
+        approvalRule: 'Edit',
+        execute: async () => {
+          await writeFile(args.path, args.content, 'utf-8');
+          executedPaths.push(args.path);
+          return { output: `edited ${args.path}` };
+        },
+      }),
+    };
+    h.ix.get(IAgentToolRegistryService).register(editTool);
+    h.ix.get(IAgentToolExecutorService).onBeforeExecuteTool((event) => { event.allow(); });
+
+    const runBatch = async (calls: ReadonlyArray<{ id: string; path: string; content: string }>) => {
+      const results: ExecutableToolResult[] = [];
+      for await (const item of h.ix.get(IAgentToolExecutorService).execute(
+        calls.map((call) => ({
+          type: 'function',
+          id: call.id,
+          name: 'Edit',
+          arguments: JSON.stringify({ path: call.path, content: call.content }),
+        })),
+        { turnId: 1, signal: new AbortController().signal },
+      )) {
+        results.push(item.result);
+      }
+      return results;
+    };
+
+    const undisclosedBatch = await runBatch([
+      { id: 'veto-agents', path: agentsMdPath, content: 'Attempted overwrite.' },
+      { id: 'veto-sibling', path: join(subDir, 'implementer.md'), content: 'Attempted sibling.' },
+    ]);
+    expect(undisclosedBatch.map((res) => res.isError)).toEqual([true, true]);
+    expect(executedPaths).toEqual([]);
+
+    await h.reminder.flushStepHead();
+    expect(reminderText(h)).toContain('Initial rule v1.');
+
+    const disclosedBatch = await runBatch([
+      { id: 'ok-agents', path: agentsMdPath, content: 'Updated rule v2.' },
+      { id: 'ok-sibling-1', path: join(subDir, 'implementer.md'), content: 'Profile 1' },
+      { id: 'ok-sibling-2', path: join(subDir, 'frontend.md'), content: 'Profile 2' },
+    ]);
+    expect(disclosedBatch.map((res) => res.isError)).toEqual([undefined, undefined, undefined]);
+    expect(executedPaths).toEqual([
+      agentsMdPath,
+      join(subDir, 'implementer.md'),
+      join(subDir, 'frontend.md'),
+    ]);
+
+    await h.reminder.flushStepHead();
+    expect(reminderText(h)).toContain('Updated rule v2.');
+  });
 });
 
 describe('agentsMdReminder cancellation outcomes', () => {

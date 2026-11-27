@@ -4371,4 +4371,27 @@ describe('space config layers', () => {
       expect(await f.homeStore.getText('', 'config.toml')).toContain('local-11');
     } finally { await f.disposables.dispose(); }
   });
+
+  it('loads portable [notifications] tables when machine-scoped credential_values or sibling sub-tables are omitted', async () => {
+    const f = await fixture(
+      '[notifications.global]\nenabled = true\nsuppress_viewing_session = false\n',
+      '',
+    );
+    try {
+      expect(f.config.diagnostics()).toEqual([]);
+      expect(f.config.get('notifications')).toEqual({
+        global: {
+          enabled: true,
+          suppress_viewing_session: false,
+          min_work_ms: 0,
+          work_stable_ms: 3_000,
+          question_delay_ms: 10_000,
+        },
+        provider_instances: {},
+        channels: {},
+        credential_slots: {},
+        credential_values: {},
+      });
+    } finally { await f.disposables.dispose(); }
+  });
 });
