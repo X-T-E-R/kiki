@@ -1,25 +1,25 @@
-# V2EX（分享创造）草稿
+# V2EX（分享创造）草稿（0.7.0）
 
 **节点：** 分享创造
 
-**标题：** 一个任务里同时用几家模型是什么体验：开源本地智能体工作台 Kiki（MIT）
+**标题：** 一个会话混编几家模型 + 手机自建加密中转连家里电脑控真机：开源本地智能体工作台 Kiki 0.7（MIT）
 
 **正文：**
 
-一个任务里同时用几家模型是什么体验。一件事，几家模型分工做。你的智能体，你说了算。
+平时用 AI 写跨文件工程时，我有两个一直没被同时解决的需求：一是想在一个任务里把规划、实现、审查分给不同厂商的模型，而不是全烧同一个贵模型；二是人离开电脑时想用手机接着指挥家里电脑，甚至直接让它操作桌边的测试手机或内网虚拟机，同时不想把会话交给第三方云中转。
 
-Kiki 是一个开源（MIT）的本地智能体工作台，作为服务跑在你自己的机器上，桌面应用、终端（`kiki`）、浏览器（`kiki web`）和手机看到的是同一场工作：https://github.com/X-T-E-R/kiki
+Kiki 是一个开源（MIT）的本地智能体工作台，作为本机服务运行，Electron 桌面应用、终端（`kiki`）、浏览器（`kiki web`）和安卓客户端看到的是同一场工作：https://github.com/X-T-E-R/kiki
 
-平时写代码或做跨文件改动时，我不想把探查、实现、审查全塞给一个贵模型，也不想换模型就得重开会话。在 Kiki 里，主会话把活拆开，强模型负责规划和验收，日常或范围清楚的活交给便宜模型，审查再换另一家厂商：
+主要能力：
 
-- **按角色混编不同厂商的模型。** 主智能体通过 `AgentRun` 派出上下文隔离的子智能体，比如 `explore` 走快模型只读探查、`implementer` 用 DeepSeek / GLM 改代码、独立 `reviewer` 换另一家厂商审 diff。每个子智能体是一份纯文本 Markdown（frontmatter 写工具、`model_alias`、思考档位和允许派发的子角色，正文是系统提示词），改完下次派发立即生效，正在跑的会话保留启动快照直到点「重建上下文」。如果某个子智能体没绑模型也没配 `[subagent].default_model`，派发会直接报 `model.not_configured`，不会悄悄回退去烧主会话的贵模型。
-- **每个模型都有自己的专武。** Claude Code 是照着 Claude 调的，Codex 是照着 GPT 调的；Kiki 通过配方（Recipe）给接进来的原生模型单独调——Recipe 把可复用的提示词、模型设置和可选脚本 Hook 打包在一起，安装一次，绑在单个模型上，每个绑定还能单独开关选项。作者已经在公开仓库 https://github.com/X-T-E-R/kiki-recipes （MIT）发布了五套，分别给 GPT-6.1 Sol（主模型先想清意图和完成标准，收尾带判断与品味）、GPT-6 Astra（在 Astra 上沿用同一套主从分工）、DeepSeek V4.1（面向思考偏浅、字面执行的模型，动手前先推演机理与反例）、Gemini 4 Argon（在 Argon 上带主模型审美层与契约内子智能体质量层）和 Gemini 3.8 Flash（高频小模型，写作、前端与有界杂活先锚定样板）。我觉得每个模型就像一个性格不同的孩子，作者也算是哄好了好几个脾气各异的模型——比如把 DeepSeek V4.1 哄到先推演机理和反例再动手。这些 Recipe 只作用于 Kiki 原生运行的模型，不作用于 Claude Code 或 Codex 作为外部执行器跑的回合。
-- **提示词细到单个工具描述都能按模型覆写。** 便宜模型用错内置工具时，可以在 `config.toml` 按「全局 → 模型 → 智能体」覆写任意具名字段（比如只给某个模型改写 `tool.web-search.description`），跑 `kiki prompt-fields explain <字段> --model <别名>` 就能核对生效文本和完整来源链。
-- **长线任务与更多能力。** 耗时命令和子智能体丢到后台，跑完自动通知主智能体，不用轮询；它忙的时候你发的消息进队列，每条可单选「空闲后 / 子智能体完成后 / 任务完成后」送达。工作文件留在原目录，会话、历史和配置存在本机 Kiki home，模型请求只发往你自己连接的供应商或本地服务。其余还支持 `/goal` 跨轮次目标、可逐条撤销的分层记忆、可选插件（`kiki-task-board` 看板、拆本地 PDF/Office 的 `Kiki Extract`、Word/Excel/PPT 的 `Kiki Office Suite`、本地 CSV 核对的 `Kiki Work`）、跨空间隔离、会话内 SSH、微信/QQ 手机审批、历史对话导入，以及通过 `kiki acp` / `kiki seat` 接入 IDE 和外部客户端。
+- **按角色混编不同厂商的模型。** 主智能体通过 `AgentRun` 派出上下文隔离的子智能体：规划和验收用强模型，日常探查与范围清楚的实现交给便宜模型，审查再换另一家厂商避免共享盲区。每个子智能体是一份纯文本 Markdown（frontmatter 写工具、`model_alias`、思考档位和允许派发的子角色，正文是系统提示词），改完下次派发立即生效；没绑模型也没配默认模型时会直接报 `model.not_configured`，不会悄悄回退去烧贵模型。
+- **每个模型都有自己的专武（Recipe）+ 单字段覆写。** 原生运行的模型可以绑定安装式配方（Recipe），把提示词、模型设置和可选脚本 Hook 打包管理。公开仓库 https://github.com/X-T-E-R/kiki-recipes （MIT）发布了五套（GPT-6.1 Sol、GPT-6 Astra、DeepSeek V4.1、Gemini 4 Argon、Gemini 3.8 Flash）。只想改单条工具描述也可以按模型覆写，用 `kiki prompt-fields explain <字段> --model <别名>` 查生效文本和完整来源链。
+- **双模式安卓端 + 自建端到端加密中转（`kiki-relay`）。** 安卓版（`Kiki_*_android-release.apk`）首次启动可选「连接电脑 Kiki」（经局域网或 `kiki-relay` 远端连接，不拉起手机本地运行时）或「在本机运行 Kiki」（在安卓内嵌 Bionic Node 本地独立运行），并支持 SHA-256 与签名证书校验的应用内更新。家里电脑无公网 IP 时，可自建单文件 Node.js / Docker 的 `kiki-relay` 反向连接池，内层流量全程端到端 TLS 1.3 并固定到本机空间的 P-256 SPKI 指纹，中转节点不解密。
+- **真机、桌面与远程虚拟机控制 + 办公扩展。** 官方插件目录（https://github.com/X-T-E-R/kiki-plugins ，20 个官方包）按需独立安装：`kiki-phone`（实体安卓/iOS 手机控制）、`kiki-cua`（本机多屏高分桌面控制）、`kiki-uu-remote`（网易 UU 远程、Proxmox VE 虚拟机 RFB 3.8 直连与 VNC 桌面），全部带工作台实时预览与一键人工接管防抢锁；此外还有本地 PDF/Office 提取（`kiki-extract`）、Word/Excel/PPT 编辑（`kiki-office`）、CSV 核对（`kiki-work`）、图像/视频/语音/3D（`kiki-media`）、需求看板（`kiki-task-board`）、历史导入（Claude Code / Codex / OpenCode 等）及 `kiki acp` / `kiki seat`。
 
-说明与限制：当前处于 `0.x`（公开发布版本 `0.5.1`），细节还在打磨；macOS 安装包未签名也未公证；Windows 首次运行需先装 Git for Windows；npm 安装需 Node.js 24.22.1+ 或 26.12.1+。仓库里的截图由真实界面渲染的示例场景（`docs/public/shots/`），不代表性能跑分。项目最初 fork 自 Kimi Code，现独立开发。
+说明与限制：当前仍在 `0.x`（公开版 `0.6.2`，`0.7.0` 候选即将发布），细节仍在打磨；macOS 安装包未签名也未公证（首次打开需按住 Control 点按打开）；0.7 的 Windows 桌面安装包已内置自包含 Git Bash 与 `rg`，干净的 Windows 装完即可用（若仅通过 npm 装 Windows CLI 仍需 Git for Windows；npm 需 Node.js 24.22.1+ 或 26.12.1+；Linux/macOS 也提供免 Node 的 `install.sh` 独立二进制）。仓库截图由真实界面渲染示例场景（`docs/public/shots/`），不代表性能跑分。项目最初 fork 自 Kimi Code，现独立开发。
 
 [图：docs/public/shots/workbench/workbench-per-role-models.zh.png（多模型派发树，示例画面）]
 [图：docs/public/shots/freedom/d02-prompt-fields.zh.png（提示词字段覆写，示例画面）]
 
-想和大家交流：你在混用强模型和便宜模型时，最想单独给哪个模型写一份配方或改哪条工具描述。
+想和大家交流：你在混编强模型与便宜模型时怎么拆分工，以及跨设备远程操控自己电脑和真机时最关心哪些安全边界。

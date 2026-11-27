@@ -1,90 +1,74 @@
-# 知乎长文草稿
+# 知乎长文草稿（0.7.0）
 
-**标题：** 一个任务里同时用几家模型是什么体验
+**标题：** 一个任务里同时用几家模型，再把电脑、手机和真机连成一个工作台是什么体验
 
 备选：
-- 一件事，几家模型分工做：我做了一个本地多模型智能体工作台
-- 把 DeepSeek、Gemini 和强模型编进同一个会话：我的智能体分工与配方实践
+- 一件事，几家模型分工做：我做了一个本地多模型与跨设备智能体工作台
+- 把 DeepSeek、Gemini 和强模型编进同一个会话，再用自建加密中转从手机指挥家里电脑
 
 **话题：** 人工智能、大语言模型、程序员、开源项目、DeepSeek
 
 ---
 
-一个任务里同时用几家模型是什么体验。一件事，几家模型分工做。你的智能体，你说了算。
-
-先交代背景：Kiki 是一个开源的本地智能体工作台（MIT，https://github.com/X-T-E-R/kiki），作为服务跑在你自己的机器上，桌面应用、终端（`kiki`）、浏览器（`kiki web`）和手机看到的是同一场工作。这篇不写功能清单，讲我为什么这样拆分工、怎么给不同模型配专武，以及哪里还不好用。
+先交代背景：Kiki 是一个开源的本地智能体工作台（MIT，https://github.com/X-T-E-R/kiki），作为本机服务运行，Electron 桌面应用、终端（`kiki`）、浏览器（`kiki web`）和双模式安卓客户端看到的是同一场工作。这篇不堆功能清单，讲我为什么这样拆多模型分工、怎么把跨设备和真机控制接进同一个本地工作台，以及现在还有哪些不完善的地方。
 
 ## 一、为什么不用一个模型干到底
 
-长任务里，大部分 token 花在读文件、搜代码、改范围清晰的局部改动上。这些活强模型能干，但没必要。更顺手的做法是：强模型负责想清楚意图和最后验收，杂活交给便宜模型，审查换一家厂商，免得自己审自己。
+长任务里，大部分 token 花在读文件、搜代码和范围清楚的局部改动上。这些活强模型能干，但没必要。更顺手的做法是：强模型负责想清楚意图和最后验收，日常步骤交给便宜模型，审查换另一家厂商，避免自己审自己共享同一批盲区。
 
-问题是很多工具要么围绕一家模型生态调优，要么换模型得整个会话重开。
+## 二、一个任务里的分工与模型专武（Recipe）
 
-## 二、一个任务里的分工
-
-在 Kiki 里，每个智能体就是一份 Markdown 文件：frontmatter 写工具、模型、能派发谁，正文是系统提示词。保存后，下一次派发的子智能体就会用上新内容；已经在跑的会话保留启动时的快照，点「重建上下文」才换成新提示词——这一点和很多人的直觉不一样，改完文件不会当场把跑了一半的会话改掉。
-
-我大致这么分：
+在 Kiki 里，每个智能体就是一份 Markdown 文件：frontmatter 写工具、`model_alias`、思考档位和能派发谁，正文是系统提示词。保存后，下一次派发的子智能体立刻生效；已经在跑的会话保留启动快照，点「重建上下文」才切换。子智能体没绑模型也没配默认模型时会直接报 `model.not_configured`，不会悄悄回退去烧主会话的贵模型。
 
 | 角色 | 模型 | 干什么 |
 | --- | --- | --- |
 | 主会话 | 强推理模型 | 拆任务、派活、验收 |
-| 实现 | DeepSeek | 范围清楚的改动、跑检查 |
-| 探查 | 快模型 / GLM | 只读：搜代码、读文档、回事实 |
-| 审查 | 另一家厂商 | 只读，独立看结论 |
+| 实现 | DeepSeek / 快模型 | 范围清楚的改动、跑检查 |
+| 探查 | 便宜快模型 | 只读：搜代码、读文档、回事实 |
+| 审查 | 另一家厂商 | 只读，独立核查边界与缺陷 |
 
-每个角色在 frontmatter 里写 `model_alias`。有个细节我很在意：子智能体没绑模型、也没配 `[subagent].default_model` 时会直接报 `model.not_configured`，不会悄悄继承主会话那个贵模型。
-
-从别的工具搬 agent 文件过来要改一下。Kiki 的 frontmatter 字段集合是封闭的，未识别字段会在加载时报错并点名：外部文件里的 `model` 要换成 `model_alias`。反过来，原来在 Claude Code、Codex 或 OpenCode 里的对话历史可以直接导成 Kiki 会话接着聊，也可以只要一份只读归档，导入前的预览会写明哪些东西留不下来。
+Claude Code 是照着 Claude 调的，Codex 是照着 GPT 调的；Kiki 用配方（Recipe）给接进来的每个原生模型单独调——把提示词、模型设置和可选脚本 Hook 打包在一起，安装一次绑在模型上。公开仓库 https://github.com/X-T-E-R/kiki-recipes （MIT）发布了五套配方（GPT-6.1 Sol、GPT-6 Astra、DeepSeek V4.1、Gemini 4 Argon、Gemini 3.8 Flash），比如让 DeepSeek V4.1 动手前先推演机理与反例，让高频小模型先锚定一份样板。如果只想改某一条具体工具描述，也可以按模型覆写后用 `kiki prompt-fields explain <字段> --model <别名>` 核对完整来源链。
 
 （配图：`docs/public/shots/workbench/workbench-per-role-models.zh.png`，标注「示例画面」）
 
-## 三、每个模型都有自己的专武
+## 三、把手机、家里电脑、测试真机与虚拟机接成一条线
 
-Claude Code 是照着 Claude 调的，Codex 是照着 GPT 调的；Kiki 用配方（Recipe）给接进来的每个原生模型单独调。Recipe 把提示词、模型设置和可选脚本 Hook 打包在一起，安装一次，绑在单个模型上，每个绑定可以保留自己的选项选择。
+0.7 版本我把「离开电脑以后怎么继续干活」和「智能体怎么碰真实界面」这两件事补齐了，核心约束是不把会话交给第三方托管云中转：
 
-我在公开仓库 https://github.com/X-T-E-R/kiki-recipes （MIT）发布了五套配方：
-
-- **GPT-6.1 Sol**：主模型，先想透意图与完成标准，再用判断力和品味收尾
-- **GPT-6 Astra**：在 Astra 上沿用同一套工作方式，主从分工不变
-- **DeepSeek V4.1**：针对思考偏浅、字面执行的模型，动手前先推演机理与反例
-- **Gemini 4 Argon**：Argon 主模型，带一层审美层和一层契约内子智能体质量层
-- **Gemini 3.8 Flash**：高频小模型，写作、前端和有界杂活先锚定一份样板
-
-写多了以后我觉得每个模型就像一个性格不同的孩子，我也算哄好了好几个脾气各异的模型——比如给 Gemini 3.8 Flash 配上先找样板再落刀的规则，给 DeepSeek V4.1 配上先推演机理和反例的规则。需要说明边界：Recipe 作用于 Kiki 原生运行的模型，不作用于通过外部执行器（比如把 Claude Code 或 Codex 当作子智能体引擎）跑的回合。
-
-如果只想改某一个具体字段，Kiki 还支持覆写内置提示词的任意具名字段，细到单个工具的描述，而且可以只对某个模型生效：
-
-```toml
-[models.deepseek.prompt_overrides]
-files = ["prompt/deepseek.toml"]
-```
-
-改完用 `kiki prompt-fields explain <字段> --model deepseek` 看最终生效的值和来源链，确认它真的收到了你写的那版。
+1. **双模式安卓客户端：** 安装官方签名 APK（`Kiki_*_android-release.apk`）后，首次打开二选一——选「连接电脑 Kiki」就是轻量远端壳，经局域网或自建 `kiki-relay` 直连家里电脑，不拉起本地进程；选「在本机运行 Kiki」则解压内置 Bionic Node 直接在手机上独立跑。应用内更新会核验字节长度、SHA-256 与签名证书。
+2. **自建零知识加密中转（`kiki-relay`）：** 家里电脑在 NAT 后没有公网 IP 时，可以用 Node.js 24+ 或 Docker 跑一个轻量反向连接池服务。内层通信保持端到端 TLS 1.3 并固定目标空间的 P-256 SPKI 指纹，中转节点既不终止内层 TLS，也看不到凭据或对话内容。
+3. **真机、本机桌面与远程虚拟机插件：** 官方插件目录（https://github.com/X-T-E-R/kiki-plugins ，20 个官方包）提供 `kiki-phone`（Mobilewright / Mobile MCP 控实体安卓与 iOS）、`kiki-cua`（本机多屏高分桌面控制）和 `kiki-uu-remote`（网易 UU 远程、Proxmox VE 虚拟机 RFB 3.8 直连与 VNC 桌面）。所有画面都回传工作台实时预览，且默认带一键人工接管防抢锁，人一接管立即中止代理动作。
 
 （配图：`docs/public/shots/freedom/d02-prompt-fields.zh.png`，标注「示例画面」）
 
-## 四、多线并行与按需扩展
+## 四、长线任务与非代码工作
 
-1. **后台任务和自动通知。** 主智能体把耗时的线丢到后台，跑完结果自动回到它手里，它不用反复查，我也不用盯着。
-2. **边跑边说话。** 它忙的时候想补一句需求，消息会进队列，每条可以选「空闲后 / 子代理完成后 / 任务完成后」再发，不会半路打断正在干的活。
-3. **跨会话与长线能力。** `/goal` 挂住跨轮次目标，可选插件 `kiki-task-board` 在工作区保存需求卡片，记忆按全局、工作区、角色分层并可逐条撤销，定时提示词在还有 Kiki 进程持有那个已打开的会话时按 cron 触发。
-4. **文档与更多场景。** 工作文件留在原目录，会话、历史和配置存在本机 Kiki home。需要拆本地 PDF/Office 时装 `Kiki Extract`（需本机备好 Python + MarkItDown），核对表格装 `Kiki Work`，编辑 Word/Excel/PPT 装 `Kiki Office Suite`，不在电脑前时也能通过微信或 QQ 绑上会话在手机上回消息、批权限。
+1. **后台执行与按条排队：** 耗时的子智能体和命令丢到后台跑完自动通知主会话，不用轮询；它忙的时候发出去的消息进队列，每条可以选「空闲后 / 子代理完成后 / 任务完成后」送达。
+2. **跨会话能力：** `/goal` 挂住跨轮次目标，分层记忆可逐条撤销，可选插件 `kiki-task-board` 维护需求卡片，历史对话支持从 Claude Code / Codex / OpenCode 导入。
+3. **文档与媒体：** 需要拆本地 PDF/Office 装 `kiki-extract`（需 Python + MarkItDown），直接读写 Word/Excel/PPT 装 `kiki-office`，核对 CSV 装 `kiki-work`，生成图像/视频/语音/3D 装 `kiki-media`。
 
-## 五、还不好的地方
+## 五、现在还不好的地方
 
-- 还在 `0.x`（当前 `0.5.1`），毛刺不少。
-- macOS 包未签名；Windows 要先装 Git for Windows；npm 安装要求 Node.js 24.22.1+ 或 26.12.1+。
-- 我没做过任何跑分，上面的分工只是使用习惯，不代表哪个模型组合更好。
-- 项目最初 fork 自 Kimi Code，现在独立开发；TUI 基于 pi-tui。
+- 仍在 `0.x`（当前公开版 `0.6.2`，`0.7.0` 候选发布中），细节上还有毛刺。
+- macOS `.dmg` 未签名、未公证，首次打开需要按住 Control 点按打开。
+- 0.7 的 Windows 桌面安装包已内置自包含 Git Bash 与 `rg`，但如果你在 Windows 上只通过 npm 装 CLI，仍需先装 Git for Windows；npm 安装需要 Node.js 24.22.1+ 或 26.12.1+（Linux / macOS 也可以用 `install.sh` 直接装免 Node 独立二进制）。
+- 我没有做过任何模型跑分，上面的分工只是日常习惯，不代表某套组合绝对更好。项目最初 fork 自 Kimi Code，现在独立开发；TUI 基于 `pi-tui`。
 
 ## 六、想试的话
 
+桌面安装包（Windows / macOS / Linux）和安卓 APK 直接在 GitHub Releases 下载：https://github.com/X-T-E-R/kiki/releases
+
+终端安装：
+
 ```sh
-npm i -g kiki-agent   # Node.js 24.22.1+ 或 26.12.1+
-kiki                  # 终端；kiki web 浏览器；kiki desktop 桌面应用
+# Linux / macOS 独立二进制（无需 Node.js）
+curl -fsSL https://github.com/X-T-E-R/kiki/releases/latest/download/install.sh | sh
+
+# 或通过 npm（Node.js 24.22.1+ 或 26.12.1+）
+npm i -g kiki-agent
+kiki
 ```
 
-或者从 GitHub Releases 下载桌面版。文档：https://x-t-e-r.github.io/kiki/zh/
+文档：https://x-t-e-r.github.io/kiki/zh/
 
-欢迎在评论区聊聊你的分工，尤其是给不同模型写配方和改工具描述的经验。
+欢迎在评论区聊聊你的多模型分工、自建加密中转习惯，或者最想单独调教哪个模型的工具描述。

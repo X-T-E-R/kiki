@@ -1,75 +1,88 @@
-# Kiki
+<div align="center">
 
-**One task, several models, each doing its part.**
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/public/assets/banner-dark.svg">
+  <img src="docs/public/assets/banner-light.svg" alt="Kiki — Local Multi-Model Agent Workbench" width="720">
+</picture>
 
-[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Docs](https://img.shields.io/badge/docs-online-blue)](https://x-t-e-r.github.io/kiki/en/) <br>
-[Documentation](https://x-t-e-r.github.io/kiki/en/) · [All features](https://x-t-e-r.github.io/kiki/en/features/) · [Screenshot tour](marketing/gallery.en.md) · [Issues](https://github.com/X-T-E-R/kiki/issues) · [Acknowledgements](ACKNOWLEDGEMENTS.md) · [中文](README.zh-CN.md)
+[![Release](https://img.shields.io/github/v/release/X-T-E-R/kiki?include_prereleases&label=release&color=c8401a)](https://github.com/X-T-E-R/kiki/releases) [![License: MIT](https://img.shields.io/badge/license-MIT-1d4d6d)](LICENSE) [![Docs](https://img.shields.io/badge/docs-online-4b453e)](https://x-t-e-r.github.io/kiki/en/)
 
-Kiki is an open-source, local agent workbench. The lead session splits the work: a strong model plans, cheaper models do the routine parts, and a different vendor reviews. Which model does which part, and how far each may go, is yours to decide. Your agents, your call.
+[Download](#start-here) · [Docs](https://x-t-e-r.github.io/kiki/en/) · [Plugins](https://github.com/X-T-E-R/kiki-plugins) · [Recipes](https://github.com/X-T-E-R/kiki-recipes) · [Screenshot tour](marketing/gallery.en.md) · [Issues](https://github.com/X-T-E-R/kiki/issues)
 
-- **You choose the models.** Kimi, Anthropic, OpenAI and Codex, Gemini, and Vertex AI all fit in one session, and you can sign in with GitHub Copilot or ChatGPT.
-- **Fitted to each model.** Claude Code is tuned for Claude and Codex for GPT. Kiki tunes itself to each model you connect through a [Recipe](https://x-t-e-r.github.io/kiki/en/customization/recipes): prompts plus model settings, installed once and bound to that model. The author has published [five](https://github.com/X-T-E-R/kiki-recipes), for GPT-6.1 Sol, GPT-6 Astra, DeepSeek V4.1, Gemini 4 Argon, and Gemini 3.8 Flash. One model has to be pushed to think a level deeper before it acts; another needs a sample to anchor on first. Adapt one, or write your own for the model you use most.
-- **It runs on your machine.** Work files stay in the folder you choose, sessions, history, and configuration stay in your local Kiki home, and model requests go only to the providers or local servers you connect. The desktop app, the terminal (`kiki`), the browser (`kiki web`), and your phone all show the same work.
-- **Every step is in view.** Who is doing what, what it cost, and which concurrency rule is holding a request are all one click away. Prompts can be changed down to a single tool description, and permissions range from asking at every step to full access.
+English · [简体中文](README.zh-CN.md)
 
-It is open source (MIT).
+</div>
 
-![One session, several models: each agent in the dispatch tree bound to a different model.](docs/public/shots/workbench/workbench-per-role-models.en.png)
+**One task, several models, across your desktop, terminal, browser, and phone.**
+
+Kiki is an open-source, local agent workbench. The lead session splits the work: a strong model plans, cheaper models handle routine steps, and a different vendor reviews. From the same session, official plugins operate real phones, local desktops, remote VMs, and Office/PDF/3D files. Which model does which part, and how far each may go, is yours to decide. Your agents, your call.
+
+- **Multi-vendor fleet, fitted to each model.** Kimi, Anthropic, OpenAI and Codex, Gemini, and Vertex AI all run in one session, alongside GitHub Copilot and ChatGPT sign-ins. Each native model can bind a [Recipe](https://x-t-e-r.github.io/kiki/en/customization/recipes) — prompts, model settings, and optional script hooks installed once and tuned to that model's habits. Start from [five published recipes](https://github.com/X-T-E-R/kiki-recipes) (GPT-6.1 Sol, GPT-6 Astra, DeepSeek V4.1, Gemini 4 Argon, Gemini 3.8 Flash) or write your own.
+- **Operate real devices and remote GUIs.** Official plugins connect the same agent to physical Android/iOS phones ([`kiki-phone`](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-phone) over warm `scrcpy`), local multi-DPI desktops ([`kiki-cua`](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-cua)), and NetEase UU Remote, Proxmox VE, or VNC desktops ([`kiki-uu-remote`](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-uu-remote)) — with 60fps resident preview panels (`0ms` re-open across session switches) and one-click Human Takeover protection.
+- **Cross-device sessions on your machines.** Work files stay in the folder you choose; sessions, history, and config stay in your local Kiki home; model requests go only to the providers or local servers you connect. The Electron desktop app, terminal (`kiki`), browser (`kiki web`), Android app (connect to your PC over LAN or self-hosted E2EE `kiki-relay`, or run Kiki locally on Android with bundled Bionic Node), and WeChat/QQ bindings share the same work.
+- **Documents, media, and every step in view.** Official plugins cover local PDF/Office extraction (`kiki-extract`), Word/Excel/PowerPoint editing (`kiki-office`), CSV checks (`kiki-work`), and Image/Video/TTS/3D generation (`kiki-media`). Every subagent transcript, token cost, concurrency rule, and prompt override stays inspectable.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/public/shots/theme-dark/wl-20261005-hero-workbench.en.dark.png">
+  <img src="docs/public/shots/index/wl-20261005-hero-workbench.en.png" alt="The Kiki workbench: a lead session with the subagents it dispatched, an active goal, and a queued message (rendered example).">
+</picture>
 
 ## Start here
 
-### On the desktop
+### Download desktop, Android, or CLI
 
-1. Download a build for your platform (see [Desktop builds](#desktop-builds) below) and open Kiki.
-2. On first launch Kiki asks you to connect a model: sign in with an account, enter an API key, or let it check for a sign-in already on this computer. A key is verified before Kiki reports it as connected. To see how Kiki works first, start the one-minute tour, which calls no model; **Discover Kiki** in the sidebar brings it back any time.
-3. On a new conversation, pick a folder and describe a task, or click a starter — starters only fill the draft and never send on their own.
+Pick your platform from [GitHub Releases](https://github.com/X-T-E-R/kiki/releases) (`kiki-v<version>`):
 
-### In the terminal
+| Platform | Desktop / Mobile App | Standalone CLI / TUI |
+| --- | --- | --- |
+| Windows x64 | [`Kiki_*_x64-setup.exe`](https://github.com/X-T-E-R/kiki/releases/latest) (adds `kiki` to user `PATH`; bundles self-contained Git Bash and `rg` in 0.7+) | Included in the installer |
+| macOS Apple Silicon | [`Kiki_*_aarch64.dmg`](https://github.com/X-T-E-R/kiki/releases/latest) | `kiki-darwin-arm64` |
+| macOS Intel | [`Kiki_*_x64.dmg`](https://github.com/X-T-E-R/kiki/releases/latest) | `kiki-darwin-x64` |
+| Linux x64 | [`Kiki_*_amd64.deb`](https://github.com/X-T-E-R/kiki/releases/latest) (adds `kiki` to `PATH`) or `.AppImage` | `kiki-linux-x64` |
+| Linux ARM64 | — | `kiki-linux-arm64` |
+| Android 7.0+ | [`Kiki_*_android-release.apk`](https://github.com/X-T-E-R/kiki/releases/latest) (connect to PC or run standalone on phone; signed in-app updater) | — |
+
+On first desktop launch, connect a model (account sign-in, API key verified before saving, or an existing sign-in on this machine), or run the one-minute offline tour (**Discover Kiki** in the sidebar brings it back any time).
+
+On Linux or macOS, install the standalone CLI without Node.js:
 
 ```sh
-npm install -g kiki-agent   # needs Node.js 24.22.1+ or 26.12.1+; a desktop build is linked below
-cd your-project
-kiki                        # terminal UI; `kiki web` for the browser, `kiki desktop` for the app
+curl -fsSL https://github.com/X-T-E-R/kiki/releases/latest/download/install.sh | sh
 ```
 
-Run `/login` and pick Kimi Code OAuth or a Kimi Platform API key — other providers are in [Providers and models](https://x-t-e-r.github.io/kiki/en/configuration/providers). Then ask for something:
+Or install with npm (Node.js 24.22.1+ or 26.12.1+):
+
+```sh
+npm install -g kiki-agent   # CLI/TUI + matching desktop build (`kiki-agent-lite` for CLI/TUI only)
+cd your-project
+kiki                        # terminal UI; `kiki web` for browser, `kiki desktop` for desktop app
+```
+
+<details>
+<summary>Checksums, macOS first-launch, and Windows CLI notes</summary>
+
+- Every installer, APK, and standalone CLI asset ships with an adjacent `.sha256` checksum file (Android releases also include `android-receipt.json`). Verify with `kiki --version` after install.
+- **macOS:** the `.dmg` is currently unsigned and not notarized. Verify the checksum, drag Kiki to Applications, and use **Control-click → Open** on first launch; link the bundled CLI manually if you want `kiki` on `PATH`.
+- **Windows:** the 0.7+ Electron desktop installer bundles its own relocatable Git Bash, `git`, and `rg` toolchain with zero extra downloads. If you install only the CLI via npm on Windows without the desktop bundle, install [Git for Windows](https://gitforwindows.org/) (or set `KIKI_SHELL_PATH` to `bash.exe`).
+- See [Installation](https://x-t-e-r.github.io/kiki/en/getting-started/installation) for checksum commands, update channels, and `install.sh --apply` cloud-notebook space cloning.
+
+</details>
+
+### First task
+
+Run `/login` in the terminal (or open **Settings → AI** in the desktop app) to connect Kimi Code OAuth, a Kimi Platform key, or any other provider listed in [Providers and models](https://x-t-e-r.github.io/kiki/en/configuration/providers). Then ask for something concrete:
 
 ```
 Take a look at this project and explain its main directories.
 ```
 
-The same shape works when the folder is not code. PDF, Office, and HTML extraction is a plugin, not part of the base install: add [Kiki Extract](https://x-t-e-r.github.io/kiki/en/customization/plugins#local-document-extraction) from the catalog (it needs Python with MarkItDown for PDF and Office formats), then ask:
+The same workbench handles non-code folders. Install [Kiki Extract](https://x-t-e-r.github.io/kiki/en/customization/plugins#local-document-extraction) (PDF/Office conversion uses Python with MarkItDown) or [Kiki Office Suite](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-office) from the catalog, then ask:
 
 ```
 Read the PDFs in ./sources, check their figures against budget.xlsx, and write summary.md with the file each number came from.
 ```
 
-New sessions start in **Auto**: routine work runs on its own, and you are still asked before it touches sensitive files or runs dangerous commands. `/permission` switches among Ask every time (`manual`), Auto (`auto`), Approve for me (`review`), and Full access (`yolo`).
-
-### Desktop builds
-
-Pick a build from [GitHub Releases](https://github.com/X-T-E-R/kiki/releases) under `kiki-v<version>`.
-
-<details>
-<summary>Platforms, files, and first-launch notes</summary>
-
-| Platform | Desktop app | Standalone CLI/TUI |
-| --- | --- | --- |
-| Windows x64 | `Kiki_*_x64-setup.exe` (also installs `kiki` on your user `PATH`) | Included in the installer; no separate Windows CLI asset |
-| Linux x64 | `Kiki_*_amd64.deb` (adds `kiki` to `PATH`) or `Kiki_*_amd64.AppImage` | `kiki-linux-x64` |
-| Linux ARM64 | — | `kiki-linux-arm64` |
-| macOS Apple Silicon | `Kiki_*_aarch64.dmg` | `kiki-darwin-arm64` |
-| macOS Intel | `Kiki_*_x64.dmg` | `kiki-darwin-x64` |
-
-Each standalone CLI file comes with a matching `.sha256` checksum. On macOS the dmg is unsigned and not notarized: verify the download, drag Kiki to Applications, and use **Control-click → Open** on first launch; the dmg does not change your `PATH`, so add the CLI separately.
-
-With npm, `kiki-agent` installs the CLI/TUI and downloads and checksum-verifies the matching desktop release (network required), while `kiki-agent-lite` installs only the CLI/TUI. `kiki desktop` opens the installed app.
-
-> On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch — the Kiki CLI uses the bundled Git Bash as its shell environment. If Git Bash is installed elsewhere, set `KIKI_SHELL_PATH` to the absolute path of `bash.exe`.
-
-Verify with `kiki --version`. See [Installation](https://x-t-e-r.github.io/kiki/en/getting-started/installation) for checksum commands and update channels.
-
-</details>
+New sessions start in **Auto**: routine work runs on its own, and you are asked before touching sensitive files or running dangerous commands. `/permission` switches among Ask every time (`manual`), Auto (`auto`), Approve for me (`review`), and Full access (`yolo`).
 
 ## Do one thing first
 
@@ -83,7 +96,7 @@ See [First launch](https://x-t-e-r.github.io/kiki/en/getting-started/first-launc
 
 The lead agent splits your task and dispatches subagents, and each one can run a different model — or a different vendor — in the same session. A strong reasoning model can plan while cheaper models do the routine work, and a review by a different vendor is not anchored to the same blind spots as the implementation. Kimi works out of the box; Anthropic, OpenAI-compatible services, the OpenAI Responses API, Gemini, and Vertex AI can be added, and you can sign in with a GitHub Copilot or ChatGPT account.
 
-![The Kiki workbench: a lead session with the subagents it dispatched, an active goal, and a queued message.](docs/public/shots/index/wl-20261005-hero-workbench.en.png)
+![One session, several models: each agent in the dispatch tree bound to a different model (rendered example).](docs/public/shots/workbench/workbench-per-role-models.en.png)
 
 Agents themselves are Markdown files you own: the frontmatter sets tools, model, effort, and which agents it may dispatch, and the body is the system prompt. Save the file and the next dispatch uses it, while a session already running keeps the snapshot it started with until you rebuild its context. You can create a profile by copying an existing one, starting from a shipped template, or starting blank.
 
@@ -93,13 +106,13 @@ Open any dispatched subagent to read its own transcript, and message it from its
 
 Finished stretches of tool calls, thinking, and shell output fold into one line such as "Worked · 8 steps", and every fold opens back up in order. The right rail shows pending approvals and questions, what the agent is doing now, context and cost, its working notes, the agent team, and background tasks — and it follows you into a subagent. Annotations let you leave a note on a message and send it with your next one instead of interrupting with a separate turn.
 
-The agent can search its own earlier messages and tool output — including text from before a compaction — with `HistorySearch` and `HistoryRead`, and you can search sessions by title in the sidebar. Web search and fetch run on named lanes you can inspect; GitHub repository search works without a key. Appearance is six built-in skins, picture and video backgrounds, and appearance packs that bundle colors with media. See [The daily driver](https://x-t-e-r.github.io/kiki/en/features/daily) and [Look and feel](https://x-t-e-r.github.io/kiki/en/features/look).
+The agent can search its own earlier messages and tool output — including text from before a compaction — with `HistorySearch` and `HistoryRead`, and you can search sessions by title in the sidebar. Streaming CPU-worker journal indexing keeps cold open sub-second even on 3GB+ multi-week sessions without freezing the UI, while cache-safe context compaction preserves the KV-cache prefix across compaction boundaries (`>=99%` cache hit retention on 250k+ long runs) instead of blowing up prompt cost after a summary. Web search and fetch run on named lanes you can inspect; GitHub repository search works without a key. Appearance is six built-in skins, picture and video backgrounds, and appearance packs that bundle colors with media. See [The daily driver](https://x-t-e-r.github.io/kiki/en/features/daily) and [Look and feel](https://x-t-e-r.github.io/kiki/en/features/look).
 
 ### Know what it costs, and where the numbers go
 
 The **Usage** page breaks a date range into tokens, cost, and cache hit rate — a provider that never returned usage reads as unknown rather than as a real zero — and names the concurrency rule holding each waiting request. External sync sends only content-free numbers, never a prompt, answer, title, or path, to a webhook, a VibeCafe account, or a script you approve, and nothing is sent until you add a destination, preview the exact payload, agree once, and enable it.
 
-![The usage page's Live tab: a request waiting on a named concurrency rule, with the rule list below showing one enabled and one paused.](docs/public/shots/daily/ux-usage-live.en.png)
+![The usage page's Live tab: a request waiting on a named concurrency rule, with the rule list below showing one enabled and one paused (rendered example).](docs/public/shots/daily/ux-usage-live.en.png)
 
 See [The daily driver](https://x-t-e-r.github.io/kiki/en/features/daily) and [`kiki usage-export`](https://x-t-e-r.github.io/kiki/en/reference/command#kiki-usage-export).
 
@@ -117,19 +130,29 @@ Each workspace can also add a board (via the optional `kiki-task-board` plugin) 
 
 A **persona** is a long-term identity — a name, an avatar, what it is for, the standing rules for how it works, and its own memory — stored as a Markdown file you can read and edit. Clicking its name lands you in the same conversation every time, so "ask Yuzu" means one thing; the same persona can hold several conversations at once for different projects.
 
-A **room** puts two to six of them on one topic, speaking in order, with a host, a budget, and pause and continue.
+A **room** puts two to six of them on one topic, speaking in order, with a host, a budget, and pause and continue. Alongside rooms, **cross-session peer threads** (`ThreadSend`, `ThreadRead`, `ThreadWait`, and `@Thread` references) let long-lived sessions — engineering, research, or patrol — exchange findings and wake each other directly.
 
 A persona is not an agent profile. A profile is execution configuration — tools, permissions, model, effort; a persona is identity — who it is and what it remembers. Rebinding one does not touch the other. See [Roles you can talk to](https://x-t-e-r.github.io/kiki/en/features/people).
 
-![A room where three personas discuss a release, each message attributed to its speaker.](docs/public/shots/people/people-room.en.png)
+![A room where three personas discuss a release, each message attributed to its speaker (rendered example).](docs/public/shots/people/people-room.en.png)
 
-### Skills, plugins, and tool connections
+### Skills, plugins, and device control
 
-A plugin can add skills, agents, MCP servers, hooks, commands, and tools; browse and install them on the Capabilities page. The catalog carries, among others, Kiki Extract for local PDF and Office files, Kiki Office Suite, Kiki Work for local CSV checks, Kiki Writing, Kiki Notion, Kiki Media, and Kimi Datasource — each one installed, configured, and enabled on its own — while browser control connects to Ego Lite, a browser extension (Codex / ChatGPT or Kimi Browser Extension), an independent profile, or CDP. Sessions stay on your machine; there is no cloud relay. See [Make it yours to extend](https://x-t-e-r.github.io/kiki/en/features/extend) and [Plugins](https://x-t-e-r.github.io/kiki/en/customization/plugins).
+A plugin can add skills, agents, MCP servers, hooks, commands, panels, and tools; browse and install them from the [plugin catalog](https://github.com/X-T-E-R/kiki-plugins) on the Capabilities page. Each package is independently versioned, checksum-pinned, configured, and enabled on its own:
+
+- **Device and remote GUI control:** `kiki-cua` (local multi-DPI desktop control + cross-plugin remote target bus), `kiki-phone` (physical Android/iOS control via Mobilewright or Mobile MCP with warm `scrcpy` streaming), and `kiki-uu-remote` (NetEase UU Remote, Proxmox VE VMs over lossless RFB 3.8, and VNC desktops) — all with 60fps resident preview panels (`0ms` re-open across session switches) and Human Takeover protection.
+- **Documents, media, and operations:** `kiki-extract` (local PDF/Office/HTML to Markdown), `kiki-office` (Word/Excel/PowerPoint editing and preview), `kiki-work` (read-only CSV/TSV checks), `kiki-writing`, `kiki-notion`, `kiki-media` (Image, Video, TTS, and 3D providers plus local scripts), `kiki-voice`, `kiki-task-board`, `kiki-sites`, `kiki-mail`, `kiki-qq`, `kiki-bilibili`, `kiki-everything` (Windows Everything 1.5 search), and `kiki-output-layer`.
+- **Browser and network bridges:** browser control connects to Ego Lite, a browser extension (Codex / ChatGPT or Kimi Browser Extension), an independent profile, or CDP; remote reachability is supported through `kiki-relay` (self-hosted E2EE rendezvous relay) or `kiki-cloudflare` (Cloudflare Tunnel).
+
+Sessions stay on your machine with no mandatory cloud relay; when you want cross-device access without a public IP, self-host `kiki-relay` with end-to-end TLS 1.3 pinned to your space's SPKI fingerprint. See [Make it yours to extend](https://x-t-e-r.github.io/kiki/en/features/extend) and [Plugins](https://x-t-e-r.github.io/kiki/en/customization/plugins).
 
 ## Your data, your machines
 
 A **space** is a Kiki you open, with its own shortcuts, window behavior, and credential scope — shared with the main space or isolated — so a work Kiki and a personal Kiki can sit side by side without sharing what they sign in to.
+
+**Android (dual-mode):** on first launch, choose **Connect to PC Kiki** (lightweight remote shell over LAN or self-hosted E2EE `kiki-relay`, with no local runtime overhead) or **Run Kiki locally on phone** (embeds Bionic Node directly on Android). Signed release APKs support SHA-256 and certificate-verified in-app updates.
+
+**Encrypted relay (`kiki-relay`):** run a lightweight Node.js or Docker reverse-pool rendezvous server when your desktop sits behind NAT. Inner streams remain end-to-end TLS 1.3 pinned to the target space's P-256 SPKI fingerprint (`fp`), so the relay operator never terminates inner TLS or reads session credentials.
 
 **Remote connections** point one Kiki home at another with an approval on each side, and every connection is one row with its own state. A **thread bridge** is narrower: a one-way channel for messages between two homes that never grants browsing access. **Web access** opens this Kiki in a browser on another device through a single-use link, and turning it off revokes every link without stopping work already running. **SSH hosts** joined to a session belong to that session, so the timeline stays clean. Pair a WeChat or QQ chat to a persona or session to reply and approve steps when you are away from the desk. See [Your data, your machines](https://x-t-e-r.github.io/kiki/en/features/spaces) and [Phone session](https://x-t-e-r.github.io/kiki/en/features/phone).
 
@@ -141,7 +164,7 @@ Any built-in prompt field can be replaced, down to a single tool description, gl
 
 [All features](https://x-t-e-r.github.io/kiki/en/features/) · [First launch](https://x-t-e-r.github.io/kiki/en/getting-started/first-launch) · [Desktop app](https://x-t-e-r.github.io/kiki/en/getting-started/desktop-app) · [Agent profiles](https://x-t-e-r.github.io/kiki/en/customization/agent-profiles) · [Plugins](https://x-t-e-r.github.io/kiki/en/customization/plugins) · [Interaction and approvals](https://x-t-e-r.github.io/kiki/en/guides/interaction) · [Configuration](https://x-t-e-r.github.io/kiki/en/configuration/config-files) · [Command reference](https://x-t-e-r.github.io/kiki/en/reference/command) · [Tool reference](https://x-t-e-r.github.io/kiki/en/reference/tools)
 
-## Develop
+## Develop from source
 
 Requirements: Node.js 24.22.1+ or 26.12.1+, pnpm 10.33.0.
 

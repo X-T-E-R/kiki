@@ -1,39 +1,41 @@
-# X thread (5 posts)
+# X launch thread (0.7.0, free-tier `<= 280` chars per post)
 
-Attach media to posts 1, 2, 3, 4. Post 1 opens with the multi-model fleet screenshot (`docs/public/shots/workbench/workbench-per-role-models.en.png`), or the 30 s real recording if it exists alongside it.
+Production rules applied:
+- **Free X account hard cap:** every post below is verified `<= 280` characters (both raw and t.co-weighted).
+- **Post 1 (root):** attach the **35–48 s** `1920x1080` `30fps` `H.264 (yuv420p) +faststart` physical split-screen MP4 (`ffmpeg -map_metadata -1 -fflags +bitexact`; see [demo-storyboard.md](demo-storyboard.md), Storyboard A). **Zero external URLs, zero hashtags, zero emojis, zero engagement-bait pointers in Post 1.**
+- **Reply 2:** publish **20–30 s after Post 1** with the GitHub link and the Multi-Model + Orthogonal Reviewer catch plate (`docs/public/shots/workbench/workbench-per-role-models.en.png`).
 
-**1/**
-One task, several models. Each doing its part.
-Your agents, your call.
+---
 
-Kiki is an open-source (MIT) agent workbench running as a service on your own machine: desktop, terminal (`kiki`), browser (`kiki web`), and phone all show the same work.
-[`docs/public/shots/workbench/workbench-per-role-models.en.png`]
+## Post 1 (Root — attach 35–48 s split-screen MP4, ZERO links)
 
-**2/**
-Claude Code is tuned for Claude; Codex is tuned for GPT.
-Fitted to each model: Kiki tunes itself to each native model you connect through a Recipe — prompts + model settings (+ optional script hooks), installed once, bound to a model, with per-binding options.
+Sent a fix from my 5G phone over a self-hosted E2EE relay; 38s later my home PC patched the file and woke a physical Android phone to tap through tests.
 
-5 recipes published (MIT): GPT-6.1 Sol, GPT-6 Astra, DeepSeek V4.1, Gemini 4 Argon, Gemini 3.8 Flash → github.com/X-T-E-R/kiki-recipes
-[`docs/public/shots/freedom/d02-prompt-fields.en.png`]
+Electron 44 + 0ms pre-warmed TLS 1.3 pool.
 
-**3/**
-Each agent is a Markdown file you own.
-Frontmatter sets tools, `model_alias`, effort, and permitted child agents; body is the system prompt.
-Saved edits apply to the next dispatch; no silent fallback when a subagent has no model bound.
-Any built-in prompt field can also be overridden per model (`kiki prompt-fields explain`).
-[`docs/public/shots/agents/r01-reviewer-profile.en.png`]
+Early 0.x trade-off: macOS dmg is still unsigned (Control-click -> Open).
 
-**4/**
-Built for long, many-threaded work on your machine:
-- subagents and background tasks notify the lead when done
-- messages you type while it is busy queue per-message: when idle, after subagents, or after tasks
-- `/goal` across turns, cron while a session is held open, and optional `kiki-task-board`
-[`docs/public/shots/long-work/long-work-goal-queue.en.png`]
+---
 
-**5/**
-Sessions, history, and config stay in your local Kiki home; work files stay in your folder; model requests go only to providers or local servers you connect.
-Import Claude Code / Codex / OpenCode history, connect Zed or JetBrains via `kiki acp`.
+## Reply 2 (Post 20–30 s after Post 1 — attach multi-model fleet / $0.04 review plate)
 
-Early `0.x` (`0.5.1`).
-`npm i -g kiki-agent` (Node 24.22.1+ or 26.12.1+)
-github.com/X-T-E-R/kiki
+Per-role multi-vendor dispatch in the same session: strong model plans, cheap model edits, another vendor reviews ($0.04 review caught a real bug line).
+
+MIT open source, 0.6.2 public / 0.7.0 staged (Win/Mac/Linux/Android):
+https://github.com/X-T-E-R/kiki
+
+---
+
+## Reply 3 (Long-session engineering + 60fps resident device panels)
+
+Built for multi-week runs: sub-second open on 3GB+ sessions, >=99% KV-cache retention across compaction, and 60fps resident phone/desktop/Proxmox panels (0ms re-open) with Human Takeover.
+
+20 official plugins: https://github.com/X-T-E-R/kiki-plugins
+
+---
+
+## Reply 4 (Markdown agents, Recipes, peer threads, install truth)
+
+Agents are Markdown files; native models bind Recipes (5 MIT recipes published). Long-lived sessions talk via ThreadSend/@Thread. Win 0.7 installer bundles Git Bash + rg; Android runs remote or local Bionic Node.
+
+https://github.com/X-T-E-R/kiki-recipes

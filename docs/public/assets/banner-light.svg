@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 164" width="720" height="164" role="img" aria-label="Kiki — Local Multi-Model Agent Workbench">
+  <!-- Paper-and-Ink light banner -->
+  <rect x="0.5" y="0.5" width="719" height="163" rx="14" fill="#fbfaf6" stroke="#e4ddd0" stroke-width="1"/>
+
+  <!-- Subtle architectural baseline rule -->
+  <line x1="36" y1="126" x2="684" y2="126" stroke="#e4ddd0" stroke-width="1"/>
+
+  <!-- Brand emblem (adapted from docs/public/kiki-logo.svg in paper-and-ink palette) -->
+  <g transform="translate(36, 34)">
+    <rect width="64" height="64" rx="14" fill="#1b1a17"/>
+    <g transform="scale(0.125)">
+      <path d="M154 112h70v153l96-90h91L298 278l122 122h-94L224 296v104h-70z" fill="#fbfaf6"/>
+      <circle cx="393" cy="116" r="34" fill="#c8401a"/>
+    </g>
+  </g>
+
+  <!-- Editorial wordmark + scope truth subtitle (system fonts only for GitHub sandboxed <img>) -->
+  <text x="118" y="68" fill="#1b1a17" font-family="Georgia, 'Times New Roman', serif" font-size="38" font-weight="700" letter-spacing="-0.5">Kiki</text>
+  <text x="118" y="96" fill="#4b453e" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14.5" font-weight="400" letter-spacing="0.1">Local Multi-Model Agent Workbench</text>
+
+  <!-- Minimalist dispatch-tree + device topology motif on right (flush to x=684) -->
+  <g transform="translate(472, 34)" fill="none" stroke-linecap="round">
+    <path d="M16 32 H64 M64 32 C84 32 84 12 108 12 H152 M64 32 H152 M64 32 C84 32 84 52 108 52 H152" stroke="#cdc3b1" stroke-width="1.5"/>
+    <!-- Lead node -->
+    <circle cx="16" cy="32" r="7" fill="#1b1a17"/>
+    <circle cx="16" cy="32" r="2.5" fill="#fbfaf6"/>
+    <!-- Branch nodes -->
+    <circle cx="152" cy="12" r="5" fill="#1d4d6d"/>
+    <circle cx="152" cy="32" r="5" fill="#c8401a"/>
+    <circle cx="152" cy="52" r="5" fill="#4b453e"/>
+    <!-- Right-aligned micro-labels flush to x=684 (472 + 212 = 684) -->
+    <text x="212" y="15.5" text-anchor="end" fill="#665e54" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10.5">fleet</text>
+    <text x="212" y="35.5" text-anchor="end" fill="#665e54" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10.5">devices</text>
+    <text x="212" y="55.5" text-anchor="end" fill="#665e54" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10.5">relay</text>
+  </g>
+
+  <!-- Quiet bottom surface strip -->
+  <text x="36" y="147" fill="#665e54" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" letter-spacing="0.4">DESKTOP  ·  TUI  ·  WEB  ·  ANDROID  ·  SELF-HOSTED E2EE RELAY</text>
+  <text x="684" y="147" text-anchor="end" fill="#9c3012" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="600" letter-spacing="0.4">MIT OPEN SOURCE</text>
+</svg>
