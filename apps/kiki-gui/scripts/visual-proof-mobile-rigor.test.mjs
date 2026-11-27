@@ -1,12 +1,17 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import {
   evaluateContradictoryUiState,
+  evaluateMobileColdBundleBudget,
   evaluateSafeAreaGeometry,
   evaluateSoftKeyboardGeometry,
   evaluateTouchTargets,
   evaluateUnintendedBlankVoids,
+  MOBILE_COLD_BUNDLE_BUDGET,
   MOBILE_DEVICE_PROFILES,
 } from './lib/mobile-geometry-probes.mjs';
 import { parseMobileRigorArgs } from './visual-proof-mobile-rigor.mjs';
@@ -127,4 +132,67 @@ test('parseMobileRigorArgs switches cleanly between strict and --report-findings
   assert.equal(audit.reportFindings, true);
   assert.equal(audit.noBuild, true);
   assert.deepEqual(audit.only, ['iphone-landscape-safe-area']);
+});
+
+test('evaluateMobileColdBundleBudget enforces chat-inclusive /m/* static ES closure <= 802,976 B and excludes dynamic imports', () => {
+  assert.equal(MOBILE_COLD_BUNDLE_BUDGET.baselineColdGzipBytes, 767_136);
+  assert.equal(MOBILE_COLD_BUNDLE_BUDGET.maxDeltaGzipBytes, 35 * 1024);
+  assert.equal(MOBILE_COLD_BUNDLE_BUDGET.maxAllowedGzipBytes, 802_976);
+
+  const dir = mkdtempSync(join(tmpdir(), 'kiki-bundle-gate-'));
+  try {
+    const assetsDir = join(dir, 'assets');
+    mkdirSync(assetsDir, { recursive: true });
+    writeFileSync(
+      join(dir, 'index.html'),
+      '<!doctype html><html><head><script type="module" crossorigin src="/assets/index-entry1.js"></script></head><body></body></html>',
+      'utf8',
+    );
+    writeFileSync(
+      join(assetsDir, 'index-entry1.js'),
+      'import{a}from"./shared-core1.js";const lazy=()=>import("./heavy-dynamic1.js");console.log(a,lazy);',
+      'utf8',
+    );
+    writeFileSync(join(assetsDir, 'shared-core1.js'), 'export const a = "core";', 'utf8');
+    writeFileSync(
+      join(assetsDir, 'MobileAppShell-shell1.js'),
+      'import{a}from"./shared-core1.js";export const shell=a;',
+      'utf8',
+    );
+    writeFileSync(
+      join(assetsDir, 'MobileChatWorkspace-chat1.js'),
+      'import{a}from"./shared-core1.js";export{w}from"./workspace-dep1.js";console.log(a);',
+      'utf8',
+    );
+    writeFileSync(join(assetsDir, 'workspace-dep1.js'), 'export const w = "chat";', 'utf8');
+    // Dynamic-only chunk must NOT be counted in the cold static closure.
+    writeFileSync(join(assetsDir, 'heavy-dynamic1.js'), `export const big = ${JSON.stringify('x'.repeat(50_000))};`, 'utf8');
+
+    const passRes = evaluateMobileColdBundleBudget({
+      distDir: dir,
+      baselineColdGzipBytes: 200,
+      maxDeltaGzipBytes: 500,
+    });
+    assert.equal(passRes.findings.length, 0);
+    assert.equal(passRes.metrics?.chunkCount, 5);
+    assert.ok(!passRes.metrics?.topChunks.some((c) => c.file === 'heavy-dynamic1.js'));
+
+    const failRes = evaluateMobileColdBundleBudget({
+      distDir: dir,
+      baselineColdGzipBytes: 100,
+      maxDeltaGzipBytes: 50,
+    });
+    assert.equal(failRes.findings.length, 1);
+    assert.equal(failRes.findings[0].ruleId, 'MOBILE_COLD_BUNDLE_BUDGET_EXCEEDED');
+    assert.equal(failRes.findings[0].severity, 'error');
+
+    const missingRes = evaluateMobileColdBundleBudget({
+      distDir: join(dir, 'nonexistent'),
+    });
+    assert.equal(missingRes.findings.length, 1);
+    assert.equal(missingRes.findings[0].ruleId, 'MOBILE_COLD_BUNDLE_MISSING_CHUNK');
+    assert.equal(missingRes.findings[0].severity, 'error');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

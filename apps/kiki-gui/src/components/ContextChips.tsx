@@ -281,3 +281,16 @@ export function TextTile({
     </span>
   );
 }
+
+/** Small line glyph for file / folder chips and mention rows (no emoji). */
+export function FileGlyph({ dir }: { dir: boolean }) {
+  return (
+    <svg width="13" height="13" viewBox="0 0 12 12" fill="none" aria-hidden className="shrink-0 text-ink-faint">
+      {dir ? (
+        <path d="M1.5 3.5a1 1 0 0 1 1-1h2.2l1 1.2h3.8a1 1 0 0 1 1 1V9a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1V3.5Z" stroke="currentColor" strokeWidth="1" strokeLinejoin="round" />
+      ) : (
+        <path d="M3 1.5h3.8L9.5 4.2V10a.5.5 0 0 1-.5.5H3a.5.5 0 0 1-.5-.5V2a.5.5 0 0 1 .5-.5ZM6.6 1.6v2.8h2.8" stroke="currentColor" strokeWidth="1" strokeLinejoin="round" />
+      )}
+    </svg>
+  );
+}

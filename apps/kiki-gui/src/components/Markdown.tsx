@@ -9,7 +9,7 @@
 
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { Link } from 'react-router-dom';
-import { Streamdown, defaultRemarkPlugins, defaultRehypePlugins, type Components } from 'streamdown';
+import type { Components } from 'streamdown';
 
 import { useHost } from '../host';
 import { ExternalLink } from '../host/ExternalLink';
@@ -39,6 +39,7 @@ import {
   unregisterMarkedRoot,
 } from './markdown/domAnnotationMarks';
 import { useStreamdownPlugins } from './markdown/streamdown-plugins';
+import { useStreamdownRuntime, type LoadedStreamdownRuntime } from './markdown/streamdown-runtime';
 import { StaticDocument } from './markdown/staticDocument';
 import './markdown/markdown.css';
 import { isOnKikiComputer } from './imageActions';
@@ -515,20 +516,19 @@ function MarkdownAnchor({ href, children, documentDirectory, documentPath, rootR
   );
 }
 
-const IMAGE_REHYPE_PLUGINS = Object.entries(defaultRehypePlugins).map(([name, plugin]) => {
-  if (name !== 'sanitize' || !Array.isArray(plugin)) return plugin;
-  const schema = plugin[1] as { protocols?: Record<string, string[]> };
-  return [plugin[0], {
-    ...schema,
-    protocols: { ...schema.protocols, src: [...(schema.protocols?.['src'] ?? []), 'data', 'blob', 'kimi-file'] },
-  }] as typeof plugin;
-});
+interface DerivedPluginLists {
+  readonly imageRehypePlugins: unknown[];
+  readonly imageRehypePluginsNoRaw: unknown[];
+  readonly streamRemarkPlugins: unknown[];
+  readonly documentPlugins: unknown[];
+}
 
-// When markdown contains no `<`, mdast-util-to-hast emits zero `raw` HTML nodes,
-// so skipping rehype-raw avoids serializing and re-parsing every block via parse5.
-const IMAGE_REHYPE_PLUGINS_NO_RAW = Object.entries(defaultRehypePlugins)
-  .filter(([name]) => name !== 'raw')
-  .map(([name, plugin]) => {
+const DERIVED_PLUGIN_CACHE = new WeakMap<LoadedStreamdownRuntime, DerivedPluginLists>();
+
+function getDerivedPluginLists(runtime: LoadedStreamdownRuntime): DerivedPluginLists {
+  let cached = DERIVED_PLUGIN_CACHE.get(runtime);
+  if (cached !== undefined) return cached;
+  const imageRehypePlugins = Object.entries(runtime.defaultRehypePlugins).map(([name, plugin]) => {
     if (name !== 'sanitize' || !Array.isArray(plugin)) return plugin;
     const schema = plugin[1] as { protocols?: Record<string, string[]> };
     return [plugin[0], {
@@ -536,6 +536,27 @@ const IMAGE_REHYPE_PLUGINS_NO_RAW = Object.entries(defaultRehypePlugins)
       protocols: { ...schema.protocols, src: [...(schema.protocols?.['src'] ?? []), 'data', 'blob', 'kimi-file'] },
     }] as typeof plugin;
   });
+  // When markdown contains no `<`, mdast-util-to-hast emits zero `raw` HTML nodes,
+  // so skipping rehype-raw avoids serializing and re-parsing every block via parse5.
+  const imageRehypePluginsNoRaw = Object.entries(runtime.defaultRehypePlugins)
+    .filter(([name]) => name !== 'raw')
+    .map(([name, plugin]) => {
+      if (name !== 'sanitize' || !Array.isArray(plugin)) return plugin;
+      const schema = plugin[1] as { protocols?: Record<string, string[]> };
+      return [plugin[0], {
+        ...schema,
+        protocols: { ...schema.protocols, src: [...(schema.protocols?.['src'] ?? []), 'data', 'blob', 'kimi-file'] },
+      }] as typeof plugin;
+    });
+  cached = {
+    imageRehypePlugins,
+    imageRehypePluginsNoRaw,
+    streamRemarkPlugins: [...Object.values(runtime.defaultRemarkPlugins), ...REMARK_PLUGINS],
+    documentPlugins: [...Object.values(runtime.defaultRemarkPlugins), ...DOCUMENT_REMARK_PLUGINS],
+  };
+  DERIVED_PLUGIN_CACHE.set(runtime, cached);
+  return cached;
+}
 
 // Static mode parses children directly. Its unused streaming-block state must
 // stay stable, otherwise a text change schedules a second full-document parse.
@@ -547,8 +568,6 @@ const staticDocumentBlock = (): string[] => NO_STREAMING_BLOCKS;
 const singleStreamingBlock = (markdown: string): string[] => [markdown];
 const LINK_SAFETY = { enabled: false };
 const CONTROLS = { table: false, code: false, mermaid: false };
-const STREAM_REMARK_PLUGINS = [...Object.values(defaultRemarkPlugins), ...REMARK_PLUGINS];
-const DOCUMENT_PLUGINS = [...Object.values(defaultRemarkPlugins), ...DOCUMENT_REMARK_PLUGINS];
 
 const components: Components = {
   pre: KikiMarkdownPre as Components['pre'],
@@ -626,6 +645,7 @@ export const Markdown = memo(function Markdown({
     return parts;
   }, [text]);
   const plain = plainParagraphs !== null && findFileReferences(text).length === 0;
+  const runtime = useStreamdownRuntime(!plain);
   const plugins = useStreamdownPlugins(plain ? null : text, rootRef);
   const className = preserveEdgeMargins ? 'kiki-md kiki-md--edges' : 'kiki-md';
   const sourceVersion = useMemo(
@@ -688,7 +708,7 @@ export const Markdown = memo(function Markdown({
       observer?.disconnect();
       unregisterMarkedRoot(root);
     };
-  }, [markSignature, plain, remountNonce, text, mode, documentDirectory, documentPath, plugins]);
+  }, [markSignature, plain, remountNonce, text, mode, documentDirectory, documentPath, plugins, runtime]);
 
   // Streamdown's memo omits components; remount only when document scope changes
   // (or when remountNonce advances after text/plugin changes under active DOM marks).
@@ -716,13 +736,22 @@ export const Markdown = memo(function Markdown({
       </div>
     );
   }
-  const Renderer = mode === 'static' ? StaticDocument : Streamdown;
+  if (runtime === null) {
+    return (
+      <div ref={rootRef} className={className} data-source-block-id={sourceBlockId} data-source-version={sourceVersion}>
+        <p className="whitespace-pre-wrap break-words">{text}</p>
+      </div>
+    );
+  }
+  const pluginLists = getDerivedPluginLists(runtime);
+  const Renderer = mode === 'static' ? StaticDocument : runtime.Streamdown;
   const parseBlocksFn = mode === 'static'
     ? staticDocumentBlock
     : hasStreamedRef.current
       ? undefined
       : singleStreamingBlock;
-  const rehypePlugins = text.includes('<') ? IMAGE_REHYPE_PLUGINS : IMAGE_REHYPE_PLUGINS_NO_RAW;
+  const rehypePlugins = (text.includes('<') ? pluginLists.imageRehypePlugins : pluginLists.imageRehypePluginsNoRaw) as never;
+  const remarkPlugins = (documentDirectory === undefined ? pluginLists.streamRemarkPlugins : pluginLists.documentPlugins) as never;
   return (
     <div ref={rootRef} className={className} data-source-block-id={sourceBlockId} data-source-version={sourceVersion}>
       <Renderer
@@ -731,10 +760,7 @@ export const Markdown = memo(function Markdown({
         parseIncompleteMarkdown={mode === 'streaming'}
         parseMarkdownIntoBlocksFn={parseBlocksFn}
         plugins={plugins}
-        // The bare remarkPlugins prop REPLACES Streamdown's defaults, so
-        // spread them back in — dropping remark-gfm kills GFM tables,
-        // strikethrough, task-lists, and autolinks.
-        remarkPlugins={documentDirectory === undefined ? STREAM_REMARK_PLUGINS : DOCUMENT_PLUGINS}
+        remarkPlugins={remarkPlugins}
         rehypePlugins={rehypePlugins}
         components={renderers}
         // Streamdown's link safety defaults to ON and blocks any href it

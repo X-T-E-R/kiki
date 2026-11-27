@@ -24,7 +24,7 @@ import type { ExternalTextNote } from '@kiki/session-core/session';
 import { useI18n } from '../../i18n';
 import { ContentContinuation } from '../ContentContinuation';
 import { Markdown } from '../Markdown';
-import { AssistantOutputContent } from '../output-layer';
+import { AssistantOutputContent } from '../output-layer/AssistantOutputContent';
 import { Icon } from '../icons';
 import { ActivityRow, ACTIVITY_BODY_INDENT } from './ActivityRow';
 import { RelativeTime } from '../RelativeTime';

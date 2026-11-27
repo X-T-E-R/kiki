@@ -57,6 +57,13 @@ import { mergeLoadedAttachments } from './RowActions';
 import { Icon } from './icons';
 import { useSidebarContext } from './sidebarContext';
 import { MessageViewContext } from './message/messageViewContext';
+import {
+  isMobileAppShellUserAgent,
+  MOBILE_ASSISTANT_PATH,
+  mobileChatPath,
+  readDesktopOverride,
+  writeDesktopOverride,
+} from '../mobile/mobileShellRoute';
 import { isTimelineViewShortcut, useTimelineView, type TimelineView } from './message/messageViewMode';
 import { TimelineMenuRows, TimelineViewSwitch } from './message/TimelineViewSwitch';
 import { PersonaSessionIdentity } from './persona/PersonaSessionIdentity';
@@ -506,10 +513,9 @@ const Header = memo(function Header({
   const waiting = approvals + questions;
   const runningTasks = state.tasks.filter((task) => task.status === 'running').length;
   const isNarrow = useMediaQuery('(max-width: 639px)');
-  // Below lg the rail is an overlay drawer owned by the routed agent page, so
-  // the header's rail toggle is dead weight there (same rule the cockpit
-  // switch already follows inside the rail).
-  const railToggleVisible = useMediaQuery('(min-width: 1024px)');
+  // Direct 44×44px Inspector toggle at every width: docked inline >=lg,
+  // @base-ui/react/drawer bottom sheet on phoneMode, overlay rail on narrow tablet.
+  const railToggleVisible = true;
   const headerRef = useRef<HTMLElement>(null);
   const [headerNarrow, setHeaderNarrow] = useState(false);
   useEffect(() => {
@@ -665,6 +671,14 @@ const Header = memo(function Header({
             // that also opens it is hidden), so the overview's way in is here.
             // The same toggle opens the overlay layer the back button closes.
             onOpenOverview={railAvailable && !railToggleVisible ? onToggleRail : undefined}
+            onReturnMobile={
+              readDesktopOverride() || isMobileAppShellUserAgent() || isNarrow
+                ? () => {
+                    writeDesktopOverride(false);
+                    void navigate(session?.id !== undefined ? mobileChatPath('local', session.id) : MOBILE_ASSISTANT_PATH);
+                  }
+                : undefined
+            }
             onAction={onSessionAction}
             freshContextAvailable={freshContextAvailable}
             canFork={!harnessDenies(harness, 'fork')}
@@ -937,7 +951,7 @@ export function SessionTitle({
             data-session-cwd
             onClick={onOpenRail}
             title={cwd}
-            className="hidden min-w-0 shrink-[100] truncate text-[12px] text-ink-faint transition-colors hover:text-ink-soft @[720px]/center:block"
+            className="hidden min-w-0 shrink-[100] truncate text-[12px] text-ink-faint transition-colors hover:text-ink-soft @[720px]/center:block @[720px]/center:pointer-coarse:inline-flex pointer-coarse:min-h-7 pointer-coarse:items-center"
           >
             {/* A worktree checkout path is Kiki's own; the project reads by its source. */}
             {shortCwd(worktree?.source_root ?? cwd)}
@@ -1007,6 +1021,7 @@ export function SessionActionsMenu({
   onOpenBranch,
   onPromptDetails,
   onOpenOverview,
+  onReturnMobile,
   freshContextAvailable = false,
   leading,
   canFork = true,
@@ -1025,6 +1040,8 @@ export function SessionActionsMenu({
    * rail toggle of its own; the row is hidden without it.
    */
   onOpenOverview?: () => void;
+  /** Relocated mode switch returning from desktop workbench to `/m/*` companion view. */
+  onReturnMobile?: () => void;
   onAction: (action: 'fork' | 'undo' | 'compact' | 'export' | 'fresh-context') => void;
   /**
    * True once the conversation holds something to carry over: starts a fresh
@@ -1249,6 +1266,23 @@ export function SessionActionsMenu({
               <span>{t('term.menuItem')}</span>
             </button>
           ) : null}
+          {onReturnMobile !== undefined ? (
+            <>
+              <div className="my-1 h-px bg-hairline" />
+              <button
+                type="button"
+                role="menuitem"
+                data-return-mobile-action
+                className={sheetItemClass}
+                onClick={() => {
+                  setOpen(false);
+                  onReturnMobile();
+                }}
+              >
+                {t('mobile.desktop.returnMobile')}
+              </button>
+            </>
+          ) : null}
         </ActionSheet>
       ) : open ? (
         <Popover.Root
@@ -1341,6 +1375,20 @@ export function SessionActionsMenu({
             >
               <span>{t('term.menuItem')}</span>
               {terminalChord !== undefined ? <span className="text-[12px] text-ink-faint pointer-coarse:hidden">{terminalChord}</span> : null}
+            </button>
+          ) : null}
+          {onReturnMobile !== undefined ? (
+            <button
+              type="button"
+              role="menuitem"
+              data-return-mobile-action
+              className={itemClass}
+              onClick={() => {
+                setOpen(false);
+                onReturnMobile();
+              }}
+            >
+              {t('mobile.desktop.returnMobile')}
             </button>
           ) : null}
           <div className="my-1 h-px bg-hairline" />
@@ -5902,9 +5950,12 @@ boundExecution,
     return <PromptRecordsRemainder continuation={{ coverage: promptCoverage, status: promptEntityLoad, onRequest: handleLoadPromptEntities }} />;
   }, [hasPromptContinuation, promptCoverage, queueRowCount, recoveryHold, hasActionableDurableIngress, promptEntityLoad, handleLoadPromptEntities]);
 
-  // The working line under the composer: only while the agent itself is
-  // busy (an approval or question hands the floor to the tray instead).
-  const composerWorking = composerBusy && state.pendingInteraction === 'none';
+  // The working line under the composer: active whenever the turn is abortable
+  // OR main_turn_active is true (such as Persona Cron/wake turns before
+  // abortableTurnId hydrates), yielding the floor only to pending interactions.
+  const composerWorking =
+    (composerBusy || (state.busy && state.session?.main_turn_active === true)) &&
+    state.pendingInteraction === 'none';
   const workingTiming = useComposerWorking({
     busy: composerWorking,
     scopeKey: sessionId,

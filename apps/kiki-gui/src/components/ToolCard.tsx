@@ -14,15 +14,22 @@ import type { I18nKey } from '@kiki/session-core/i18n';
 
 import { extractToolOutputMedia, toolResultMedia, type MediaRef } from '@kiki/session-core/composer/media';
 import { findToolCardRendererSlot, resolvePluginLocalizedText } from '@kiki/session-core';
-import type { ToolBlock } from '@kiki/session-core/session';
+import { isMemoryToolName, type ToolBlock } from '@kiki/session-core/session';
 import { describeError, extractEditSource, diffStat } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
+import { lazyComponent } from '../lib/lazyComponent';
 import { toolDisplayName } from '../lib/pluginCatalog';
 import { ContentContinuation, DISPLAY_ROOTS, EDIT_ROOTS, frameContentSource, OUTPUT_ROOTS } from './ContentContinuation';
-import { DiffCard } from './DiffCard';
-import { isMemoryToolName, MemoryToolRow } from './MemoryToolRow';
-import { MediaJobView, readMediaJobResult } from './media/MediaJobView';
+import { readMediaJobResult } from './media/mediaJobParser';
 import { FilePathLink, MediaPartList } from './mediaParts';
+
+const LazyDiffCard = lazyComponent(() => import('./DiffCard').then((m) => m.DiffCard));
+const LazyMemoryToolRow = lazyComponent(() => import('./MemoryToolRow').then((m) => m.MemoryToolRow));
+const LazyMediaJobView = lazyComponent(() => import('./media/MediaJobView').then((m) => m.MediaJobView));
+
+if (import.meta.env.MODE === 'test') {
+  await Promise.all([LazyDiffCard.preload(), LazyMemoryToolRow.preload(), LazyMediaJobView.preload()]);
+}
 import { PathText } from './PathText';
 import { Icon, OutcomeMark, type IconName } from './icons';
 import { usePluginGuiSlots } from './plugins/PluginComposerSlots';
@@ -358,22 +365,12 @@ function StatusIcon({
   );
 }
 
-/** The four outcome labels every activity row speaks, from one i18n source. */
-export function activityOutcomeLabels(t: Translate) {
-  return {
-    running: t('transcript.runningAria'),
-    failed: t('transcript.failedAria'),
-    stopped: t('transcript.stoppedAria'),
-    done: t('transcript.doneAria'),
-  };
-}
+import {
+  activityOutcomeLabels,
+  DURATION_WORTH_SHOWING_MS,
+} from './timeline/transcriptDeliveryContext';
 
-/**
- * Whether a finished duration earns the column. Sub-2s successes are the
- * common read/grep/edit rhythm and their numbers only add a column to skip;
- * a slow step, a failure, a stop, or a still-unknown timing always shows.
- */
-export const DURATION_WORTH_SHOWING_MS = 2_000;
+export { activityOutcomeLabels, DURATION_WORTH_SHOWING_MS };
 
 function CommandIsland({ command, cwd, output }: { command: string; cwd?: string; output?: ReactNode }) {
   return (
@@ -490,7 +487,7 @@ function outputBody(output: unknown, agentId: string, island: boolean, t: Transl
   // before the string branch so a serialized job is never shown as raw JSON.
   const mediaResult = readMediaJobResult(output);
   if (mediaResult !== undefined) {
-    return <MediaJobView job={mediaResult.job} delivery={mediaResult.delivery} agentId={agentId} superseded={superseded} />;
+    return <LazyMediaJobView job={mediaResult.job} delivery={mediaResult.delivery} agentId={agentId} superseded={superseded} />;
   }
   if (typeof output === 'string') return <ReadableToolText text={output} className={wellClass(island)} />;
   if (typeof output === 'object') {
@@ -647,7 +644,7 @@ ${engineError}`;
     [pluginToolSlot, pluginToolSources],
   );
 
-  if (memoryRow) return <MemoryToolRow block={block} agentId={agentId} />;
+  if (memoryRow) return <LazyMemoryToolRow block={block} agentId={agentId} />;
 
   const movedToBackground = !external && isTaskWaitMovedToBackground(block);
   const effectiveStopped = block.status === 'stopped' && !movedToBackground;
@@ -859,7 +856,7 @@ ${engineError}`;
                           <FilePathLink path={source.path} />
                         </p>
                       ) : null}
-                      <DiffCard hunks={source.hunks} />
+                      <LazyDiffCard hunks={source.hunks} />
                     </div>
                   ))}
                 </div>
@@ -876,7 +873,7 @@ ${engineError}`;
                       </span>
                     </p>
                   ) : null}
-                  <DiffCard hunks={editSource.hunks} />
+                  <LazyDiffCard hunks={editSource.hunks} />
                   {/* The diff is built from this frame's display/args, so it is
                       those fields that continue the hunks shown. */}
                   <ContentContinuation

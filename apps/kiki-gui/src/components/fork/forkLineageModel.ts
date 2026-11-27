@@ -20,7 +20,7 @@ import {
   extractBranchFoldSummaries,
   isEphemeralBtwNode,
   type BranchLifecycleState,
-} from '../agent-panel/InspectorBranches';
+} from '../agent-panel/branchModel';
 
 export interface ForkOriginSummary {
   readonly sessionId: string;

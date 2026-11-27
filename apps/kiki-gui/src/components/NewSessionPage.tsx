@@ -382,7 +382,7 @@ function focusComposer() {
   window.requestAnimationFrame(() => {
     const textarea = composerInputOf(document.querySelector<HTMLElement>('[data-composer]'));
     if (textarea === null) return;
-    textarea.focus();
+    textarea.focus({ preventScroll: true });
     textarea.setSelectionRange(textarea.value.length, textarea.value.length);
   });
 }

@@ -157,7 +157,7 @@ export function AudioTabView({
     loadPlayableMedia(
       client,
       path,
-      { sessionId, workspaceRoot, localKikiComputer },
+      { sessionId, workspaceRoot, localKikiComputer, remoteBrokered: connection?.connectionSource === 'remote' },
       abort.signal,
       blobFallbackKey === mediaKey,
     ).then((ready) => {
@@ -177,7 +177,7 @@ export function AudioTabView({
       abort.abort();
       release?.();
     };
-  }, [attempt, blobFallbackKey, client, localKikiComputer, mediaKey, path, scopeId, sessionId, workspaceRoot]);
+  }, [attempt, blobFallbackKey, client, connection?.connectionSource, localKikiComputer, mediaKey, path, scopeId, sessionId, workspaceRoot]);
 
   const readyState = state.status === 'ready' && state.client === client && state.path === path && state.scopeId === scopeId
     ? state

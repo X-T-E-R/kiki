@@ -58,6 +58,7 @@ export function ImageTabView({
   const client = connection?.client;
   const mediaPreview = useMediaPreview();
   const localKikiComputer = isLocalKikiComputer(connection);
+  const remoteBrokered = connection?.connectionSource === 'remote';
   const name = basenameOf(path);
   const [attempt, setAttempt] = useState(0);
   const [changedOnDisk, setChangedOnDisk] = useState(false);
@@ -101,7 +102,7 @@ export function ImageTabView({
     let objectUrl: string | undefined;
     setChangedOnDisk(false);
     setState({ status: 'loading' });
-    readPreviewFileBytes(client, path, { sessionId, workspaceRoot, localKikiComputer }).then(
+    readPreviewFileBytes(client, path, { sessionId, workspaceRoot, localKikiComputer, remoteBrokered }).then(
       ({ bytes, mime, etag }) => {
         if (cancelled) return;
         objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime }));
@@ -115,7 +116,7 @@ export function ImageTabView({
       cancelled = true;
       if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
     };
-  }, [attempt, client, localKikiComputer, path, sessionId, workspaceRoot]);
+  }, [attempt, client, localKikiComputer, path, remoteBrokered, sessionId, workspaceRoot]);
 
   const lastProbeAtRef = useRef(0);
   const checkDiskChange = useCallback(async (force = false) => {
@@ -127,7 +128,7 @@ export function ImageTabView({
       const probe = await readPreviewFileBytes(
         client,
         path,
-        { sessionId, workspaceRoot, localKikiComputer },
+        { sessionId, workspaceRoot, localKikiComputer, remoteBrokered },
         { ifNoneMatch: state.etag, probeOnly: true },
       );
       if (probe.notModified === true || probe.etag === state.etag) return;
@@ -137,7 +138,7 @@ export function ImageTabView({
     } catch {
       // Ignore transient conditional-probe errors; explicit Reload shows any failure.
     }
-  }, [client, localKikiComputer, path, sessionId, state, workspaceRoot]);
+  }, [client, localKikiComputer, path, remoteBrokered, sessionId, state, workspaceRoot]);
 
   const prevVisibleRef = useRef(visible);
   useEffect(() => {

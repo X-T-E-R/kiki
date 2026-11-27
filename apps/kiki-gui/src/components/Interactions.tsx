@@ -1517,23 +1517,12 @@ function QuestionCardContent({ block, onAnswer, onDismiss, originAgentName }: Qu
  * only a one-line record per item (the tray renders ApprovalCard/QuestionCard
  * itself). `onReview` lets the record's action focus that item in the tray.
  */
-export interface PendingInteractionRef {
-  readonly kind: 'approval' | 'question';
-  readonly id: string;
-}
-
-export interface InteractionPlacement {
-  readonly inTray: boolean;
-  readonly onReview?: (kind: 'approval' | 'question', id: string) => void;
-  /** Pending items in the tray's handling order, so phone timelines can name the batch once. */
-  readonly pendingItems?: readonly PendingInteractionRef[];
-}
-
-export const InteractionPlacementContext = createContext<InteractionPlacement>({ inTray: false });
-
-export function useInteractionPlacement(): InteractionPlacement {
-  return useContext(InteractionPlacementContext);
-}
+export {
+  InteractionPlacementContext,
+  useInteractionPlacement,
+  type InteractionPlacement,
+  type PendingInteractionRef,
+} from './interactionPlacementContext';
 
 /**
  * The transcript's one-line record of a PENDING approval/question while its

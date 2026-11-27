@@ -257,7 +257,7 @@ async function mountAt(width: 'narrow' | 'priority' | 'wide', railOpenByDefault 
       </QueryClientProvider>,
     );
   });
-  const rail = () => host.querySelector('[data-session-rail]');
+  const rail = () => host.querySelector('[data-session-rail]') ?? document.body.querySelector('[data-session-rail]');
   const toggle = () => host.querySelector<HTMLButtonElement>('[data-rail-toggle]');
   const rerender = async () => {
     await act(async () => {
@@ -381,16 +381,22 @@ describe('right rail responsive layout', () => {
     }
   });
 
-  it('hides the rail entirely below the lg breakpoint, its header toggle included', async () => {
+  it('keeps the rail closed by default below lg while exposing the direct header Inspector sheet toggle', async () => {
     const view = await mountAt('narrow');
     try {
-      // The routed agent page carries the same rail as its own drawer below
-      // lg, so the session header's toggle is dead weight there (PRINCIPLES:
-      // no control in a context where it cannot act).
       expect(view.rail()).toBeNull();
       expect(view.host.querySelector('.app-overlay-backdrop')).toBeNull();
-      expect(view.toggle()).toBeNull();
-      expect(view.host.querySelector('[data-agent-rail-toggle]')).toBeNull();
+      expect(view.toggle()).not.toBeNull();
+      expect(view.toggle()?.getAttribute('aria-expanded')).toBe('false');
+
+      await act(async () => { view.toggle()!.click(); });
+      expect(view.rail()).not.toBeNull();
+      expect(view.toggle()?.getAttribute('aria-expanded')).toBe('true');
+      expect(localStorage.getItem('kiki.layout')).toBeNull();
+
+      await act(async () => { view.toggle()!.click(); });
+      expect(view.rail()).toBeNull();
+      expect(view.toggle()?.getAttribute('aria-expanded')).toBe('false');
     } finally {
       await view.unmount();
     }
@@ -424,9 +430,8 @@ describe('right rail responsive layout', () => {
 
       await resizeTo('narrow');
       expect(view.rail()).toBeNull();
-      // The narrow visit hides the toggle with the rail; the untouched
-      // wide-screen preference is what must survive the round trip.
-      expect(view.toggle()).toBeNull();
+      // Narrow keeps its own closed sheet state without mutating wide layoutPrefs.
+      expect(view.toggle()?.getAttribute('aria-expanded')).toBe('false');
 
       await resizeTo('wide');
       expect(view.rail()).toBeNull();
@@ -435,7 +440,7 @@ describe('right rail responsive layout', () => {
       await act(async () => { view.toggle()!.click(); });
       expect(view.rail()).not.toBeNull();
       await resizeTo('narrow');
-      expect(view.toggle()).toBeNull();
+      expect(view.toggle()?.getAttribute('aria-expanded')).toBe('false');
       await resizeTo('wide');
       expect(view.rail()).not.toBeNull();
       expect(view.toggle()?.getAttribute('aria-expanded')).toBe('true');

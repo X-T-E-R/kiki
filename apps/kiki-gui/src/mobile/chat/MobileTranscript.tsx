@@ -23,7 +23,6 @@ import {
   type SystemBlock,
   type SystemReminderBlock,
   type ToolBlock,
-  type TurnTailInfo,
   type UserBlock,
 } from '@kiki/session-core/session';
 
@@ -37,12 +36,11 @@ import { CopyButton } from '../../components/timeline/ContentCopyButton';
 import { ModelDisplayProvider, useResolvedModelDisplay } from '../../components/timeline/ModelDisplayContext';
 import { EarlierPromptOutcomesRow, PromptOutcomeLine } from '../../components/timeline/PromptOutcome';
 import { TimelineErrorCallout, type TimelineErrorAction } from '../../components/timeline/TimelineErrorCallout';
-import { TurnFootnote } from '../../components/timeline/TurnFootnote';
 import { canFaithfullyRetryUserBlock, TurnTailSurface } from '../../components/timeline/TurnTailSurface';
 import { useI18n } from '../../i18n';
 import { isInlineDecidable, summarizeApproval } from '../approvalSummary';
 import { ApprovalHeadline, RejectReasonSheet } from '../components/ApprovalParts';
-import { extractFileChanges, type HoodTab } from './LiftTheHoodSheet';
+import { type HoodTab } from './LiftTheHoodSheet';
 import { MobileQuestionCard, type QuestionAnswers } from './MobileQuestionCard';
 
 interface MobileTranscriptProps {
@@ -619,7 +617,6 @@ export function MobileTranscript({
         : groupReplyBlocks(blocks, placementContext),
     [blocks, busy, messageMode, personaName, placementContext, state?.failedTurnIds],
   );
-  const fileChanges = useMemo(() => extractFileChanges(blocks), [blocks]);
   const hasUserTurn = useMemo(() => blocks.some((block) => block.kind === 'user'), [blocks]);
   const showGreeting = loaded && greeting !== undefined && !hasUserTurn && !hasMoreHistory;
 
@@ -918,53 +915,6 @@ export function MobileTranscript({
               onCompactContext={!readOnly && onRetryCompaction !== undefined ? () => { onRetryCompaction('summarize'); } : undefined}
               onRecoverInterruption={!readOnly ? onRecoverInterruption : undefined}
             />
-          ) : null}
-
-          {fileChanges.length > 0 ? (
-            <div
-              data-mobile-changes-card
-              className="w-full overflow-hidden rounded-2xl border border-hairline/90 bg-panel shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.04)]"
-            >
-              <button
-                type="button"
-                onClick={() => { onOpenHood('diff'); }}
-                className="flex min-h-11 w-full items-center justify-between border-b border-hairline/65 px-3.5 text-left transition-colors hover:bg-ink/[0.02]"
-              >
-                <span className="text-[13px] leading-[20px] font-bold text-ink">
-                  {t('mobile.chat.changes', { count: fileChanges.length })}
-                </span>
-                <Icon name="chevron" size={12} className="text-ink-faint" />
-              </button>
-              <div className="divide-y divide-hairline/50">
-                {fileChanges.slice(0, 4).map((change) => {
-                  const filename = change.path.split(/[\\/]/).pop() ?? change.path;
-                  return (
-                    <button
-                      key={change.id}
-                      type="button"
-                      data-mobile-change-file={change.id}
-                      onClick={() => { onOpenHood('diff', change.id); }}
-                      className="flex min-h-11 w-full items-center justify-between gap-2 px-3.5 text-left text-[13px] font-normal transition-colors hover:bg-ink/[0.02]"
-                    >
-                      <span className="min-w-0 truncate font-mono text-ink">{filename}</span>
-                      <span className="shrink-0 font-mono text-[12px] tabular-nums">
-                        <span className="text-success">+{change.added}</span>{' '}
-                        <span className="text-danger">-{change.removed}</span>
-                      </span>
-                    </button>
-                  );
-                })}
-                {fileChanges.length > 4 ? (
-                  <button
-                    type="button"
-                    onClick={() => { onOpenHood('diff'); }}
-                    className="flex min-h-11 w-full items-center px-3.5 text-left text-[12px] font-normal text-ink-faint"
-                  >
-                    {t('mobile.chat.changesMore', { count: fileChanges.length - 4 })}
-                  </button>
-                ) : null}
-              </div>
-            </div>
           ) : null}
         </div>
       </div>

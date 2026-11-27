@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState, type ComponentProps } from 'react';
-import { Streamdown, parseMarkdownIntoBlocks } from 'streamdown';
+import type { Streamdown } from 'streamdown';
+
+import { getStreamdownRuntime, useStreamdownRuntime } from './streamdown-runtime';
 
 const SEGMENT_TARGET = 2000;
 const LARGE_DOCUMENT = 16_000;
@@ -10,7 +12,9 @@ const REFERENCE_DEFINITION = /\]:/;
  * tables and HTML; concatenating its blocks preserves the source verbatim. */
 export function splitStaticDocument(text: string): string[] {
   if (text.length < LARGE_DOCUMENT || REFERENCE_DEFINITION.test(text) || text.includes('$$') || text.includes('\\[') || text.includes('\\(')) return [text];
-  const blocks = parseMarkdownIntoBlocks(text);
+  const parseBlocks = getStreamdownRuntime()?.parseMarkdownIntoBlocks;
+  if (parseBlocks === undefined) return [text];
+  const blocks = parseBlocks(text);
   const segments: string[] = [];
   let segment = '';
   for (const block of blocks) {
@@ -29,7 +33,8 @@ export function splitStaticDocument(text: string): string[] {
  * segment at once lets React batch them back into a single long task. Timers
  * also keep loading when a minimized window pauses animation frames. */
 export function StaticDocument({ children = '', ...props }: ComponentProps<typeof Streamdown>) {
-  const segments = useMemo(() => splitStaticDocument(children), [children]);
+  const runtime = useStreamdownRuntime(true);
+  const segments = useMemo(() => splitStaticDocument(children), [children, runtime]);
   const [progress, setProgress] = useState({ segments, count: 1 });
   const count = progress.segments === segments ? progress.count : 1;
   if (progress.segments !== segments) setProgress({ segments, count });
@@ -38,8 +43,12 @@ export function StaticDocument({ children = '', ...props }: ComponentProps<typeo
     const task = window.setTimeout(() => { setProgress({ segments, count: count + 1 }); }, 0);
     return () => { window.clearTimeout(task); };
   }, [segments, count]);
-  if (segments.length === 1) return <Streamdown {...props}>{children}</Streamdown>;
+  if (runtime === null) {
+    return <p className="whitespace-pre-wrap break-words">{children}</p>;
+  }
+  const StreamdownView = runtime.Streamdown;
+  if (segments.length === 1) return <StreamdownView {...props}>{children}</StreamdownView>;
   return <div aria-busy={count < segments.length}>{segments.slice(0, count).map((segment, index) => (
-    <Streamdown key={index} {...props}>{segment}</Streamdown>
+    <StreamdownView key={index} {...props}>{segment}</StreamdownView>
   ))}</div>;
 }

@@ -22,6 +22,7 @@ interface ChatsTabProps {
   readonly onOpenItem: (item: UnifiedInboxItem) => void;
   readonly onMarkRead: (item: UnifiedInboxItem) => void;
   readonly onArchive: (item: UnifiedInboxItem) => void;
+  readonly onOpenNavDrawer?: () => void;
 }
 
 function SwipeChatRow({
@@ -163,6 +164,7 @@ export function ChatsTab({
   onOpenItem,
   onMarkRead,
   onArchive,
+  onOpenNavDrawer,
 }: ChatsTabProps) {
   const { t } = useI18n();
   const [filter, setFilter] = useState<ChatsFilter>('all');
@@ -236,8 +238,20 @@ export function ChatsTab({
 
   return (
     <div data-mobile-screen="chats" className="flex min-h-0 flex-1 flex-col">
-      <header className="mx-auto flex h-12 w-full max-w-[600px] shrink-0 items-center justify-between gap-2 px-4">
+      <header data-main-header="" className="mx-auto flex h-12 w-full max-w-[600px] shrink-0 items-center gap-1.5 px-2">
+        {onOpenNavDrawer !== undefined ? (
+          <button
+            type="button"
+            data-sidebar-menu=""
+            aria-label={t('mobile.tab.nav')}
+            onClick={onOpenNavDrawer}
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-ink transition-colors hover:bg-ink/[0.05]"
+          >
+            <Icon name="menu" size={16} />
+          </button>
+        ) : null}
         <SpacePill label={spaceLabel} statusTone={spaceStatusTone} onClick={onOpenSpaceSheet} />
+        <span className="flex-1" />
         <button
           type="button"
           aria-label={t('mobile.chats.searchPlaceholder')}

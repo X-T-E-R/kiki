@@ -46,14 +46,9 @@ import {
   useFloatingOutsidePointerDown,
 } from './select/selectPrimitives';
 import { LIST_TOOLS_MIN_ITEMS } from './settings/list/listState';
+import { POPOVER_SURFACE_CLASS } from './popoverSurfaceClass';
 
-/**
- * The one floating-surface look shared by composer pickers and popovers:
- * 10px radius, hairline edge, the soft two-layer elevation. Callers add
- * their own position/size classes.
- */
-export const POPOVER_SURFACE_CLASS =
-  'rounded-[10px] border border-hairline bg-panel shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]';
+export { POPOVER_SURFACE_CLASS };
 
 export interface SearchableSelectOptionBadge {
   readonly label: string;

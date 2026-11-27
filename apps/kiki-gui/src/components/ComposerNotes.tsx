@@ -29,7 +29,7 @@ import {
 } from '../lib/uiBusy';
 import { MODAL_ESCAPE_ATTRIBUTE } from './Dialog';
 import { Icon } from './icons';
-import { POPOVER_SURFACE_CLASS } from './SearchableSelect';
+import { POPOVER_SURFACE_CLASS } from './popoverSurfaceClass';
 
 /** Hover intent: open after a short dwell, close a beat after leaving. */
 const HOVER_OPEN_MS = 120;

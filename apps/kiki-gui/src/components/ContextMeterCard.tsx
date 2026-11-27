@@ -1,0 +1,493 @@
+import { useRef, useState, type RefObject } from 'react';
+import { Popover } from '@base-ui/react/popover';
+import { Link } from 'react-router-dom';
+
+import type { CompactSessionResponse, SessionUsageError } from '@kiki/protocol';
+import { compactReceiptOutcome, sessionActionErrorText } from '@kiki/session-core/commands';
+import { formatCostUsd } from '@kiki/session-core/util';
+import type { ContextBreakdown } from '@kiki/session-core/wire';
+
+import { useI18n } from '../i18n';
+import { pushToast } from '../lib/toasts';
+import {
+  FLOATING_OWNER_ATTRIBUTE,
+  FLOATING_PORTAL_OWNERS_ATTRIBUTE,
+  floatingSurfaceZIndex,
+  hasOpenOwnedFloatingPortal,
+  owningModalId,
+  resolveFloatingOwners,
+} from '../lib/uiBusy';
+import { usageSessionDeepLink } from '../lib/usageV2';
+import { useCanonicalAgentUsage } from './agent-panel/useCanonicalAgentUsage';
+import { useCanonicalSessionUsage } from './agent-panel/useCanonicalSessionUsage';
+import { ContextCompactSection } from './ContextCompactSection';
+import type {
+  ContextMeterAutoCompact,
+  ContextMeterUsage,
+  ContextUsageLevel,
+} from './ContextMeter';
+import { ContextStrategySection, STRATEGY_LABEL_KEY } from './ContextStrategySection';
+import { MODAL_ESCAPE_ATTRIBUTE } from './Dialog';
+import { Icon } from './icons';
+import { AnchoredPopover } from './overlays/AnchoredPopover';
+import { POPOVER_SURFACE_CLASS } from './popoverSurfaceClass';
+import type { ContextStrategyHandle, ManualCompactStrategy } from './useContextStrategy';
+import { KnownSubtotalMarker } from './usage/usageShared';
+
+const LEVEL_STROKE: Record<ContextUsageLevel, string> = {
+  ok: 'var(--color-ink-soft)',
+  warn: 'var(--color-amber-rule)',
+  danger: 'var(--color-danger)',
+};
+
+const COMPACT_OPTIONS: readonly ManualCompactStrategy[] = ['summarize', 'fresh'];
+
+function hasMeasuredSessionUsage(usage: ContextMeterUsage | undefined): boolean {
+  if (usage === undefined) return false;
+  return usage.accounting !== undefined
+    || (usage.input_tokens ?? 0) > 0
+    || (usage.output_tokens ?? 0) > 0
+    || (usage.cache_read_tokens ?? 0) > 0
+    || (usage.cache_creation_tokens ?? 0) > 0
+    || (usage.total_cost_usd ?? 0) > 0;
+}
+
+function TokenRow({ label, value, title }: { label: string; value: number | null; title: string }) {
+  const { t, time } = useI18n();
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <dt className="text-ink-faint">{label}</dt>
+      <dd className="font-mono text-ink tabular-nums" title={value === null ? t('diagnostics.unknown') : title}>
+        {value === null ? t('diagnostics.unknown') : time.formatTokens(value)}
+      </dd>
+    </div>
+  );
+}
+
+export interface ContextMeterCardProps {
+  readonly detailsId: string;
+  readonly triggerRef: RefObject<HTMLButtonElement | null>;
+  readonly panelRef: RefObject<HTMLDivElement | null>;
+  readonly placement: 'above' | 'below';
+  readonly used?: number;
+  readonly limit: number;
+  readonly usable: number;
+  readonly measured: boolean;
+  readonly percent?: number;
+  readonly level: ContextUsageLevel;
+  readonly remaining?: number;
+  readonly label: string;
+  readonly usedLabel: string;
+  readonly usage?: ContextMeterUsage;
+  readonly usageError?: SessionUsageError;
+  readonly usageScope: 'session' | 'agent';
+  readonly sessionId?: string;
+  readonly agentId?: string;
+  readonly breakdown?: ContextBreakdown;
+  readonly manualPending: boolean;
+  readonly seedCompaction?: (receipt: CompactSessionResponse) => void;
+  readonly onCompact?: () => void;
+  readonly compactReason?: string;
+  readonly autoCompact?: ContextMeterAutoCompact;
+  readonly onClose: (refocus?: boolean) => void;
+}
+
+export function ContextMeterCard({
+  detailsId,
+  triggerRef,
+  panelRef,
+  placement,
+  used,
+  limit,
+  usable,
+  measured,
+  percent,
+  level,
+  remaining,
+  label,
+  usedLabel,
+  usage,
+  usageError,
+  usageScope,
+  sessionId,
+  agentId,
+  breakdown,
+  manualPending,
+  seedCompaction,
+  onCompact,
+  compactReason,
+  autoCompact,
+  onClose,
+}: ContextMeterCardProps) {
+  const { t, time, locale } = useI18n();
+  const canonicalUsage = useCanonicalAgentUsage({
+    open: usageScope === 'agent',
+    sessionId,
+    agentId: usageScope === 'agent' ? agentId : undefined,
+  });
+  const canonicalSession = useCanonicalSessionUsage(usageScope === 'session', sessionId);
+  const hasCanonicalIdentity = canonicalUsage.hasIdentity;
+  const sessionUsage = canonicalSession.active ? canonicalSession.usage ?? usage : usage;
+  const sessionAccounting = sessionUsage?.accounting;
+  const detailUsage = hasCanonicalIdentity ? canonicalUsage.usage : sessionAccounting === undefined ? sessionUsage : {
+    input_tokens: sessionAccounting.tokens.input_other,
+    output_tokens: sessionAccounting.tokens.output,
+    cache_read_tokens: sessionAccounting.tokens.input_cache_read,
+    cache_creation_tokens: sessionAccounting.tokens.input_cache_creation,
+    total_cost_usd: sessionAccounting.cost_usd_estimated,
+  };
+  const hasImmediateSessionUsage = hasMeasuredSessionUsage(sessionUsage);
+  const detailUsageError: SessionUsageError | undefined = hasCanonicalIdentity
+    ? canonicalUsage.state === 'error'
+      ? 'read-failed'
+      : canonicalUsage.partial
+        ? 'agent-read-failed'
+        : undefined
+    : canonicalSession.error
+      ? (hasImmediateSessionUsage ? 'agent-read-failed' : 'read-failed')
+      : sessionAccounting !== undefined
+        ? sessionAccounting.tokens_unknown || !sessionAccounting.complete ? 'agent-read-failed' : undefined
+        : canonicalSession.loading && hasImmediateSessionUsage
+          ? 'agent-read-failed'
+          : usageError;
+  const costUnknown = hasCanonicalIdentity ? canonicalUsage.partial : sessionAccounting?.cost_unknown === true;
+  const canonicalUsageLoading =
+    (hasCanonicalIdentity && canonicalUsage.state === 'loading' && detailUsage === undefined) ||
+    (canonicalSession.loading && sessionAccounting === undefined && !hasImmediateSessionUsage);
+  const canonicalUsageUnknown = hasCanonicalIdentity && canonicalUsage.state === 'unavailable';
+  const sessionAccountingStale = !hasCanonicalIdentity && sessionAccounting?.freshness !== undefined && sessionAccounting.freshness !== 'current';
+  const usageStatus = detailUsageError === 'agent-read-failed'
+    ? { kind: 'partial' as const, label: t('agentPanel.partialBadge') }
+    : sessionAccountingStale
+      ? { kind: 'stale' as const, label: t('usage.quota.status.stale') }
+      : undefined;
+
+  const usageTotal =
+    detailUsage === undefined
+      ? undefined
+      : detailUsage.input_tokens === null || detailUsage.output_tokens === null ||
+          detailUsage.cache_read_tokens === null || detailUsage.cache_creation_tokens === null
+        ? null
+        : detailUsage.input_tokens +
+          detailUsage.output_tokens +
+          detailUsage.cache_read_tokens +
+          detailUsage.cache_creation_tokens;
+
+  return (
+    <Popover.Root
+      open
+      modal={false}
+      onOpenChange={(nextOpen, eventDetails) => {
+        if (nextOpen) return;
+        if (eventDetails.reason === 'escape-key') {
+          if (hasOpenOwnedFloatingPortal('composer-context')) {
+            eventDetails.cancel();
+            return;
+          }
+          onClose(true);
+          return;
+        }
+        eventDetails.cancel();
+      }}
+    >
+      <Popover.Portal>
+        <Popover.Positioner
+          anchor={triggerRef}
+          side={placement === 'below' ? 'bottom' : 'top'}
+          align="end"
+          sideOffset={6}
+          collisionPadding={8}
+          positionMethod="fixed"
+          style={{ zIndex: floatingSurfaceZIndex(triggerRef.current) }}
+        >
+          <Popover.Popup
+            ref={panelRef}
+            id={detailsId}
+            data-context-details
+            role="dialog"
+            aria-label={t('context.detailsTitle')}
+            initialFocus={false}
+            finalFocus={false}
+            {...{
+              [FLOATING_OWNER_ATTRIBUTE]: 'composer-context',
+              [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(triggerRef.current, 'composer-context'),
+              [MODAL_ESCAPE_ATTRIBUTE]: owningModalId(triggerRef.current),
+            }}
+            className={`composer-floating-panel anim-enter w-72 max-w-[calc(100vw-24px)] max-h-[min(var(--available-height,480px),calc(100dvh-96px))] overflow-y-auto overscroll-contain p-3 outline-none ${POPOVER_SURFACE_CLASS}`}
+          >
+            <div className="flex items-baseline justify-between gap-3">
+              <p className="font-display text-[15px] font-bold text-ink">{t('context.detailsTitle')}</p>
+              <span className="shrink-0 whitespace-nowrap text-[12px] text-ink-soft tabular-nums">
+                {measured ? `${label} · ${usedLabel}` : `— · ${time.formatTokens(usable)}`}
+              </span>
+            </div>
+            {autoCompact !== undefined ? (
+              <ContextCompactSection
+                {...autoCompact}
+                used={used}
+                windowTokens={limit}
+                residentTokens={breakdown === undefined ? undefined : breakdown.systemTokens + breakdown.toolsTokens}
+              />
+            ) : (
+              <>
+                <div className="mt-2 flex items-baseline justify-between gap-3">
+                  <p className="text-[12px] font-normal text-ink-soft">{t('context.windowTitle')}</p>
+                  <span className="text-[12px] text-ink-faint">{t('context.windowHint')}</span>
+                </div>
+                <div className="mt-1.5 flex items-center gap-3">
+                  <span aria-hidden className="relative flex h-10 w-10 shrink-0 items-center justify-center">
+                    <svg viewBox="0 0 24 24" className="h-10 w-10 -rotate-90">
+                      <circle
+                        cx="12"
+                        cy="12"
+                        r="9.5"
+                        fill="none"
+                        strokeWidth="2.25"
+                        stroke="var(--color-hairline)"
+                      />
+                      {percent !== undefined ? (
+                        <circle
+                          cx="12"
+                          cy="12"
+                          r="9.5"
+                          fill="none"
+                          strokeWidth="2.25"
+                          strokeLinecap="round"
+                          pathLength="100"
+                          strokeDasharray="100"
+                          strokeDashoffset={100 - percent}
+                          stroke={LEVEL_STROKE[level]}
+                          className="transition-[stroke-dashoffset,stroke] duration-[var(--kiki-motion-base)]"
+                        />
+                      ) : null}
+                    </svg>
+                    <span className="absolute font-mono text-[11px] leading-none font-normal tabular-nums">
+                      {percent !== undefined ? percent : '—'}
+                    </span>
+                  </span>
+                  <dl className="min-w-0 flex-1 space-y-1 text-[12px]">
+                    <div className="flex items-center justify-between gap-3">
+                      <dt className="text-ink-faint">{t('context.used')}</dt>
+                      <dd className="font-mono text-ink tabular-nums">{usedLabel}</dd>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <dt className="text-ink-faint">{t('context.limit')}</dt>
+                      <dd className="font-mono text-ink tabular-nums">{time.formatTokens(limit)}</dd>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <dt className="text-ink-faint">{t('context.available')}</dt>
+                      <dd className="font-mono text-ink tabular-nums">{remaining !== undefined ? time.formatTokens(remaining) : '—'}</dd>
+                    </div>
+                  </dl>
+                </div>
+              </>
+            )}
+            {autoCompact?.strategy !== undefined ? (
+              <ContextStrategySection handle={autoCompact.strategy} profileName={autoCompact.profile?.name} />
+            ) : null}
+
+            {detailUsage !== undefined || hasCanonicalIdentity || canonicalSession.active ? (
+              <dl
+                data-context-usage
+                className="mt-3 space-y-1.5 border-t border-hairline pt-3 text-[12px]"
+              >
+                <div className="flex items-baseline justify-between gap-3">
+                  <p className="inline-flex items-center gap-1.5 text-[12px] font-normal text-ink-soft">
+                    {t(hasCanonicalIdentity ? 'context.agentUsage' : usageScope === 'agent' ? 'context.agentUsage' : 'context.sessionUsage')}
+                    {usageStatus !== undefined ? (
+                      <span
+                        role="img"
+                        data-context-usage-status={usageStatus.kind}
+                        title={usageStatus.label}
+                        aria-label={usageStatus.label}
+                        className="inline-flex text-ink-faint"
+                      >
+                        <Icon name="partial" size={12} />
+                      </span>
+                    ) : null}
+                  </p>
+                  <span className="text-[12px] text-ink-faint">{t('context.sessionUsageHint')}</span>
+                </div>
+                {canonicalUsageLoading ? (
+                  <p role="status" data-context-usage-loading className="text-[12px] text-ink-faint">{t('diagnostics.loading')}</p>
+                ) : null}
+                {canonicalUsageUnknown ? (
+                  <p role="status" data-context-usage-unknown className="text-[12px] text-ink-faint">{t('diagnostics.unknown')}</p>
+                ) : null}
+                {detailUsageError === 'read-failed' ? (
+                  <p role="status" data-context-usage-error title={detailUsageError} className="text-[12px] text-amber-ink">
+                    {t('context.usageReadFailed')}
+                  </p>
+                ) : null}
+                {detailUsageError === 'read-failed' || canonicalUsageLoading ? null : detailUsage !== undefined ? (
+                  <>
+                    <TokenRow label={t('usage.tokens.input')} value={detailUsage.input_tokens} title={String(detailUsage.input_tokens)} />
+                    <TokenRow label={t('usage.tokens.output')} value={detailUsage.output_tokens} title={String(detailUsage.output_tokens)} />
+                    <TokenRow label={t('usage.tokens.cacheRead')} value={detailUsage.cache_read_tokens} title={String(detailUsage.cache_read_tokens)} />
+                    <TokenRow label={t('usage.tokens.cacheWrite')} value={detailUsage.cache_creation_tokens} title={String(detailUsage.cache_creation_tokens)} />
+                    {detailUsage.total_cost_usd !== null || hasCanonicalIdentity ? (
+                      <div className="flex items-center justify-between gap-3 border-t border-hairline pt-1.5">
+                        <dt className="text-ink-faint">{t('usage.card.cost')}</dt>
+                        <dd className="font-mono text-ink tabular-nums">
+                          {detailUsage.total_cost_usd === null ? t('diagnostics.unknown') : formatCostUsd(detailUsage.total_cost_usd)}
+                          {costUnknown && detailUsage.total_cost_usd !== null ? <KnownSubtotalMarker /> : null}
+                        </dd>
+                      </div>
+                    ) : null}
+                    {usageTotal !== undefined ? (
+                      <div
+                        className={`flex items-center justify-between gap-3 ${
+                          detailUsage.total_cost_usd === null && !hasCanonicalIdentity ? 'border-t border-hairline pt-1.5' : ''
+                        }`}
+                      >
+                        <dt className="text-ink-faint">{t('usage.card.tokens')}</dt>
+                        <dd className="font-mono text-ink tabular-nums">
+                          {usageTotal === null ? t('diagnostics.unknown') : time.formatTokens(usageTotal)}
+                        </dd>
+                      </div>
+                    ) : null}
+                  </>
+                ) : null}
+                {sessionId !== undefined ? (
+                  <Link
+                    data-context-usage-link
+                    to={usageSessionDeepLink(sessionId)}
+                    onClick={() => { onClose(false); }}
+                    className="block pt-1 text-[12px] font-normal text-ink underline decoration-hairline-strong underline-offset-2 hover:decoration-ink"
+                  >
+                    {t('context.viewInUsage')}
+                  </Link>
+                ) : null}
+              </dl>
+            ) : null}
+
+            {breakdown !== undefined ? (
+              <div data-context-breakdown className="mt-3 border-t border-hairline pt-3">
+                <div className="flex items-baseline justify-between gap-3">
+                  <p className="text-[12px] font-normal text-ink-soft">{t('context.breakdownTitle')}</p>
+                  <span className="text-[12px] text-ink-faint">{t('context.breakdownEstimated')}</span>
+                </div>
+                <dl className="mt-2 space-y-1.5 text-[12px]">
+                  <TokenRow label={t('context.system')} value={breakdown.systemTokens} title={String(breakdown.systemTokens)} />
+                  <TokenRow label={t('context.tools')} value={breakdown.toolsTokens} title={String(breakdown.toolsTokens)} />
+                  <TokenRow label={t('context.messages')} value={breakdown.messagesTokens} title={String(breakdown.messagesTokens)} />
+                </dl>
+              </div>
+            ) : null}
+
+            {onCompact !== undefined ? (
+              compactReason !== undefined ? (
+                <p data-context-compact-unavailable className="mt-3 text-[12px] leading-4 text-ink-faint">
+                  {compactReason}
+                </p>
+              ) : (
+                <CompactActions
+                  strategy={autoCompact?.strategy}
+                  pending={manualPending}
+                  onCompact={() => {
+                    onClose(false);
+                    onCompact();
+                  }}
+                  onCompactWith={(strategy) => {
+                    onClose(false);
+                    void autoCompact?.strategy?.compact(strategy)
+                      .then((receipt) => {
+                        const outcome = compactReceiptOutcome(receipt ?? {});
+                        if (outcome === 'duplicate') { pushToast({ tone: 'info', text: t('context.compaction.manual.duplicate') }); return; }
+                        if (receipt !== undefined) seedCompaction?.(receipt);
+                        if (outcome === 'requested') pushToast({ tone: 'success', text: t('action.compactRequestedSession') });
+                      })
+                      .catch((error: unknown) => {
+                        pushToast({ tone: 'error', text: t('action.compactFailed', { detail: sessionActionErrorText(locale, error) }) });
+                      });
+                  }}
+                />
+              )
+            ) : null}
+          </Popover.Popup>
+        </Popover.Positioner>
+      </Popover.Portal>
+    </Popover.Root>
+  );
+}
+
+function CompactActions({
+  strategy,
+  pending,
+  onCompact,
+  onCompactWith,
+}: {
+  strategy: ContextStrategyHandle | undefined;
+  pending: boolean;
+  onCompact: () => void;
+  onCompactWith: (strategy: ManualCompactStrategy) => void;
+}) {
+  const { t } = useI18n();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const chevronRef = useRef<HTMLButtonElement | null>(null);
+  const tone = 'bg-amber-card text-[12px] font-normal text-amber-ink transition-colors hover:bg-amber-rule/25 focus-visible:ring-2 focus-visible:ring-amber-rule/60 focus-visible:outline-none';
+  if (strategy === undefined || !strategy.writable || strategy.status?.source === 'executor') {
+    return (
+      <button type="button" data-context-compact data-executor-action="manual_compact" disabled={pending} onClick={onCompact} className={`mt-3 w-full rounded-md px-3 py-1.5 ${tone}`}>
+        {t('context.compactAction')}
+      </button>
+    );
+  }
+  return (
+    <div data-executor-action="manual_compact" className="relative mt-3 flex gap-px">
+      <button type="button" data-context-compact disabled={pending} onClick={onCompact} className={`min-w-0 flex-1 rounded-l-md px-3 py-1.5 ${tone}`}>
+        {t('context.compactAction')}
+      </button>
+      <button
+        ref={chevronRef}
+        type="button"
+        data-context-compact-with
+        disabled={pending}
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
+        aria-label={t('context.strategy.compactOptionsLabel')}
+        onClick={() => { setMenuOpen((value) => !value); }}
+        className={`flex w-8 shrink-0 items-center justify-center rounded-r-md pointer-coarse:w-11 ${tone}`}
+      >
+        <Icon name="chevron" size={12} className={`transition-transform ${menuOpen ? '-rotate-90' : 'rotate-90'}`} />
+      </button>
+      <AnchoredPopover
+        open={menuOpen}
+        onClose={() => { setMenuOpen(false); }}
+        anchorRef={chevronRef}
+        id="context-compact-menu"
+        label={t('context.strategy.compactWith')}
+        role="menu"
+        side="above"
+        align="end"
+        widthClassName="w-64"
+        className="p-1"
+        data={{ 'data-context-compact-menu': '' }}
+        onSurfaceKeyDown={(event) => {
+          if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return false;
+          const rows = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button')];
+          if (rows.length === 0) return false;
+          const index = rows.indexOf(document.activeElement as HTMLButtonElement);
+          event.preventDefault();
+          rows[(index + (event.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length]?.focus();
+          return true;
+        }}
+      >
+        <p className="px-3 pt-1.5 pb-1 text-[12px] font-normal text-ink-faint">{t('context.strategy.compactWith')}</p>
+        {COMPACT_OPTIONS.map((option) => (
+          <button
+            key={option}
+            type="button"
+            role="menuitem"
+            data-context-compact-option={option}
+            onClick={() => { setMenuOpen(false); onCompactWith(option); }}
+            className="flex w-full flex-col items-start rounded-md px-3 py-1.5 text-left text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:py-2"
+          >
+            <span>{t(STRATEGY_LABEL_KEY[option])}</span>
+            <span className="text-[12px] leading-4 text-ink-faint">{t(`context.strategy.hint.${option}`)}</span>
+          </button>
+        ))}
+      </AnchoredPopover>
+    </div>
+  );
+}

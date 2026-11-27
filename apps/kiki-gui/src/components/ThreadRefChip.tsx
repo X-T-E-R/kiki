@@ -16,6 +16,7 @@ import { useParams } from 'react-router-dom';
 import { findConversationRefs, shortThreadId, threadRefLink, threadRefStatusOf } from '@kiki/session-core/composer';
 import { conversationRefLink } from '@kiki/session-core/sessions';
 import { useI18n } from '../i18n';
+import { lazyComponent } from '../lib/lazyComponent';
 import { lifeOf } from '../lib/motion';
 import { useRoomRefDirectory, type RoomRefDirectoryEntry } from '../lib/roomRefs';
 import { useThreadRefDirectory, type ThreadRefEntry } from '../lib/threadRefs';
@@ -23,8 +24,15 @@ import { useGuardedNavigate } from './dirtyGuard';
 import { Icon } from './icons';
 import { LifeMark } from './LifeMark';
 import { MiniContextMenu } from './MiniContextMenu';
-import { NewThreadRoomDialog } from './room/ThreadRoomDialogs';
 import { roomEligibleThreads, useThreadCommsEnabled } from './room/threadRooms';
+
+const LazyNewThreadRoomDialog = lazyComponent(() =>
+  import('./room/ThreadRoomDialogs').then((m) => m.NewThreadRoomDialog),
+);
+
+if (import.meta.env.MODE === 'test') {
+  await LazyNewThreadRoomDialog.preload();
+}
 
 /**
  * Room reference chip — the room counterpart of `ThreadRefChip`, shown the same
@@ -246,7 +254,7 @@ function ChipNewRoomDialog({ entry, group, onClose }: {
   const current = useThreadRefDirectory(currentId === undefined ? [] : [currentId]).lookup(currentId ?? '').session;
   const linked = [...(group ?? [entry]), entry].flatMap((item) => item.session === undefined ? [] : [item.session]);
   const threads = roomEligibleThreads([...new Map([...(current === undefined ? [] : [current]), ...linked].map((item) => [item.id, item])).values()]);
-  return <NewThreadRoomDialog threads={threads} onClose={onClose} />;
+  return <LazyNewThreadRoomDialog threads={threads} onClose={onClose} />;
 }
 
 /**

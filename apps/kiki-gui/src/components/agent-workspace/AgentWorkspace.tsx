@@ -17,6 +17,7 @@
 import { randomUuid } from '@kiki/session-core/util';
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
+import { Drawer } from '@base-ui/react/drawer';
 import { useQueryClient } from '@tanstack/react-query';
 import { ExecutorLabelProvider } from '../timeline/ExecutorNotes';
 import { canFaithfullyRetryUserBlock } from '../timeline/TurnTailSurface';
@@ -69,7 +70,8 @@ import { pushToast } from '../../lib/toasts';
 import { useConnection } from '../../state/connection';
 import { usePromoteAgent, type PromoteAgentAction } from '../../lib/usePromoteAgent';
 import { NavBackButton } from '../NavBackButton';
-import { useMediaQuery } from '../../lib/layoutHooks';
+import { anyOverlayOpen } from '../../lib/uiBusy';
+import { useMediaQuery, usePhoneMode } from '../../lib/layoutHooks';
 import { AgentBreadcrumb, AgentFamilyPopover } from '../AgentBreadcrumb';
 import {
   EMPTY_SLOTS,
@@ -255,8 +257,10 @@ function WorkspaceSurface({
   // Below lg the rail is an overlay layer for every shell (the session's too),
   // so the open rail gets the same tap-outside backdrop an overlay shell has.
   const narrowOverlay = useMediaQuery('(max-width: 1023px)');
-  // The routed agent page keeps its drawer rail at every width; only the
-  // session shell's shared rail stays away below lg.
+  const phoneMode = usePhoneMode();
+  const [inspectorSnap, setInspectorSnap] = useState<Drawer.Root.SnapPoint | null>(0.68);
+  // The routed agent page keeps its drawer rail at every width; on phoneMode
+  // the Inspector opens inside a @base-ui/react/drawer bottom sheet.
   const railAsDrawer = railIsOverlay || !narrowOverlay;
   const loadDetail = useCallback(
     (agentId: string, kind: TranscriptDetailKind, id: string) =>
@@ -326,7 +330,42 @@ function WorkspaceSurface({
           `.conversation-center` and add zero flex gap to the row. In the
           1024–1359px preview-priority band, Preview and Inspector share the
           docked secondary stage inline with zero scrim. */}
-      {slots.rail !== null && railOpen && railAsDrawer
+      {phoneMode && rail !== null && railOpen ? (
+        <Drawer.Root
+          open={railOpen}
+          modal="trap-focus"
+          onOpenChange={(nextOpen, eventDetails) => {
+            if (!nextOpen && (eventDetails.reason === 'outside-press' || eventDetails.reason === 'escape-key') && anyOverlayOpen()) {
+              eventDetails.cancel();
+              return;
+            }
+            if (!nextOpen) onCloseRail();
+          }}
+          snapPoints={[0.68, 0.94]}
+          snapPoint={inspectorSnap}
+          onSnapPointChange={setInspectorSnap}
+          swipeDirection="down"
+        >
+          <Drawer.Portal>
+            <Drawer.Backdrop
+              data-rail-backdrop=""
+              className="kiki-drawer-backdrop"
+            />
+            <Drawer.Viewport className="kiki-drawer-viewport-bottom">
+              <Drawer.Popup
+                data-mobile-inspector-sheet=""
+                aria-label={t('sv.togglePanelAria')}
+                className="kiki-drawer-bottom h-[94dvh]"
+              >
+                <div className="kiki-mobile-sheet-grabber" aria-hidden />
+                <div className="min-h-0 flex-1 overflow-hidden">
+                  {rail}
+                </div>
+              </Drawer.Popup>
+            </Drawer.Viewport>
+          </Drawer.Portal>
+        </Drawer.Root>
+      ) : slots.rail !== null && railOpen && railAsDrawer
         ? createPortal(
             <>
               {railIsOverlay || narrowOverlay ? (

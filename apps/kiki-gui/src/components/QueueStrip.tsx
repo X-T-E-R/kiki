@@ -69,17 +69,9 @@ const REMOVE_ARM_TIMEOUT_MS = 5_000;
 
 const QUEUE_TIMINGS: readonly DeferredAppendTiming[] = ['agent_idle', 'subagents_done', 'tasks_done'];
 
-export const TIMING_SHORT_KEY = {
-  agent_idle: 'timing.short.agentIdle',
-  subagents_done: 'timing.short.subagentsDone',
-  tasks_done: 'timing.short.tasksDone',
-} as const;
+import { TIMING_HINT_KEY, TIMING_SHORT_KEY } from './queueTimingKeys';
 
-export const TIMING_HINT_KEY = {
-  agent_idle: 'timing.hint.agentIdle',
-  subagents_done: 'timing.hint.subagentsDone',
-  tasks_done: 'timing.hint.tasksDone',
-} as const;
+export { TIMING_HINT_KEY, TIMING_SHORT_KEY };
 
 function QueueMediaItem({
   media,

@@ -27,11 +27,19 @@ import {
   STATUS_SEGMENT_SET,
   usePopover,
 } from '../ComposerControls';
-import { POPOVER_SURFACE_CLASS } from '../SearchableSelect';
+import { lazyComponent } from '../../lib/lazyComponent';
+import { POPOVER_SURFACE_CLASS } from '../popoverSurfaceClass';
 import { useOutputLayer } from './outputLayerStore';
 import { useOutputLayerClient } from './useOutputLayerClient';
-import { OutputPresetModal } from './OutputPresetModal';
 import { type OutputLayerPreset, hasConfiguredModel } from './types';
+
+const LazyOutputPresetModal = lazyComponent(() =>
+  import('./OutputPresetModal').then((m) => m.OutputPresetModal),
+);
+
+if (import.meta.env.MODE === 'test') {
+  await LazyOutputPresetModal.preload();
+}
 
 function CheckMark({ on }: { on: boolean }) {
   return (
@@ -294,7 +302,7 @@ export function OutputLayerSelect({
       </div>
 
       {modalOpen ? (
-        <OutputPresetModal
+        <LazyOutputPresetModal
           key={`${contextKey}:${editingPreset?.id ?? 'new'}`}
           preset={editingPreset}
           open={modalOpen}

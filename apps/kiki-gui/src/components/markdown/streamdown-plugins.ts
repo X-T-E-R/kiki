@@ -9,10 +9,10 @@
 
 import { useEffect, useMemo, useSyncExternalStore } from 'react';
 import type { ComponentProps } from 'react';
-import { cjk } from '@streamdown/cjk';
 import type { Streamdown } from 'streamdown';
 
 import { unwrapDomMarksInCodeBlocks } from './domAnnotationMarks';
+import { useStreamdownRuntime } from './streamdown-runtime';
 
 type PluginConfig = NonNullable<ComponentProps<typeof Streamdown>['plugins']>;
 type CodePlugin = NonNullable<PluginConfig['code']>;
@@ -125,8 +125,7 @@ function createLazyCodePlugin(rootRef?: { readonly current: HTMLElement | null }
 }
 
 const LAZY_CODE: CodePlugin = createLazyCodePlugin();
-const CJK_PLUGINS: PluginConfig = { cjk };
-const CODE_PLUGINS: PluginConfig = { cjk, code: LAZY_CODE };
+const EMPTY_PLUGINS: PluginConfig = {};
 
 export function useMermaidEngine(): MermaidPlugin | null {
   useSyncExternalStore(subscribe, getVersion, getVersion);
@@ -138,6 +137,8 @@ export function useStreamdownPlugins(
   text: string | null | undefined,
   rootRef?: { readonly current: HTMLElement | null },
 ): PluginConfig {
+  const runtime = useStreamdownRuntime(typeof text === 'string' && text !== '');
+  const cjk = runtime?.cjk;
   const needs = useMemo(() => ({
     code: typeof text === 'string' && needsCodeEngine(text),
     math: typeof text === 'string' && (
@@ -151,9 +152,13 @@ export function useStreamdownPlugins(
     () => (rootRef === undefined ? LAZY_CODE : createLazyCodePlugin(rootRef)),
     [rootRef],
   );
+  const cjkOnlyPlugins = useMemo<PluginConfig>(
+    () => (cjk === undefined ? EMPTY_PLUGINS : { cjk }),
+    [cjk],
+  );
   const scopedCodePlugins = useMemo<PluginConfig>(
-    () => (rootRef === undefined ? CODE_PLUGINS : { cjk, code: scopedCodePlugin }),
-    [rootRef, scopedCodePlugin],
+    () => (cjk === undefined ? { code: scopedCodePlugin } : { cjk, code: scopedCodePlugin }),
+    [cjk, scopedCodePlugin],
   );
 
   useEffect(() => {
@@ -161,11 +166,11 @@ export function useStreamdownPlugins(
   }, [math]);
 
   return useMemo(() => {
-    if (!math) return code ? scopedCodePlugins : CJK_PLUGINS;
-    const plugins: PluginConfig = { cjk };
+    if (!math) return code ? scopedCodePlugins : cjkOnlyPlugins;
+    const plugins: PluginConfig = cjk === undefined ? {} : { cjk };
     if (code) plugins.code = scopedCodePlugin;
     if (math && loaded.math !== undefined) plugins.math = loaded.math;
     return plugins;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [code, math, currentVersion, scopedCodePlugin, scopedCodePlugins]);
+  }, [cjk, cjkOnlyPlugins, code, math, currentVersion, scopedCodePlugin, scopedCodePlugins]);
 }

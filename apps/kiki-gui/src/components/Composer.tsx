@@ -27,7 +27,6 @@
 
 import { useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, useTransition, type DragEvent, type FocusEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useVirtualizer } from '@tanstack/react-virtual';
 import { useFsSearchFeed, type FsSearchFeedSearch, type FsSearchFeedView } from '../lib/fsSearchFeed';
 import { isPeerConnectionSource } from '../lib/peerAccess';
 import { getPickerScaleConfig } from '../lib/subagentScaleConfig';
@@ -115,6 +114,7 @@ import {
   FLOATING_OWNER_ATTRIBUTE,
   FLOATING_PORTAL_OWNERS_ATTRIBUTE,
   floatingSurfaceZIndex,
+  MODAL_ESCAPE_ATTRIBUTE,
   notifyFloatingGroupOpen,
   owningModalId,
   registerOverlay,
@@ -122,9 +122,8 @@ import {
   subscribeFloatingGroup,
 } from '../lib/uiBusy';
 import { useLayerHistory } from '../lib/layerHistory';
-import { MODAL_ESCAPE_ATTRIBUTE } from './Dialog';
 import { useSeatFileDrop } from './seatFileDrop';
-import { isCoarsePointer, useCoarsePointer } from '../lib/layoutHooks';
+import { isCoarsePointer, useCoarsePointer, usePhoneMode } from '../lib/layoutHooks';
 import { pushToast } from '../lib/toasts';
 import { matchesShortcutAction } from '../lib/shortcuts';
 import { useRemoteConnections } from '../lib/remoteConnections';
@@ -132,37 +131,31 @@ import { useDeferSecondaryBootQueries } from '../lib/bootHydrationGate';
 import { useConnection } from '../state/connection';
 import { useProfileFilePreview } from '../lib/profileFilePreview';
 import { resolveProfileIcon } from '../lib/profileIcon';
-import { ImageTile, QuoteChip, SkillChip, TextTile } from './ContextChips';
+import { FileGlyph, ImageTile, QuoteChip, SkillChip, TextTile } from './ContextChips';
 import { ComposerFileTile } from './fileContextMenu';
-import { ComposerNotes } from './ComposerNotes';
 import {
   useSubscribedAnnotations,
   type ConversationAnnotationStore,
 } from './agent-workspace/useConversationAnnotations';
 import { ContextMeter, type ContextMeterAutoCompact, type ContextMeterCompactAvailability, type ContextMeterUsage } from './ContextMeter';
 import { LifeMark } from './LifeMark';
-import { ConfirmDialog } from './ConfirmDialog';
 import { useComposerContextMenu } from './ComposerContextMenu';
 import { ComposerInput, type ComposerReferenceLabel, type ComposerSkillSpan } from './ComposerInput';
 import { normalizeComposerText, type ComposerInputHandle } from '../lib/composerInput';
 import { Icon, resolvePluginSlotIconName } from './icons';
 import { useElapsedSince, useNow } from './RelativeTime';
-import { WORKING_QUIET_THRESHOLD_MS, formatWorkingDuration, formatWorkingQuietAgo } from './composerWorking';
 import { useComposerSsh } from './ssh/ComposerSsh';
 import { roomRefFetcher, useRoomRefDirectory } from '../lib/roomRefs';
 import { useThreadRefDirectory } from '../lib/threadRefs';
-import { ExecutionSelect } from './harness/ExecutionSelect';
-import { ProfileSelect } from './harness/ProfileSelect';
-import { OutputLayerSelect } from './output-layer';
+import { lazyComponent } from '../lib/lazyComponent';
 import { engineLabel, useExecutorCatalog } from './settings/profileEditor/engines';
 import type { ExecutionChoice, ExecutionContextGroup } from '@kiki/session-core/composer';
 import { buildCatalogModelOptions, modelFactBadges, modelTooltip, useProviderGroupLabel } from './modelSelectOptions';
-import { ModelPicker } from './ModelPicker';
-import { POPOVER_SURFACE_CLASS, type SearchableSelectOption } from './SearchableSelect';
+import { POPOVER_SURFACE_CLASS } from './popoverSurfaceClass';
+import type { SearchableSelectOption } from './SearchableSelect';
 import { SessionRemainder } from './SessionRemainder';
 import type { ContentContinuationHandle } from './transcriptDetail';
 import { PersonaAvatar, type PersonaAvatarData } from './persona/PersonaAvatar';
-import { Popover } from '@base-ui/react/popover';
 import {
   AddMenu,
   type AddMenuExtensionItem,
@@ -196,7 +189,40 @@ import {
   useExecutePluginSlotAction,
   usePluginGuiSlots,
 } from './plugins/PluginComposerSlots';
-import { PluginStatusCapsules } from './plugins/PluginStatusCapsules';
+
+const ProfileSelect = lazyComponent(() => import('./harness/ProfileSelect').then((m) => m.ProfileSelect));
+const ExecutionSelect = lazyComponent(() => import('./harness/ExecutionSelect').then((m) => m.ExecutionSelect));
+const OutputLayerSelect = lazyComponent(() => import('./output-layer/OutputLayerSelect').then((m) => m.OutputLayerSelect));
+const PluginStatusCapsules = lazyComponent(() => import('./plugins/PluginStatusCapsules').then((m) => m.PluginStatusCapsules));
+const ComposerNotes = lazyComponent(() => import('./ComposerNotes').then((m) => m.ComposerNotes));
+const CompactModelSheetDrawer = lazyComponent(() => import('./AddMenuImpl').then((m) => m.CompactModelSheetDrawer));
+const AnchoredFloatingPopover = lazyComponent(() => import('./ComposerPopovers').then((m) => m.AnchoredFloatingPopover));
+const ConfirmDialog = lazyComponent(() => import('./ConfirmDialog').then((m) => m.ConfirmDialog));
+const SlashMenuBody = lazyComponent(() => import('./ComposerMenus').then((m) => m.SlashMenuBody));
+const SkillPreviewCard = lazyComponent(() => import('./ComposerMenus').then((m) => m.SkillPreviewCard));
+const MentionMenuBody = lazyComponent(() => import('./ComposerMenus').then((m) => m.MentionMenuBody));
+const ExternalModelChoice = lazyComponent(() => import('./ComposerMenus').then((m) => m.ExternalModelChoice));
+const ModelChip = lazyComponent(() => import('./ComposerMenus').then((m) => m.ModelChip));
+const ComposerWorkingLine = lazyComponent(() => import('./ComposerMenus').then((m) => m.ComposerWorkingLine));
+
+if (import.meta.env.MODE === 'test') {
+  await Promise.all([
+    ProfileSelect.preload(),
+    ExecutionSelect.preload(),
+    OutputLayerSelect.preload(),
+    PluginStatusCapsules.preload(),
+    ComposerNotes.preload(),
+    CompactModelSheetDrawer.preload(),
+    AnchoredFloatingPopover.preload(),
+    ConfirmDialog.preload(),
+    SlashMenuBody.preload(),
+    SkillPreviewCard.preload(),
+    MentionMenuBody.preload(),
+    ExternalModelChoice.preload(),
+    ModelChip.preload(),
+    ComposerWorkingLine.preload(),
+  ]);
+}
 
 function shortRefId(id: string): string {
   const cleaned = id.replace(/^(?:session_|room_|thread_)/u, '');
@@ -235,17 +261,6 @@ function withoutUnhandledActions(
     return true;
   });
 }
-
-const SLASH_ACTION_DESCRIPTIONS: Record<SlashActionId, I18nKey> = {
-  plan: 'composer.slash.plan',
-  goal: 'composer.slash.goal',
-  new: 'composer.slash.new',
-  btw: 'composer.slash.btw',
-  branch: 'composer.slash.branch',
-  fork: 'composer.slash.fork',
-  undo: 'composer.slash.undo',
-  compact: 'composer.slash.compact',
-};
 
 const MENTION_DEBOUNCE_MS = 250;
 const CATALOG_RETRY_INTERVAL_MS = 30_000;
@@ -1093,6 +1108,41 @@ function ComposerFull({
     if ((next === 'goal') !== goalArmed) setGoalArmed(next === 'goal');
   };
   const [menu, setMenu] = useState<ComposerMenu | null>(null);
+  const editorContainerRef = useRef<HTMLDivElement | null>(null);
+  const cameraInputRef = useRef<HTMLInputElement | null>(null);
+  const photosInputRef = useRef<HTMLInputElement | null>(null);
+  useLayoutEffect(() => {
+    const editorEl = editorContainerRef.current;
+    if (editorEl === null || menu === null || typeof window === 'undefined') return;
+    const syncMenuMaxH = () => {
+      const top = editorEl.getBoundingClientRect().top;
+      const headerEl = document.querySelector<HTMLElement>('[data-main-header], header');
+      const ceiling = headerEl !== null ? Math.max(48, headerEl.getBoundingClientRect().bottom) : 48;
+      // Reserve 14px below the actual rendered WorkspaceHeader bottom (including
+      // safe-area top inset) so `/` or `@` menus never slide underneath the header
+      // on `/new` hero or IME-shrunk screens (P1-3).
+      const available = Math.max(96, Math.floor(top - ceiling - 14));
+      editorEl.style.setProperty('--composer-menu-max-h', `${available}px`);
+    };
+    syncMenuMaxH();
+    const vv = window.visualViewport;
+    const styleObserver =
+      typeof MutationObserver !== 'undefined' && typeof document !== 'undefined'
+        ? new MutationObserver(syncMenuMaxH)
+        : null;
+    if (styleObserver !== null) {
+      styleObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
+    }
+    window.addEventListener('resize', syncMenuMaxH);
+    vv?.addEventListener('resize', syncMenuMaxH);
+    vv?.addEventListener('scroll', syncMenuMaxH);
+    return () => {
+      styleObserver?.disconnect();
+      window.removeEventListener('resize', syncMenuMaxH);
+      vv?.removeEventListener('resize', syncMenuMaxH);
+      vv?.removeEventListener('scroll', syncMenuMaxH);
+    };
+  }, [menu]);
   const dismissedTriggerRef = useRef<{ kind: 'slash' | 'mention'; start: number; query: string } | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
@@ -3463,6 +3513,7 @@ function ComposerFull({
 
   // The status line under the input: ordered segments, each a quiet trigger
   // for its own picker. Order and grouping live only in this list.
+  const phoneMode = usePhoneMode();
   const statusSegments: { key: string; node: ReactNode }[] = [];
   if (variant !== 'subagent') {
     const chip = (
@@ -3476,89 +3527,91 @@ function ComposerFull({
     if (runMode !== 'normal') statusSegments.push({ key: 'run-mode', node: chip });
   }
   if (onChangeExecution !== undefined && execution !== undefined) {
-    statusSegments.push({
-      key: 'profile',
-      node: (
-        <ComposerPanelOrigin className="flex min-w-0 max-w-full items-center [&>div]:min-w-0">
-          <ProfileSelect
-            choice={execution}
-            pending={executionPending || pendingRuntimeControls !== undefined}
-            busy={busy}
-            disabled={variant === 'subagent' && disabled}
-            onChange={(next) => {
-              if (pickedPersona !== undefined) personaPick?.onChange(undefined);
-              onChangeExecution(next);
-            }}
-            catalog={executorCatalog}
-            profiles={agentProfilesQuery.data?.items ?? []}
-            catalogMode={agentProfileCatalogMode}
-            pickableProfile={isConversationProfile}
-            nativeLabel={t('composer.agentDefaultName')}
-            persona={pickedPersona === undefined ? undefined : {
-              id: pickedPersona.id,
-              name: pickedPersona.name,
-              avatar: <PersonaAvatar persona={pickedPersona} size={20} decorative className="!rounded-full" />,
-            }}
-            onClearPersona={pickedPersona === undefined ? undefined : () => { personaPick?.onChange(undefined); }}
-            onSelectPersona={personaPick === undefined ? undefined : (id) => {
-              personaPick.onChange(id);
-            }}
-            onCancelPending={executionPending ? onCancelExecution : pendingRuntimeControls !== undefined ? onCancelRuntimeControls : undefined}
-            boundExecution={boundExecution}
-            onPicked={focusEditorAfterPick}
-          />
-        </ComposerPanelOrigin>
-      ),
-    });
-    statusSegments.push({
-      key: 'execution',
-      node: (
-        <ComposerPanelOrigin className="flex min-w-0 max-w-full items-center [&>div]:min-w-0">
-          <ExecutionSelect
-            choice={execution}
-            pending={executionPending || pendingRuntimeControls !== undefined}
-            busy={busy}
-            disabled={variant === 'subagent' && disabled}
-            onChange={(next) => {
-              if (next.profile === undefined && next.profile_file === undefined) {
-                personaPick?.onChange(undefined);
-              }
-              onChangeExecution(next);
-            }}
-            catalog={executorCatalog}
-            profiles={agentProfilesQuery.data?.items ?? []}
-            nativeLabel={t('composer.agentDefaultName')}
-            models={models}
-            modelOptions={modelOptions}
-            currentModel={bindingSetting?.model ?? (externalExecution ? validatingModel : normalizedModel)}
-            effectiveModel={effectiveModel}
-            modelShortLabel={modelShortLabel}
-            modelSource={modelSource}
-            currentEffort={statusEffort}
-            efforts={externalExecution ? executorEfforts : efforts}
-            onChangeModel={(next) => {
-              if (externalExecution) return writeExecutorModel(next);
-              const state = projectedProfileModelState(modelProjection, models, next ?? selectionDefaultModel ?? serverDefaultModel, modelSelectionPosition);
-              if (state === 'blocked') return;
-              return onChangeModel(next);
-            }}
-            onChangeEffort={onChangeEffort}
-            executorResponse={executorModelResponse}
-            modelThinkingLevels={executorModelThinkingLevels}
-            executorRefreshBusy={executorRefreshCurrent && executorRefresh.isPending}
-            executorRefreshFailed={executorRefreshCurrent && executorRefresh.isError}
-            onRefreshExecutorModels={() => { executorRefresh.mutate({ id: executorId!, key: executorModelsKey }); }}
-            domainNote={modelDomainState === 'warning' ? t('selection.modelMenuWarning', { source: modelRuleSource }) : undefined}
-            openSignal={modelMenuSignal}
-            onPicked={focusEditorAfterPick}
-          />
-        </ComposerPanelOrigin>
-      ),
-    });
+    const profileSegmentNode = (
+      <ComposerPanelOrigin className="flex min-w-0 max-w-full items-center [&>div]:min-w-0">
+        <ProfileSelect
+          choice={execution}
+          pending={executionPending || pendingRuntimeControls !== undefined}
+          busy={busy}
+          disabled={variant === 'subagent' && disabled}
+          onChange={(next) => {
+            if (pickedPersona !== undefined) personaPick?.onChange(undefined);
+            onChangeExecution(next);
+          }}
+          catalog={executorCatalog}
+          profiles={agentProfilesQuery.data?.items ?? []}
+          catalogMode={agentProfileCatalogMode}
+          pickableProfile={isConversationProfile}
+          nativeLabel={t('composer.agentDefaultName')}
+          persona={pickedPersona === undefined ? undefined : {
+            id: pickedPersona.id,
+            name: pickedPersona.name,
+            avatar: <PersonaAvatar persona={pickedPersona} size={20} decorative className="!rounded-full" />,
+          }}
+          onClearPersona={pickedPersona === undefined ? undefined : () => { personaPick?.onChange(undefined); }}
+          onSelectPersona={personaPick === undefined ? undefined : (id) => {
+            personaPick.onChange(id);
+          }}
+          onCancelPending={executionPending ? onCancelExecution : pendingRuntimeControls !== undefined ? onCancelRuntimeControls : undefined}
+          boundExecution={boundExecution}
+          onPicked={focusEditorAfterPick}
+        />
+      </ComposerPanelOrigin>
+    );
+    const executionSegmentNode = (
+      <ComposerPanelOrigin className="flex min-w-0 max-w-full items-center [&>div]:min-w-0">
+        <ExecutionSelect
+          choice={execution}
+          pending={executionPending || pendingRuntimeControls !== undefined}
+          busy={busy}
+          disabled={variant === 'subagent' && disabled}
+          onChange={(next) => {
+            if (next.profile === undefined && next.profile_file === undefined) {
+              personaPick?.onChange(undefined);
+            }
+            onChangeExecution(next);
+          }}
+          catalog={executorCatalog}
+          profiles={agentProfilesQuery.data?.items ?? []}
+          nativeLabel={t('composer.agentDefaultName')}
+          models={models}
+          modelOptions={modelOptions}
+          currentModel={bindingSetting?.model ?? (externalExecution ? validatingModel : normalizedModel)}
+          effectiveModel={effectiveModel}
+          modelShortLabel={modelShortLabel}
+          modelSource={modelSource}
+          currentEffort={statusEffort}
+          efforts={externalExecution ? executorEfforts : efforts}
+          onChangeModel={(next) => {
+            if (externalExecution) return writeExecutorModel(next);
+            const state = projectedProfileModelState(modelProjection, models, next ?? selectionDefaultModel ?? serverDefaultModel, modelSelectionPosition);
+            if (state === 'blocked') return;
+            return onChangeModel(next);
+          }}
+          onChangeEffort={onChangeEffort}
+          executorResponse={executorModelResponse}
+          modelThinkingLevels={executorModelThinkingLevels}
+          executorRefreshBusy={executorRefreshCurrent && executorRefresh.isPending}
+          executorRefreshFailed={executorRefreshCurrent && executorRefresh.isError}
+          onRefreshExecutorModels={() => { executorRefresh.mutate({ id: executorId!, key: executorModelsKey }); }}
+          domainNote={modelDomainState === 'warning' ? t('selection.modelMenuWarning', { source: modelRuleSource }) : undefined}
+          openSignal={modelMenuSignal}
+          onPicked={focusEditorAfterPick}
+        />
+      </ComposerPanelOrigin>
+    );
+    if (!phoneMode) {
+      statusSegments.push({ key: 'profile', node: profileSegmentNode });
+      statusSegments.push({ key: 'execution', node: executionSegmentNode });
+    }
+    const defaultAgentName = t('composer.agentDefaultName');
+    const isDefaultAgent =
+      pickedPersona === undefined &&
+      (execution.profile === undefined || execution.profile === '' || execution.profile === 'agent');
     const compactAgentLabel = pickedPersona?.name
-      ?? (execution.profile !== undefined && execution.profile !== '' && execution.profile !== 'agent'
+      ?? (!isDefaultAgent && execution.profile !== undefined
         ? execution.profile
-        : t('composer.agentDefaultName'));
+        : defaultAgentName);
     const compactEfforts = externalExecution ? executorEfforts : efforts;
     const compactEffortValue = isNativeExecutor(execution.executor)
       ? statusEffort
@@ -3572,6 +3625,9 @@ function ComposerFull({
     const compactIdentityLabel = [compactAgentLabel, modelShortLabel]
       .filter((part): part is string => part !== undefined && part !== '')
       .join(' · ');
+    const compactPillLabel = isDefaultAgent && modelShortLabel !== undefined && modelShortLabel !== ''
+      ? modelShortLabel
+      : compactIdentityLabel;
     const compactFullLabel = [compactIdentityLabel, compactEffortLabel]
       .filter((part): part is string => part !== undefined && part !== '')
       .join(' · ');
@@ -3589,14 +3645,12 @@ function ComposerFull({
         className={`shrink-0 ${STATUS_SEGMENT_ICON_CLASS}`}
       />
     );
-    const profileSegmentNode = statusSegments.at(-2)?.node;
-    const executionSegmentNode = statusSegments.at(-1)?.node;
     statusSegments.push({
       key: 'compact-model',
       node: (
         <CompactModelSheet
           icon={compactLeadingIcon}
-          label={compactIdentityLabel}
+          label={compactPillLabel}
           effortLabel={compactEffortLabel}
           title={compactFullLabel}
           ariaLabel={compactFullLabel}
@@ -3723,7 +3777,7 @@ function ComposerFull({
         />
       ),
     });
-    if (variant !== 'subagent' && sessionId !== undefined) {
+    if (!phoneMode && variant !== 'subagent' && sessionId !== undefined) {
       statusSegments.push({
         key: 'output-layer',
         node: <OutputLayerSelect sessionId={sessionId} />,
@@ -3737,18 +3791,20 @@ function ComposerFull({
     <div className="group/composer px-3 pb-3 @[560px]/composer-shell:px-6 @[560px]/composer-shell:pb-5" data-composer-variant={variant}>
       {composerContextMenu}
       {ssh.dialog}
-      <ConfirmDialog
-        open={contextRebuildConfirm}
-        overlayId="confirm-context-rebuild"
-        title={t('profile.rebuildTitle')}
-        body={t('profile.rebuildBody')}
-        consequences={[t('profile.rebuildKeepsHistory'), t('profile.rebuildLatestSources')]}
-        confirmLabel={t('profile.rebuildConfirm')}
-        tone="default"
-        busy={contextRebuildBusy}
-        onConfirm={confirmContextRebuild}
-        onCancel={() => { if (!contextRebuildBusy) setContextRebuildConfirm(false); }}
-      />
+      {contextRebuildConfirm ? (
+        <ConfirmDialog
+          open={contextRebuildConfirm}
+          overlayId="confirm-context-rebuild"
+          title={t('profile.rebuildTitle')}
+          body={t('profile.rebuildBody')}
+          consequences={[t('profile.rebuildKeepsHistory'), t('profile.rebuildLatestSources')]}
+          confirmLabel={t('profile.rebuildConfirm')}
+          tone="default"
+          busy={contextRebuildBusy}
+          onConfirm={confirmContextRebuild}
+          onCancel={() => { if (!contextRebuildBusy) setContextRebuildConfirm(false); }}
+        />
+      ) : null}
       {/* One width axis with the transcript: the conversation shell declares
           --kiki-chat-content-width; the 760px fallback is defensive. */}
       <div className="@container/composer mx-auto w-full min-w-0 max-w-[var(--kiki-chat-content-width,760px)]">
@@ -4190,13 +4246,13 @@ function ComposerFull({
           {/* Layer 3 — Primary Editor: unobstructed writing area + floating /
               and @ autocomplete menu. Right-click anywhere opens the composer menu. */}
           {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- context menu only; the textarea is the keyboard target */}
-          <div data-composer-editor className="relative px-3 pt-2.5 pb-1" onContextMenu={onComposerContextMenu}>
+          <div ref={editorContainerRef} data-composer-editor className="relative px-3 pt-2.5 pb-1" onContextMenu={onComposerContextMenu}>
             {menu !== null ? (
               <div
                 data-composer-menu
                 role="listbox"
                 aria-label={menu.kind === 'slash' ? t('composer.slashAria') : t('composer.filesAria')}
-                className={`composer-floating-panel anim-enter absolute right-0 bottom-full left-0 z-30 mb-1.5 max-h-[min(18rem,calc(100dvh-160px))] overflow-y-auto overscroll-contain p-1 ${POPOVER_SURFACE_CLASS}`}
+                className={`composer-floating-panel anim-enter absolute right-0 bottom-full left-0 z-40 mb-1.5 max-h-[min(18rem,var(--composer-menu-max-h,calc(var(--kiki-visual-height,100dvh)-var(--kiki-safe-top-inset)-156px)))] overflow-y-auto overscroll-contain p-1 ${POPOVER_SURFACE_CLASS}`}
                 // Keep textarea focus while rows are clicked.
                 onMouseDown={(event) => { event.preventDefault(); }}
                 onMouseLeave={() => { setSlashHoverIndex(null); }}
@@ -4342,11 +4398,41 @@ function ComposerFull({
                 if (files.length > 0) addFiles(readyAttachmentFiles(files));
               }}
             />
+            <input
+              ref={photosInputRef}
+              data-composer-photos-input=""
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              disabled={disabled}
+              onChange={(event) => {
+                const files = [...(event.target.files ?? [])];
+                event.target.value = '';
+                if (files.length > 0) addFiles(readyAttachmentFiles(files));
+              }}
+            />
+            <input
+              ref={cameraInputRef}
+              data-composer-camera-input=""
+              type="file"
+              accept="image/*"
+              capture="environment"
+              className="hidden"
+              disabled={disabled}
+              onChange={(event) => {
+                const files = [...(event.target.files ?? [])];
+                event.target.value = '';
+                if (files.length > 0) addFiles(readyAttachmentFiles(files));
+              }}
+            />
             <AddMenu
               view={addView}
               onViewChange={setAddView}
               attachDisabled={disabled}
               onAttach={openAttachPicker}
+              onCaptureCamera={() => { cameraInputRef.current?.click(); }}
+              onPickPhotos={() => { photosInputRef.current?.click(); }}
               onRebuild={onRebuildContext === undefined ? undefined : () => { setContextRebuildConfirm(true); }}
               rebuildDisabled={busy || contextRebuildBusy}
               runMode={variant === 'subagent' && (disabled || externalExecution) ? undefined : runModeControls}
@@ -4520,7 +4606,7 @@ function ComposerFull({
                   disabled={abortPending}
                   title={abortPending === true ? t('tasks.stopping') : t('composer.abortTitle')}
                   aria-label={abortPending === true ? t('tasks.stopping') : t('composer.abortTitle')}
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-danger/40 text-danger transition-colors hover:bg-danger/10 focus-visible:ring-2 focus-visible:ring-danger/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:h-10 pointer-coarse:w-10"
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-danger/40 text-danger transition-colors hover:bg-danger/10 focus-visible:ring-2 focus-visible:ring-danger/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:h-11 pointer-coarse:w-11"
                 >
                   <Icon name="stop" size={12} />
                 </button>
@@ -4542,7 +4628,7 @@ function ComposerFull({
                   onClick={() => { onQueueEditCancel(); }}
                   title={t('common.cancel')}
                   aria-label={t('common.cancel')}
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-ink-faint transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:h-10 pointer-coarse:w-10"
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-ink-faint transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:h-11 pointer-coarse:w-11"
                 >
                   <Icon name="close" size={12} />
                 </button>
@@ -4582,8 +4668,8 @@ function ComposerFull({
                   aria-label={messageEditing ? t('transcript.editSubmit') : queueEditing ? t('composer.queueEditConfirm') : busy ? t(busySendsNow ? 'composer.sendNowAria' : 'composer.queueAria') : t('composer.sendAria')}
                   data-edit-submit={messageEditing ? '' : undefined}
                   data-send-ready={canSend ? '' : undefined}
-                  className={`flex h-8 shrink-0 items-center justify-center transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none pointer-coarse:h-10 ${
-                    sendTimingAvailable && canSend ? 'w-8 rounded-l-full pointer-coarse:w-9' : 'w-8 rounded-full pointer-coarse:w-10'
+                  className={`flex h-8 shrink-0 items-center justify-center transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none pointer-coarse:h-11 ${
+                    sendTimingAvailable && canSend ? 'w-8 rounded-l-full pointer-coarse:w-11' : 'w-8 rounded-full pointer-coarse:w-11'
                   } ${
                     canSend
                       ? 'bg-accent text-primary-foreground hover:bg-accent-deep'
@@ -4630,7 +4716,7 @@ function ComposerFull({
                       if (event.detail === 0) sendTimingFocusRef.current = 'first';
                       setSendTimingOpen(true);
                     }}
-                    className={`flex h-8 w-6 shrink-0 cursor-pointer items-center justify-center transition-colors focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none pointer-coarse:h-10 pointer-coarse:w-8 ${
+                    className={`flex h-8 w-6 shrink-0 cursor-pointer items-center justify-center transition-colors focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none pointer-coarse:h-11 pointer-coarse:w-11 ${
                       canSend
                         ? 'rounded-r-full border-l border-primary-foreground/25 bg-accent text-primary-foreground hover:bg-accent-deep'
                         : 'ml-0.5 rounded-full text-ink-faint hover:bg-ink/[0.05] hover:text-ink'
@@ -4640,62 +4726,36 @@ function ComposerFull({
                   </button>
                 ) : null}
                 {sendTimingOpen && sendTimingDefault !== undefined ? (
-                  <Popover.Root
-                    open
-                    modal={false}
-                    onOpenChange={(nextOpen, eventDetails) => {
-                      if (nextOpen) return;
-                      if (eventDetails.reason === 'escape-key') {
-                        closeSendTiming(true);
-                        return;
-                      }
-                      eventDetails.cancel();
-                    }}
+                  <AnchoredFloatingPopover
+                    anchorRef={sendTimingRootRef}
+                    side="top"
+                    align="end"
+                    sideOffset={6}
+                    ownerId="composer-send-timing"
+                    popupRef={attachSendTimingPanelRef}
+                    popupId={sendTimingMenuId}
+                    role="menu"
+                    ariaLabel={t('composer.sendTimingAria')}
+                    dataAttrs={{ 'data-send-timing-menu': '' }}
+                    onMouseEnter={openSendTimingOnHover}
+                    onMouseLeave={closeSendTimingOnLeave}
+                    onEscapeClose={() => { closeSendTiming(true); }}
+                    className={`composer-floating-panel anim-enter max-h-[min(var(--available-height,22rem),22rem,calc(100dvh-120px))] w-60 overflow-y-auto overscroll-contain p-1 outline-none ${POPOVER_SURFACE_CLASS}`}
                   >
-                    <Popover.Portal>
-                      <Popover.Positioner
-                        anchor={sendTimingRootRef}
-                        side="top"
-                        align="end"
-                        sideOffset={6}
-                        collisionPadding={8}
-                        positionMethod="fixed"
-                        style={{ zIndex: floatingSurfaceZIndex(sendTimingRootRef.current) }}
-                      >
-                        <Popover.Popup
-                          ref={attachSendTimingPanelRef}
-                          role="menu"
-                          id={sendTimingMenuId}
-                          aria-label={t('composer.sendTimingAria')}
-                          data-send-timing-menu
-                          initialFocus={false}
-                          finalFocus={false}
-                          onMouseEnter={openSendTimingOnHover}
-                          onMouseLeave={closeSendTimingOnLeave}
-                          {...{
-                            [FLOATING_OWNER_ATTRIBUTE]: 'composer-send-timing',
-                            [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(sendTimingRootRef.current, 'composer-send-timing'),
-                            [MODAL_ESCAPE_ATTRIBUTE]: owningModalId(sendTimingRootRef.current),
-                          }}
-                          className={`composer-floating-panel anim-enter max-h-[min(var(--available-height,22rem),22rem,calc(100dvh-120px))] w-60 overflow-y-auto overscroll-contain p-1 outline-none ${POPOVER_SURFACE_CLASS}`}
-                        >
-                          <p className={POPOVER_LABEL_CLASS}>{t('composer.sendTimingAria')}</p>
-                          <SendTimingRows
-                            defaultTiming={sendTimingDefault}
-                            canSendNow={busy && onSendNow !== undefined && !sendNowDegrades}
-                            busy={busy}
-                            busySendsNow={busySendsNow}
-                            onPick={(choice) => {
-                              closeSendTiming();
-                              if (choice === 'default') send();
-                              else if (choice === 'now') send(true);
-                              else send(false, choice);
-                            }}
-                          />
-                        </Popover.Popup>
-                      </Popover.Positioner>
-                    </Popover.Portal>
-                  </Popover.Root>
+                    <p className={POPOVER_LABEL_CLASS}>{t('composer.sendTimingAria')}</p>
+                    <SendTimingRows
+                      defaultTiming={sendTimingDefault}
+                      canSendNow={busy && onSendNow !== undefined && !sendNowDegrades}
+                      busy={busy}
+                      busySendsNow={busySendsNow}
+                      onPick={(choice) => {
+                        closeSendTiming();
+                        if (choice === 'default') send();
+                        else if (choice === 'now') send(true);
+                        else send(false, choice);
+                      }}
+                    />
+                  </AnchoredFloatingPopover>
                 ) : null}
               </div>
               )}
@@ -4790,6 +4850,8 @@ function CompactModelSheet({
   readonly profileNode: ReactNode;
   readonly executionNode: ReactNode;
 }) {
+  const { locale } = useI18n();
+  const phoneMode = usePhoneMode();
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   useLayerHistory('compact-model-sheet', open, () => { setOpen(false); });
@@ -4802,37 +4864,36 @@ function CompactModelSheet({
     return registerOverlay('compact-model-sheet');
   }, [open]);
   const triggerEl = triggerRef.current;
-  return (
-    <div className="flex min-w-0 flex-1">
-      <Popover.Root
-        open={open}
-        modal={false}
-        onOpenChange={(nextOpen, eventDetails) => {
-          if (!nextOpen && (eventDetails.reason === 'outside-press' || eventDetails.reason === 'escape-key')) {
-            if (typeof document !== 'undefined') {
-              const target = eventDetails.event?.target;
-              if (target instanceof Element && target.closest(`[${FLOATING_PORTAL_OWNERS_ATTRIBUTE}~="compact-model-sheet"]`) !== null) {
-                eventDetails.cancel();
-                return;
-              }
-              if (document.querySelector(`[${FLOATING_PORTAL_OWNERS_ATTRIBUTE}~="compact-model-sheet"]`) !== null) {
-                eventDetails.cancel();
-                return;
-              }
-            }
-          }
-          setOpen(nextOpen);
-        }}
-      >
-        <Popover.Trigger
+  const guardSubPopoverDismiss = (nextOpen: boolean, eventDetails: { reason?: string; event?: Event; cancel: () => void }) => {
+    if (!nextOpen && (eventDetails.reason === 'outside-press' || eventDetails.reason === 'escape-key')) {
+      if (typeof document !== 'undefined') {
+        const target = eventDetails.event?.target;
+        if (target instanceof Element && target.closest(`[${FLOATING_PORTAL_OWNERS_ATTRIBUTE}~="compact-model-sheet"]`) !== null) {
+          eventDetails.cancel();
+          return;
+        }
+        if (document.querySelector(`[${FLOATING_PORTAL_OWNERS_ATTRIBUTE}~="compact-model-sheet"]`) !== null) {
+          eventDetails.cancel();
+          return;
+        }
+      }
+    }
+    setOpen(nextOpen);
+  };
+  if (phoneMode) {
+    return (
+      <div className="flex min-w-0 flex-1">
+        <button
           ref={triggerRef}
           type="button"
           data-compact-model-sheet-trigger=""
           title={title}
           aria-label={ariaLabel}
+          aria-expanded={open}
+          onClick={() => { setOpen((prev) => !prev); }}
           className={`${STATUS_SEGMENT_CLASS} max-w-full overflow-hidden @max-[30rem]/toolbar:gap-1 @max-[30rem]/toolbar:px-1.5`}
         >
-          {icon}
+          <span className="shrink-0 @max-[23rem]/toolbar:hidden">{icon}</span>
           <span className="min-w-0 truncate">{label}</span>
           {effortLabel !== undefined ? (
             <span data-compact-model-effort="" className="shrink-0 whitespace-nowrap text-ink-faint">
@@ -4840,1149 +4901,57 @@ function CompactModelSheet({
             </span>
           ) : null}
           <Icon name="chevron" size={12} className="shrink-0 rotate-90 text-ink-faint" />
-        </Popover.Trigger>
-        <Popover.Portal>
-          <Popover.Positioner
-            side="top"
-            align="start"
-            sideOffset={8}
-            collisionPadding={8}
-            positionMethod="fixed"
-            style={{ zIndex: floatingSurfaceZIndex(triggerEl) }}
-            className="outline-none"
-          >
-            <Popover.Popup
-              data-compact-model-sheet=""
-              {...{
-                [FLOATING_OWNER_ATTRIBUTE]: 'compact-model-sheet',
-                [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(triggerEl),
-                [MODAL_ESCAPE_ATTRIBUTE]: owningModalId(triggerEl),
-              }}
-              className={`anim-enter flex w-[min(22rem,calc(100vw-24px))] flex-col gap-2 rounded-[14px] p-2.5 outline-none ${POPOVER_SURFACE_CLASS}`}
-            >
-              {profileNode}
-              {executionNode}
-            </Popover.Popup>
-          </Popover.Positioner>
-        </Popover.Portal>
-      </Popover.Root>
-    </div>
-  );
-}
-
-function SlashMenuBody({
-  items,
-  activeIndex,
-  skillsFailed,
-  hasSession,
-  onAccept,
-  onHoverRow,
-}: {
-  items: readonly SlashItem[];
-  activeIndex: number;
-  skillsFailed: boolean;
-  hasSession: boolean;
-  onAccept: (item: SlashItem) => void;
-  /** Row hover feeds the skill preview card (index into `items`). */
-  onHoverRow: (index: number) => void;
-}) {
-  const { t } = useI18n();
-  const coarsePointer = useCoarsePointer();
-  const pickerScale = getPickerScaleConfig();
-  const rootRef = useRef<HTMLDivElement>(null);
-  const [scrollEl, setScrollEl] = useState<HTMLElement | null>(null);
-
-  const flatRows = useMemo(() => {
-    const rows: { readonly item: SlashItem; readonly index: number; readonly header: string | null }[] = [];
-    let seenSkill = false;
-    let seenPlugin = false;
-    let seenAction = false;
-    for (let i = 0; i < items.length; i += 1) {
-      const item = items[i]!;
-      let header: string | null = null;
-      if (item.kind === 'skill' && !seenSkill) {
-        seenSkill = true;
-        header = t('composer.slash.skills');
-      } else if (item.kind === 'plugin' && !seenPlugin) {
-        seenPlugin = true;
-        header = t('composer.slash.plugins');
-      } else if (item.kind === 'action' && !seenAction) {
-        seenAction = true;
-        header = t('composer.slash.shortcuts');
-      }
-      rows.push({ item, index: i, header });
-    }
-    return rows;
-  }, [items, t]);
-
-  useLayoutEffect(() => {
-    const parent = rootRef.current?.closest<HTMLElement>('[data-composer-menu]') ?? null;
-    setScrollEl((prev) => (prev === parent ? prev : parent));
-  }, []);
-
-  const isVirtualized = flatRows.length > pickerScale.selectVirtualizeThreshold;
-  const virtualizer = useVirtualizer({
-    count: isVirtualized ? flatRows.length : 0,
-    getScrollElement: () => scrollEl,
-    estimateSize: (index) => (flatRows[index]?.header !== null ? 58 : 34),
-    getItemKey: (index) => {
-      const entry = flatRows[index];
-      return entry === undefined ? index : `${entry.item.kind}-${entry.item.name}`;
-    },
-    overscan: pickerScale.virtualOverscan,
-    initialRect: { width: 420, height: 280 },
-    observeElementRect: (instance, cb) => {
-      const el = instance.scrollElement;
-      if (el === null) return;
-      const emit = () => {
-        const rect = el.getBoundingClientRect();
-        const height = Math.round(rect.height || el.clientHeight);
-        const width = Math.round(rect.width || el.clientWidth);
-        if (height > 0) cb({ width, height });
-      };
-      emit();
-      if (typeof ResizeObserver === 'undefined') return;
-      const observer = new ResizeObserver(emit);
-      observer.observe(el);
-      return () => { observer.disconnect(); };
-    },
-    measureElement: (el) => {
-      const height = Math.round(el.getBoundingClientRect().height);
-      return height > 0 ? height : 34;
-    },
-    useFlushSync: false,
-  });
-
-  useLayoutEffect(() => {
-    if (isVirtualized && scrollEl !== null && activeIndex >= 0 && activeIndex < flatRows.length) {
-      if (scrollEl.scrollHeight > scrollEl.clientHeight) {
-        virtualizer.scrollToIndex(activeIndex, { align: 'auto' });
-      } else {
-        const item = virtualizer.measurementsCache[activeIndex];
-        if (item !== undefined) {
-          const viewportH = scrollEl.clientHeight > 0 ? scrollEl.clientHeight : 280;
-          const maxOffset = Math.max(0, virtualizer.getTotalSize() - viewportH);
-          const current = scrollEl.scrollTop;
-          let target = current;
-          if (item.end > current + viewportH) target = item.end - viewportH;
-          else if (item.start < current) target = item.start;
-          const clamped = Math.max(0, Math.min(maxOffset, Math.round(target)));
-          if (clamped !== current) {
-            scrollEl.scrollTop = clamped;
-            scrollEl.dispatchEvent(new Event('scroll'));
-          }
-        }
-      }
-      return;
-    }
-    const active = rootRef.current?.querySelector<HTMLElement>('[aria-selected="true"]');
-    active?.scrollIntoView?.({ block: 'nearest' });
-  }, [activeIndex, flatRows.length, isVirtualized, scrollEl, virtualizer]);
-
-  const renderEntry = (entry: { readonly item: SlashItem; readonly index: number; readonly header: string | null }) => {
-    const { item, index, header } = entry;
-    const active = index === activeIndex;
-    const argHint = item.skill?.argument_hint ?? item.argumentHint;
-    const descriptionText =
-      item.kind === 'action' && item.action !== undefined
-        ? t(SLASH_ACTION_DESCRIPTIONS[item.action])
-        : item.description;
-    return (
-      <>
-        {header !== null ? (
-          <p className="px-3 pt-1.5 pb-1 text-[12px] font-normal text-ink-faint">
-            {header}
-          </p>
-        ) : null}
-        <button
-          type="button"
-          role="option"
-          aria-selected={active}
-          aria-disabled={item.disabled === true}
-          aria-setsize={isVirtualized ? flatRows.length : undefined}
-          aria-posinset={isVirtualized ? index + 1 : undefined}
-          onClick={() => { onAccept(item); }}
-          onMouseEnter={() => { onHoverRow(index); }}
-          className={`flex w-full items-baseline gap-2 rounded-md px-3 py-1.5 text-left transition-colors ${
-            item.disabled === true ? 'opacity-50' : ''
-          } ${active ? 'bg-paper' : 'hover:bg-paper'}`}
-        >
-          <span className={`shrink-0 font-mono text-[12.5px] font-normal ${active ? 'text-selected-ink' : 'text-ink'}`}>
-            /{item.name}
-          </span>
-          {argHint !== undefined ? (
-            <span className="max-w-32 truncate font-mono text-[11px] text-ink-faint">{argHint}</span>
-          ) : null}
-          <span
-            title={descriptionText}
-            className={`min-w-0 flex-1 text-[13px] text-ink-soft ${
-              active && item.kind === 'plugin'
-                ? 'whitespace-normal break-words max-[640px]:leading-snug min-[641px]:truncate'
-                : 'truncate'
-            }`}
-          >
-            {descriptionText}
-          </span>
-          {item.disabled === true ? (
-            <span className="shrink-0 text-[12px] text-ink-faint">{t('composer.slash.notActivatable')}</span>
-          ) : item.kind === 'skill' ? (
-            <span title={item.skill?.path} className="shrink-0 text-[12px] text-ink-faint">{item.skill?.source}</span>
-          ) : item.kind === 'plugin' && item.pluginId !== undefined ? (
-            <span className="shrink-0 font-mono text-[11.5px] text-ink-faint">{item.pluginId}</span>
-          ) : null}
         </button>
-      </>
-    );
-  };
-
-  return (
-    <div ref={rootRef}>
-      {isVirtualized ? (
-        <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
-          {virtualizer.getVirtualItems().map((row) => {
-            const entry = flatRows[row.index];
-            if (entry === undefined) return null;
-            return (
-              <div
-                key={row.key}
-                data-index={row.index}
-                ref={virtualizer.measureElement}
-                style={{
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  width: '100%',
-                  transform: `translateY(${row.start}px)`,
-                }}
-              >
-                {renderEntry(entry)}
-              </div>
-            );
-          })}
-        </div>
-      ) : (
-        flatRows.map((entry) => (
-          <div key={`${entry.item.kind}-${entry.item.name}`}>
-            {renderEntry(entry)}
-          </div>
-        ))
-      )}
-      {items.length === 0 ? (
-        <p className="px-3 py-2 text-[13px] text-ink-faint">
-          {/* On touch Enter is a newline; the line goes out from the send button. */}
-          {t(coarsePointer ? 'composer.slash.emptyTouch' : 'composer.slash.empty')}
-        </p>
-      ) : null}
-      {skillsFailed && hasSession ? (
-        <p className="border-t border-hairline px-3 py-1 text-[12px] text-ink-faint">
-          {t('composer.slash.skillsFailed')}
-        </p>
-      ) : null}
-    </div>
-  );
-}
-
-/**
- * SkillPreviewCard — C-2: the full descriptor for the slash row under the
- * pointer (or the keyboard-active row), which the menu itself can only show
- * truncated. Docks to the right of the menu; on viewports too narrow to have
- * genuine room beside the composer it stays hidden rather than clipping.
- * Skills with an empty description never reach here (the caller degrades).
- */
-function SkillPreviewCard({ item }: { item: SlashItem }) {
-  const { t } = useI18n();
-  const skill = item.skill;
-  return (
-    <div
-      data-skill-preview
-      role="tooltip"
-      aria-label={t('composer.slash.previewAria')}
-      className="anim-enter pointer-events-none absolute right-0 bottom-full z-40 mb-1 hidden w-72 translate-x-[calc(100%+0.5rem)] rounded-[10px] border border-hairline bg-panel p-3 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)] min-[1360px]:block"
-    >
-      <div className="flex items-baseline gap-2">
-        <span className="shrink-0 font-mono text-[12px] font-normal text-accent-ink">
-          /{item.name}
-        </span>
-        {skill !== undefined ? (
-          <span className="shrink-0 rounded-full border border-hairline px-1.5 py-px text-[11px] text-ink-faint">
-            {skill.source}
-          </span>
-        ) : item.pluginId !== undefined ? (
-          <span className="shrink-0 rounded-full border border-hairline px-1.5 py-px font-mono text-[11px] text-ink-faint">
-            {item.pluginId}
-          </span>
-        ) : null}
-        {item.disabled === true ? (
-          <span className="shrink-0 text-[11px] text-ink-faint">
-            {t('composer.slash.notActivatable')}
-          </span>
+        {open ? (
+          <CompactModelSheetDrawer
+            open={open}
+            onOpenChange={guardSubPopoverDismiss}
+            triggerRef={triggerRef}
+            ariaLabel={ariaLabel}
+            heading={locale === 'zh' ? '角色与模型' : 'Agent & model'}
+            profileNode={profileNode}
+            executionNode={executionNode}
+          />
         ) : null}
       </div>
-      <p className="mt-1.5 max-h-36 overflow-y-auto text-[11.5px] leading-relaxed whitespace-pre-wrap text-ink-soft">
-        {item.description}
-      </p>
-      {skill !== undefined ? (
-        <p title={skill.path} className="mt-2 truncate font-mono text-[11px] text-ink-faint">
-          {skill.path}
-        </p>
-      ) : null}
-    </div>
-  );
-}
-
-function MentionMenuBody({
-  items,
-  agentGroups,
-  agentsFailed,
-  delegationAvailable,
-  delegationReason,
-  activeIndex,
-  loading,
-  feed,
-  query,
-  onAccept,
-  onAcceptAgent,
-}: {
-  items: readonly FsSearchHit[];
-  agentGroups: readonly AgentCandidateGroup[];
-  /** The agent candidate load failed; files may still list. */
-  agentsFailed: boolean;
-  delegationAvailable: boolean;
-  delegationReason?: string;
-  activeIndex: number;
-  loading: boolean;
-  feed: FsSearchFeedView;
-  query: string;
-  onAccept: (item: FsSearchHit) => void;
-  onAcceptAgent: (candidate: AgentReferenceCandidate) => void;
-}) {
-  const { t } = useI18n();
-  const pickerScale = getPickerScaleConfig();
-  const listRef = useRef<HTMLDivElement | null>(null);
-  const [listEl, setListEl] = useState<HTMLDivElement | null>(null);
-  const setListNode = useCallback((node: HTMLDivElement | null) => {
-    listRef.current = node;
-    setListEl(node);
-  }, []);
-  const pending = feed.pendingMore || feed.pendingRestart;
-
-  type FlatMentionRow =
-    | { readonly kind: 'file'; readonly key: string; readonly index: number; readonly item: FsSearchHit }
-    | {
-        readonly kind: 'agent';
-        readonly key: string;
-        readonly index: number;
-        readonly candidate: AgentReferenceCandidate;
-        readonly groupLabel: string | null;
-        readonly showDelegationNote: boolean;
-      };
-
-  const flatRows = useMemo<readonly FlatMentionRow[]>(() => {
-    const out: FlatMentionRow[] = [];
-    for (let i = 0; i < items.length; i += 1) {
-      const item = items[i]!;
-      out.push({ kind: 'file', key: `file:${item.path}`, index: i, item });
-    }
-    let idx = items.length;
-    let delegationBannerPlaced = false;
-    for (let g = 0; g < agentGroups.length; g += 1) {
-      const group = agentGroups[g]!;
-      for (let c = 0; c < group.candidates.length; c += 1) {
-        const candidate = group.candidates[c]!;
-        const showDelegationNote = !delegationBannerPlaced && !delegationAvailable;
-        if (showDelegationNote) delegationBannerPlaced = true;
-        out.push({
-          kind: 'agent',
-          key: `agent:${group.group}:${candidate.profile}`,
-          index: idx,
-          candidate,
-          groupLabel: c === 0 ? group.label : null,
-          showDelegationNote,
-        });
-        idx += 1;
-      }
-    }
-    return out;
-  }, [items, agentGroups, delegationAvailable]);
-
-  const bothEmpty = flatRows.length === 0;
-  const isVirtualized = flatRows.length > pickerScale.selectVirtualizeThreshold;
-
-  const virtualizer = useVirtualizer({
-    count: isVirtualized ? flatRows.length : 0,
-    getScrollElement: () => listEl,
-    estimateSize: (index) => {
-      const row = flatRows[index];
-      if (row === undefined) return 34;
-      if (row.kind === 'agent') {
-        return 34 + (row.groupLabel !== null ? 26 : 0) + (row.showDelegationNote ? 34 : 0);
-      }
-      return 34;
-    },
-    getItemKey: (index) => flatRows[index]?.key ?? index,
-    overscan: pickerScale.virtualOverscan,
-    initialRect: { width: 420, height: 256 },
-    observeElementRect: (instance, cb) => {
-      const el = instance.scrollElement;
-      if (el === null) return;
-      const emit = () => {
-        const rect = el.getBoundingClientRect();
-        const height = Math.round(rect.height || el.clientHeight);
-        const width = Math.round(rect.width || el.clientWidth);
-        if (height > 0) cb({ width, height });
-      };
-      emit();
-      if (typeof ResizeObserver === 'undefined') return;
-      const observer = new ResizeObserver(emit);
-      observer.observe(el);
-      return () => { observer.disconnect(); };
-    },
-    measureElement: (el) => {
-      const height = Math.round(el.getBoundingClientRect().height);
-      return height > 0 ? height : 34;
-    },
-    useFlushSync: false,
-  });
-
-  useLayoutEffect(() => {
-    if (isVirtualized && listEl !== null && activeIndex >= 0 && activeIndex < flatRows.length) {
-      if (listEl.scrollHeight > listEl.clientHeight) {
-        virtualizer.scrollToIndex(activeIndex, { align: 'auto' });
-      } else {
-        const item = virtualizer.measurementsCache[activeIndex];
-        if (item !== undefined) {
-          const viewportH = listEl.clientHeight > 0 ? listEl.clientHeight : 256;
-          const maxOffset = Math.max(0, virtualizer.getTotalSize() - viewportH);
-          const current = listEl.scrollTop;
-          let target = current;
-          if (item.end > current + viewportH) target = item.end - viewportH;
-          else if (item.start < current) target = item.start;
-          const clamped = Math.max(0, Math.min(maxOffset, Math.round(target)));
-          if (clamped !== current) {
-            listEl.scrollTop = clamped;
-            listEl.dispatchEvent(new Event('scroll'));
-          }
-        }
-      }
-    } else {
-      const active = listRef.current?.querySelector<HTMLElement>('[aria-selected="true"]');
-      active?.scrollIntoView?.({ block: 'nearest' });
-    }
-    if (
-      !loading &&
-      !pending &&
-      !feed.failed &&
-      !feed.exhausted &&
-      items.length > 0 &&
-      activeIndex >= items.length - 2 &&
-      activeIndex < items.length
-    ) {
-      feed.loadMore();
-    }
-  }, [activeIndex, items.length, flatRows.length, isVirtualized, listEl, virtualizer, loading, pending, feed]);
-
-  const renderMentionRow = (row: FlatMentionRow) => {
-    if (row.kind === 'file') {
-      const active = row.index === activeIndex;
-      const isDir = row.item.kind === 'directory';
-      return (
-        <button
-          type="button"
-          role="option"
-          aria-selected={active}
-          aria-setsize={isVirtualized ? flatRows.length : undefined}
-          aria-posinset={isVirtualized ? row.index + 1 : undefined}
-          onClick={() => { onAccept(row.item); }}
-          className={`flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left transition-colors ${
-            active ? 'bg-paper' : 'hover:bg-paper'
-          }`}
-        >
-          <FileGlyph dir={isDir} />
-          <span className={`shrink-0 font-mono text-[12.5px] font-normal ${active ? 'text-selected-ink' : 'text-ink'}`}>
-            {row.item.name}
-            {isDir ? '/' : ''}
-          </span>
-          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint">
-            {row.item.path}
-          </span>
-        </button>
-      );
-    }
-    const { candidate } = row;
-    const active = row.index === activeIndex;
-    const disabled = !candidate.available;
-    const reason = agentUnavailableReason(candidate, t);
-    return (
-      <>
-        {row.showDelegationNote ? (
-          <p className="mx-1 mt-1 rounded-md bg-ink/[0.045] px-3 py-1.5 text-[11.5px] text-ink-faint" data-agent-mention-note>
-            {t('composer.agentsNoDelegation')}{delegationReason !== undefined && delegationReason !== '' ? ` — ${delegationReason}` : ''}
-          </p>
-        ) : null}
-        {row.groupLabel !== null ? (
-          <p className="px-3 pt-1.5 pb-1 text-[12px] font-normal text-ink-faint">
-            {row.groupLabel}
-          </p>
-        ) : null}
-        <button
-          type="button"
-          role="option"
-          aria-selected={active}
-          aria-disabled={disabled}
-          aria-setsize={isVirtualized ? flatRows.length : undefined}
-          aria-posinset={isVirtualized ? row.index + 1 : undefined}
-          disabled={disabled}
-          title={disabled ? reason : undefined}
-          onClick={() => { onAcceptAgent(candidate); }}
-          className={`flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left transition-colors ${
-            disabled ? 'cursor-not-allowed opacity-45' : active ? 'bg-paper' : 'hover:bg-paper'
-          }`}
-        >
-          <span aria-hidden className="flex h-3.5 w-3.5 shrink-0 items-center justify-center text-ink-faint">
-            <Icon name="thread" size={12} />
-          </span>
-          <span className={`shrink-0 text-[12.5px] font-normal ${active && !disabled ? 'text-selected-ink' : 'text-ink'}`}>
-            {candidate.label}
-          </span>
-          <span className="shrink-0 rounded-full border border-hairline px-1.5 py-px text-[10.5px] text-ink-faint">
-            {candidate.engine_label}
-          </span>
-          <span className="min-w-0 flex-1 truncate text-[11px] text-ink-faint">
-            {disabled ? reason : candidate.description ?? ''}
-          </span>
-        </button>
-      </>
-    );
-  };
-
-  return (
-    <>
-      {feed.failed ? <p className="px-3 py-2 text-[12px] text-danger">{t('composer.filesFailed')}</p> : null}
-      {/* The agent candidate load failing is its own line, independent of the
-          file list beside it — files may still list while agents are gone. */}
-      {agentsFailed ? <p className="px-3 py-2 text-[12px] text-ink-faint" data-agent-mention-failed>{t('composer.agentsFailed')}</p> : null}
-      {(loading && bothEmpty) || (bothEmpty && feed.exhausted && !feed.failed && !agentsFailed) ? (
-        <p className="px-3 py-2 text-[12px] text-ink-faint" data-mention-empty>
-          {loading ? t('composer.filesSearching') : query === '' ? t('composer.mentionEmpty') : t('composer.mentionNoMatch', { query })}
-        </p>
-      ) : null}
-      {items.length > 0 ? <p className="px-3 pt-1.5 pb-1 text-[12px] font-normal text-ink-faint">{t('composer.filesHeader')}</p> : null}
-      <div ref={setListNode} data-mention-file-list className="max-h-64 overflow-y-auto" onScroll={(event) => {
-        const node = event.currentTarget;
-        if (!loading && !pending && !feed.failed && !feed.exhausted && node.scrollHeight - node.scrollTop - node.clientHeight <= 32) feed.loadMore();
-      }}>
-      {isVirtualized ? (
-        <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
-          {virtualizer.getVirtualItems().map((vRow) => {
-            const entry = flatRows[vRow.index];
-            if (entry === undefined) return null;
-            return (
-              <div
-                key={vRow.key}
-                data-index={vRow.index}
-                ref={virtualizer.measureElement}
-                style={{
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  width: '100%',
-                  transform: `translateY(${vRow.start}px)`,
-                }}
-              >
-                {renderMentionRow(entry)}
-              </div>
-            );
-          })}
-        </div>
-      ) : (
-        flatRows.map((entry) => (
-          <div key={entry.key}>
-            {renderMentionRow(entry)}
-          </div>
-        ))
-      )}
-      </div>
-      {!loading && (!feed.exhausted || feed.failed || pending) ? (
-        <button type="button" data-mention-file-more={feed.failed ? 'retry' : pending ? 'pending' : 'more'}
-          disabled={pending} onClick={feed.failed ? feed.retry : feed.loadMore}
-          className="flex w-full rounded-md px-3 py-2 text-left text-[12px] text-ink-soft hover:bg-paper disabled:cursor-wait">
-          {feed.failed ? t('common.retry') : pending ? t('sidebar.loadingMore') : t('sidebar.searchLoadMore')}
-        </button>
-      ) : null}
-    </>
-  );
-}
-
-function ExternalModelChoice({ choice, engineLabel, executorResponse, executorRefreshBusy, executorRefreshFailed, onRefreshExecutorModels, onChange }: {
-  choice: ExecutionChoice;
-  engineLabel: string;
-  executorResponse?: ExecutorModelCatalogResponse;
-  executorRefreshBusy: boolean;
-  executorRefreshFailed: boolean;
-  onRefreshExecutorModels: () => void;
-  onChange: (model: string | undefined) => void;
-}) {
-  const { t } = useI18n();
-  const now = useNow();
-  const executorCapabilities = mapExecutorCapabilities(executorResponse, now);
-  const model = typeof choice.overrides?.model === 'string' ? choice.overrides.model : undefined;
-  const modelDimension = executorCapabilities.models;
-  const modelState = modelDimension.kind;
-  const reportedValues = modelState === 'ready' || modelState === 'partial'
-    ? modelDimension.values ?? []
-    : [];
-  const currentModelIsUnlisted = modelState === 'ready'
-    && model !== undefined
-    && model !== ''
-    && !reportedValues.includes(model);
-  const modelOptions: readonly SearchableSelectOption[] = [
-    { value: '', label: t('composer.engineModelFollow') },
-    ...reportedValues.map((value) => ({ value, label: value })),
-    ...(model !== undefined && model !== '' && !reportedValues.includes(model)
-      ? [{
-        value: model,
-        label: model,
-        badges: currentModelIsUnlisted
-          ? [{ label: t('composer.engineModelNotInList'), tone: 'caution' as const }]
-          : undefined,
-      }]
-      : []),
-  ];
-  const statusMessage = modelState === 'loading'
-    ? t('composer.engineModelLoading')
-    : modelState === 'partial'
-      ? t('composer.engineModelPartial', { count: reportedValues.length })
-      : modelState === 'unavailable'
-        ? t('composer.engineModelUnavailable')
-        : modelState === 'unknown' ? t('composer.engineModelUnknown') : undefined;
-  // One compact status line, in the order a person needs it: a failed refresh
-  // first (the list on screen is stale by definition), then the model catalog's
-  // own state with its real reason, then the age of the read. A stale read
-  // collapses the model state to unknown, so its age — not "not known yet" —
-  // is the honest line, with Refresh beside it as the recovery.
-  const stale = executorCapabilities.freshness === 'stale';
-  const modelDiagnostic = modelDimension.diagnostic !== undefined && modelDimension.diagnostic !== ''
-    ? modelDimension.diagnostic
-    : undefined;
-  const modelNote = statusMessage === undefined || (stale && modelState === 'unknown')
-    ? undefined
-    : (modelState === 'unavailable' || modelState === 'unknown') && modelDiagnostic !== undefined
-      ? `${statusMessage} · ${modelDiagnostic}`
-      : statusMessage;
-  const statusLine = executorRefreshFailed
-    ? t('composer.engineCapabilityRefreshFailed')
-    : [modelNote, stale ? t('composer.engineCapabilityStale') : undefined]
-      .filter((part): part is string => part !== undefined)
-      .join(' · ') || undefined;
-  // The one capability that changes what this selector itself may do. Unknown
-  // is not a refusal, so only a declared-unsupported control earns the line.
-  const switchControl = executorCapabilities.controls.model_switch;
-  const switchLine = switchControl.kind === 'unavailable'
-    ? [t('composer.engineModelSwitchUnavailable'), switchControl.diagnostic]
-      .filter((part): part is string => part !== undefined && part !== '')
-      .join(' · ')
-    : undefined;
-  const panelFooter = (
-    <div data-external-model-footer className="flex items-center gap-2 border-t border-hairline px-3 py-1.5 text-[12px] leading-snug text-ink-faint">
-      <div data-external-model-status className="min-w-0 flex-1">
-        {statusLine !== undefined ? (
-          <p
-            data-external-model-refresh-error={executorRefreshFailed ? true : undefined}
-            className="truncate"
-            title={statusLine}
-          >
-            {statusLine}
-          </p>
-        ) : null}
-        {switchLine !== undefined ? (
-          <p data-external-model-switch className="truncate" title={switchLine}>{switchLine}</p>
-        ) : null}
-      </div>
-      <button
-        type="button"
-        data-external-model-refresh
-        aria-label={t('composer.engineCapabilityRefreshAria')}
-        title={t('composer.engineCapabilityRefreshAria')}
-        disabled={executorRefreshBusy}
-        onClick={onRefreshExecutorModels}
-        className="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-normal text-ink-soft hover:bg-ink/[0.06] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:cursor-wait disabled:opacity-60"
-      >
-        {executorRefreshBusy ? t('composer.engineCapabilityRefreshing') : t('composer.engineCapabilityRefresh')}
-      </button>
-    </div>
-  );
-  const writable = isExecutorActionAvailable(switchControl) && (modelState === 'ready' || modelState === 'partial');
-  if (!writable) return <span className="flex min-w-0 items-center gap-1" data-external-model-readonly>
-    <span data-composer-engine-model={engineLabel} className="max-w-56 truncate px-1.5 text-[13px] text-ink-soft" title={[engineLabel, statusLine, switchLine].filter(Boolean).join(' · ')}>
-      {model ?? t('composer.engineModelFollow')}
-    </span>
-    <button type="button" data-external-model-refresh disabled={executorRefreshBusy} onClick={onRefreshExecutorModels}
-      aria-label={t('composer.engineCapabilityRefreshAria')} title={statusLine ?? t('composer.engineCapabilityRefreshAria')}
-      className="rounded p-1 text-ink-faint hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40">
-      <Icon name="refresh" size={12} />
-    </button>
-  </span>;
-  return (
-    <ComposerPanelOrigin className="flex min-w-0 [&>div]:min-w-0">
-      <ModelPicker
-        id="composer-engine-model-select"
-        value={model ?? ''}
-        options={modelOptions}
-        searchPlaceholder={t('composer.engineModelId')}
-        allowCustomValue
-        customValueLabel={(custom) => custom}
-        onChange={(next) => { onChange(next === '' ? undefined : next); }}
-        ariaLabel={t('composer.modelAria')}
-        title={engineLabel}
-        emptyText={t('composer.engineModelFollow')}
-        density="compact"
-        placement="above"
-        hideChevron
-        panelClassName="composer-floating-panel w-80"
-        panelFooter={panelFooter}
-        buttonClassName={`${STATUS_SEGMENT_CLASS} max-w-full ${model === undefined ? '' : STATUS_SEGMENT_SET}`}
-      />
-    </ComposerPanelOrigin>
-  );
-}
-
-/**
- * ModelChip — one trigger for the model and its thinking effort. The trigger
- * reads `{model} · {effort}`, with the effort segment outside the truncation
- * so the two facts never squeeze each other out. The agent profile is a
- * separate toolbar control, not part of this panel.
- *
- * Native sessions keep the panel available even without a catalog so setup
- * remains reachable. External engines keep their own read-only model label.
- */
-function ModelChip({
-  modelOptions,
-  hasCatalog,
-  model,
-  resolvedModelKey,
-  effectiveModel,
-  shortLabel,
-  modelSource,
-  disabled = false,
-  onChangeModel,
-  efforts,
-  effort,
-  onChangeEffort,
-  engineLabel,
-  executorLabel,
-  openSignal,
-  domainNote,
-}: {
-  /**
-   * Why the bound model sits outside the profile's menu without blocking a
-   * send. The chip carries a quiet dot and the reason lives in its tooltip;
-   * the menu rows already explain it at the moment of choosing.
-   */
-  readonly domainNote?: string;
-  readonly modelOptions: readonly SearchableSelectOption[];
-  /** Set when an external engine serves the model: the label is read-only. */
-  readonly engineLabel?: string;
-  readonly executorLabel?: string;
-  /** The invalid-model diagnostic bumps this to open the menu as its recovery. */
-  readonly openSignal?: number;
-  /** False when `GET /models` returned nothing — no model is pickable. */
-  readonly hasCatalog: boolean;
-  readonly model: string | undefined;
-  /** The catalog key `model` resolves to (bare aliases land on a provider row). */
-  readonly resolvedModelKey: string | undefined;
-  readonly effectiveModel: string | undefined;
-  /** Short trigger label (the model's display name); the panel rows keep the full labels. */
-  readonly shortLabel?: string;
-  readonly modelSource: ComposerModelSource;
-  readonly disabled?: boolean;
-  readonly onChangeModel: (model: string | undefined) => void | Promise<void>;
-  readonly efforts: readonly string[] | undefined;
-  readonly effort: string | undefined;
-  readonly onChangeEffort: (effort: string) => void;
-}) {
-  const { t } = useI18n();
-  const navigate = useNavigate();
-  const displayEfforts = sortThinkingEffortsForDisplay(efforts ?? []);
-  const showEffort = displayEfforts.length > 0 && effort !== undefined;
-  const sourceTitle = t('composer.modelTitle', { source: t(`composer.modelProvenance.${modelSource}`) });
-  // The trigger shows only the display name + effort; the tooltip carries the
-  // full picture (raw id and where the choice came from).
-  const servingEngine = executorLabel ?? engineLabel;
-  const baseTitle = servingEngine !== undefined
-    ? `${t('composer.engineModelTitle', { model: effectiveModel ?? t('composer.engineModelDefault'), engine: servingEngine })} · ${sourceTitle}`
-    : effectiveModel !== undefined ? `${effectiveModel} · ${sourceTitle}` : sourceTitle;
-  const title = domainNote === undefined ? baseTitle : `${baseTitle}\n${domainNote}`;
-
-  if (engineLabel !== undefined) {
-    return (
-      <span
-        data-composer-engine-model={engineLabel}
-        className="flex h-7 max-w-56 min-w-0 items-center truncate px-1.5 text-[13px] text-ink-soft"
-        title={title}
-      >
-        {shortLabel ?? effectiveModel ?? (engineLabel !== undefined ? t('composer.engineModelDefault') : t('composer.inheritDefault'))}
-      </span>
     );
   }
-
   return (
-    <ComposerPanelOrigin className="flex min-w-0 max-w-full [&>div]:min-w-0">
-    <ModelPicker
-      id="composer-model-select"
-      rootClassName="relative flex min-w-0 max-w-full"
-      options={hasCatalog ? modelOptions : []}
-      allowCustomValue={false}
-      hideFilter={!hasCatalog}
-      // With no catalog the raw value renders verbatim — the read-only label.
-      value={hasCatalog ? (resolvedModelKey ?? model ?? '') : (effectiveModel ?? '')}
-      onChange={(next) => {
-        // The pick is a command the caller owns and may reject (a server-side
-        // rebind). Observe the returned promise so no rejection floats, and
-        // report the failure here: the trigger keeps rendering the live value,
-        // so a rejected pick must not read as applied.
-        void Promise.resolve(onChangeModel(next === '' ? undefined : next)).catch(
-          (error: unknown) => {
-            pushToast({
-              tone: 'error',
-              text: t('subagent.modelChangeFailed', {
-                detail: error instanceof Error ? error.message : String(error),
-              }),
-            });
-          },
-        );
-      }}
-      disabled={disabled}
-      openSignal={openSignal}
-      title={title}
-      ariaLabel={t('composer.modelAria')}
-      emptyText={t(effectiveModel === undefined ? 'composer.chooseModel' : 'composer.inheritDefault')}
-      searchPlaceholder={t('composer.modelSearchPlaceholder')}
-      density="compact"
-      placement="above"
-      hideChevron
-      // Capped at the room above the card (`--cp-max-h`): the provenance line,
-      // filter and effort row keep their height and the list scrolls, so a
-      // tall catalog on the centred /new hero never slides its first line
-      // under the page header.
-      panelClassName="composer-floating-panel max-h-[min(var(--available-height,420px),420px,calc(100dvh-120px))] w-96 [&>*]:shrink-0 [&>[role=listbox]]:min-h-0 [&>[role=listbox]]:shrink"
-      buttonClassName={`${STATUS_SEGMENT_CLASS} max-w-full ${
-        modelSource === 'override' ? STATUS_SEGMENT_SET : ''
-      } disabled:cursor-not-allowed disabled:opacity-60`}
-      triggerIcon={<EffortGauge efforts={displayEfforts} effort={showEffort ? effort : undefined} />}
-      triggerLabel={shortLabel}
-      triggerSuffix={
-        showEffort || domainNote !== undefined ? (
-          <>
-            {showEffort && effort !== undefined ? (
-              <>
-                <span aria-hidden className="shrink-0 text-ink-faint/60 @max-[24rem]/toolbar:hidden">·</span>
-                <span data-effort-label className="shrink-0 text-ink-faint @max-[24rem]/toolbar:hidden">
-                  {formatThinkingEffortWord(effort, t)}
-                </span>
-              </>
-            ) : null}
-            {domainNote !== undefined ? (
-              <span data-model-domain-note className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-rule">
-                <span className="sr-only">{domainNote}</span>
-              </span>
-            ) : null}
-          </>
-        ) : null
-      }
-      // Provenance lives in the panel, not on the chip: where the current
-      // model came from, plus a way back to the inherited default.
-      panelHeader={
-        <div data-model-provenance className="flex items-center gap-2 border-b border-hairline px-3 py-2">
-          <span className="min-w-0 flex-1 truncate text-[12px] font-normal text-ink-faint">
-            {[executorLabel, t(`composer.modelProvenance.${modelSource}`)].filter(Boolean).join(' · ')}
-          </span>
-          {executorLabel === undefined && model !== undefined && hasCatalog && !disabled ? (
-            <button
-              type="button"
-              data-model-reset
-              onClick={() => { void Promise.resolve(onChangeModel(undefined)).catch(() => undefined); }}
-              className="shrink-0 rounded-md px-1.5 py-0.5 text-[12px] font-normal text-ink-soft underline decoration-hairline-strong underline-offset-2 transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
-            >
-              {t('composer.modelResetDefault')}
-            </button>
-          ) : null}
-        </div>
-      }
-      panelFooter={
-        <>
-        {showEffort ? (
-          <div className="flex items-center gap-2 border-t border-hairline px-3 py-2">
-            <span className="shrink-0 text-[12px] font-normal text-ink-faint">
-              {t('composer.effortHeading')}
-            </span>
-            <div
-              role="radiogroup"
-              aria-label={t('composer.effortTitle')}
-              className="ml-auto flex items-center gap-0.5 rounded-md bg-paper p-0.5"
-            >
-              {displayEfforts.map((level) => (
-                <button
-                  key={level}
-                  type="button"
-                  role="radio"
-                  aria-checked={level === effort}
-                  data-effort={level}
-                  disabled={disabled}
-                  onClick={() => { onChangeEffort(level); }}
-                  className={`rounded-[5px] px-2 py-0.5 text-[12px] transition-colors focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none ${
-                    level === effort
-                      ? 'bg-panel text-ink shadow-[var(--kiki-sheet-shadow)]'
-                      : 'text-ink-soft hover:text-ink'
-                  }`}
-                >
-                  {t(`composer.effort.${level}` as I18nKey) === `composer.effort.${level}` ? <span className="capitalize">{level}</span> : t(`composer.effort.${level}` as I18nKey)}
-                </button>
-              ))}
-            </div>
-          </div>
-        ) : null}
-        {executorLabel === undefined ? <button
-          type="button"
-          data-model-configure
-          onClick={() => { void navigate('/settings/ai?tab=providers#st-card-providers-add'); }}
-          className="w-full border-t border-hairline px-3 py-2 text-left text-[12px] font-normal text-ink-soft hover:bg-paper hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
-        >
-          {t('composer.configureModels')}
-        </button> : null}
-        </>
-      }
-    />
-    </ComposerPanelOrigin>
-  );
-}
-
-/**
- * The model segment's lead mark: three rising bars, filled up to the current
- * thinking depth. It says "this is the model and how hard it thinks" before a
- * word is read, and moving the effort visibly moves the mark. Without an
- * effort (no levels offered) every bar rests faint.
- */
-function EffortGauge({
-  efforts,
-  effort,
-}: {
-  readonly efforts: readonly string[] | undefined;
-  readonly effort: string | undefined;
-}) {
-  const index = effort === undefined || efforts === undefined ? -1 : efforts.indexOf(effort);
-  const lit = index < 0 || efforts === undefined ? 0 : Math.max(1, Math.round(((index + 1) / efforts.length) * 3));
-  return (
-    <svg
-      aria-hidden
-      data-effort-gauge={lit}
-      viewBox="0 0 16 16"
-      className={`h-3.5 w-3.5 shrink-0 ${STATUS_SEGMENT_ICON_CLASS}`}
-    >
-      {[5, 8, 11].map((height, bar) => (
-        <rect
-          key={height}
-          x={2.6 + bar * 4}
-          y={13.2 - height}
-          width={2.6}
-          height={height}
-          rx={1.1}
-          fill="currentColor"
-          opacity={bar < lit ? 1 : 0.28}
-        />
-      ))}
-    </svg>
-  );
-}
-
-/**
- * Live status line under the composer card while a turn is active: working
- * status with relative last-response time, governance admission queue
- * ("Queued" with click popover), and the send-now shortcut hint while typing.
- */
-function ComposerWorkingLine({
-  startedAt,
-  lastResponseAt,
-  queued,
-  sendNowHint,
-}: {
-  readonly startedAt?: number | undefined;
-  readonly lastResponseAt: number | undefined;
-  readonly queued?: {
-    readonly waitedMs: number;
-    readonly modelId?: string;
-    readonly blockingRules?: readonly string[];
-  };
-  readonly sendNowHint: string | undefined;
-}) {
-  const { t } = useI18n();
-  const now = useNow();
-  const navigate = useNavigate();
-  const [detailsOpen, setDetailsOpen] = useState(false);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!detailsOpen) return undefined;
-    const onPointerDown = (e: MouseEvent) => {
-      if (
-        panelRef.current &&
-        !panelRef.current.contains(e.target as Node) &&
-        triggerRef.current &&
-        !triggerRef.current.contains(e.target as Node)
-      ) {
-        setDetailsOpen(false);
-      }
-    };
-    // Registered as an overlay so the session's Escape-to-stop yields while
-    // this is open: stopping propagation here did nothing for a sibling
-    // listener on the same target, and one Escape closed the popover and
-    // aborted the queued turn behind it.
-    const unregister = registerOverlay('composer-queued-details');
-    const onKeyDown = (e: globalThis.KeyboardEvent) => {
-      if (e.key !== 'Escape' || e.defaultPrevented) return;
-      e.preventDefault();
-      setDetailsOpen(false);
-      triggerRef.current?.focus();
-    };
-    window.addEventListener('pointerdown', onPointerDown);
-    window.addEventListener('keydown', onKeyDown);
-    return () => {
-      unregister();
-      window.removeEventListener('pointerdown', onPointerDown);
-      window.removeEventListener('keydown', onKeyDown);
-    };
-  }, [detailsOpen]);
-
-  const isQueued = queued !== undefined;
-  const waitedSec = queued !== undefined ? Math.max(1, Math.round(queued.waitedMs / 1000)) : 1;
-  const elapsedMs = startedAt === undefined ? undefined : Math.max(0, now - startedAt);
-  const quietMs = lastResponseAt === undefined ? undefined : Math.max(0, now - lastResponseAt);
-  const status = elapsedMs !== undefined
-    ? quietMs !== undefined && quietMs >= WORKING_QUIET_THRESHOLD_MS
-      ? t('composer.workingElapsedLastResponse', {
-          elapsed: formatWorkingDuration(elapsedMs, t),
-          ago: formatWorkingQuietAgo(quietMs, t),
-        })
-      : t('composer.workingElapsed', { elapsed: formatWorkingDuration(elapsedMs, t) })
-    : quietMs !== undefined
-      ? t('composer.workingLastResponse', { ago: formatWorkingQuietAgo(quietMs, t) })
-      : t('composer.working');
-
-  return (
-    <div className="relative flex min-w-0 items-center">
-      <p
-        data-composer-working
-        data-turn-started-at={startedAt}
-        data-last-response-at={lastResponseAt}
-        className="anim-enter flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint"
+    <div className="flex min-w-0 flex-1">
+      <button
+        ref={triggerRef}
+        type="button"
+        data-compact-model-sheet-trigger=""
+        title={title}
+        aria-label={ariaLabel}
+        aria-expanded={open}
+        onClick={() => { setOpen((prev) => !prev); }}
+        className={`${STATUS_SEGMENT_CLASS} max-w-full overflow-hidden @max-[30rem]/toolbar:gap-1 @max-[30rem]/toolbar:px-1.5`}
       >
-        <span aria-hidden className="status-dot-busy h-1.5 w-1.5 shrink-0 rounded-full bg-ink-soft" />
-        {isQueued ? (
-          <span data-composer-queued className="flex shrink-0 items-center gap-1">
-            <button
-              ref={triggerRef}
-              type="button"
-              data-composer-queued-trigger
-              aria-expanded={detailsOpen}
-              onClick={() => { setDetailsOpen((v) => !v); }}
-              className="font-normal text-ink-soft underline decoration-dotted transition-colors hover:text-ink hover:decoration-solid focus-visible:outline-2 focus-visible:outline-selected-ink"
-            >
-              {t('composer.queued')}
-            </button>
-          </span>
-        ) : (
-          <span className="min-w-0 truncate tabular-nums">{status}</span>
-        )}
-        {sendNowHint !== undefined ? (
-          <span
-            data-composer-send-now-hint
-            className="min-w-0 shrink-0 truncate @max-[360px]/statusline:hidden pointer-coarse:hidden"
-          >
-            · {sendNowHint}
+        {icon}
+        <span className="min-w-0 truncate">{label}</span>
+        {effortLabel !== undefined ? (
+          <span data-compact-model-effort="" className="shrink-0 whitespace-nowrap text-ink-faint">
+            · {effortLabel}
           </span>
         ) : null}
-      </p>
-
-      {isQueued && detailsOpen ? (
-        <Popover.Root
-          open
-          modal={false}
-          onOpenChange={(nextOpen, eventDetails) => {
-            if (nextOpen) return;
-            setDetailsOpen(false);
-            if (eventDetails.reason === 'escape-key') {
-              triggerRef.current?.focus();
-            }
-          }}
+        <Icon name="chevron" size={12} className="shrink-0 rotate-90 text-ink-faint" />
+      </button>
+      {open ? (
+        <AnchoredFloatingPopover
+          anchorRef={triggerRef}
+          side="top"
+          align="start"
+          sideOffset={8}
+          ownerId="compact-model-sheet"
+          dataAttrs={{ 'data-compact-model-sheet': '' }}
+          onOpenChange={guardSubPopoverDismiss}
+          className={`anim-enter flex w-[min(22rem,calc(100vw-24px))] flex-col gap-2 rounded-[14px] p-2.5 outline-none ${POPOVER_SURFACE_CLASS}`}
         >
-          <Popover.Portal>
-            <Popover.Positioner
-              anchor={triggerRef}
-              side="top"
-              align="start"
-              sideOffset={8}
-              collisionPadding={8}
-              positionMethod="fixed"
-              style={{ zIndex: floatingSurfaceZIndex(triggerRef.current) }}
-              className="outline-none"
-            >
-              <Popover.Popup
-                ref={panelRef}
-                data-composer-queued-popover
-                initialFocus={false}
-                finalFocus={false}
-                className="anim-enter w-72 max-w-[calc(100vw-24px)] rounded-lg border border-hairline bg-paper p-3 shadow-lg text-[12px] text-ink outline-none"
-              >
-                <div className="flex items-center justify-between pb-1.5 border-b border-hairline/60">
-                  <span className="font-bold">{t('composer.queuedTitle')}</span>
-                  <span className="font-mono text-[11px] text-ink-faint tabular-nums">
-                    {t('composer.queuedWaited', { seconds: waitedSec })}
-                  </span>
-                </div>
-                <p className="mt-1.5 leading-snug text-ink-soft text-[11.5px]">
-                  {t('composer.queuedBody')}
-                </p>
-                {queued.modelId !== undefined ? (
-                  <p className="mt-1 font-mono text-[11px] text-ink-faint">
-                    {t('composer.queuedModel', { model: queued.modelId })}
-                  </p>
-                ) : null}
-                {queued.blockingRules !== undefined && queued.blockingRules.length > 0 ? (
-                  <p className="mt-0.5 text-[11px] text-ink-faint">
-                    {t('composer.queuedRules', { rules: queued.blockingRules.join(', ') })}
-                  </p>
-                ) : null}
-                <div className="mt-2.5 pt-1.5 border-t border-hairline/60">
-                  <button
-                    type="button"
-                    data-composer-queued-usage
-                    onClick={() => {
-                      setDetailsOpen(false);
-                      void navigate('/usage');
-                    }}
-                    className="text-[11.5px] font-normal text-selected-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
-                  >
-                    {t('composer.queuedUsageLink')}
-                  </button>
-                </div>
-              </Popover.Popup>
-            </Popover.Positioner>
-          </Popover.Portal>
-        </Popover.Root>
+          {profileNode}
+          {executionNode}
+        </AnchoredFloatingPopover>
       ) : null}
     </div>
-  );
-}
-
-/** Small line glyph for file / folder chips and mention rows (no emoji). */
-function FileGlyph({ dir }: { dir: boolean }) {
-  return (
-    <svg width="13" height="13" viewBox="0 0 12 12" fill="none" aria-hidden className="shrink-0 text-ink-faint">
-      {dir ? (
-        <path d="M1.5 3.5a1 1 0 0 1 1-1h2.2l1 1.2h3.8a1 1 0 0 1 1 1V9a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1V3.5Z" stroke="currentColor" strokeWidth="1" strokeLinejoin="round" />
-      ) : (
-        <path d="M3 1.5h3.8L9.5 4.2V10a.5.5 0 0 1-.5.5H3a.5.5 0 0 1-.5-.5V2a.5.5 0 0 1 .5-.5ZM6.6 1.6v2.8h2.8" stroke="currentColor" strokeWidth="1" strokeLinejoin="round" />
-      )}
-    </svg>
   );
 }

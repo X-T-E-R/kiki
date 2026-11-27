@@ -4,9 +4,10 @@ import type { OAuthMethodStatus } from '@kiki/klient';
 import type { I18nKey } from '@kiki/session-core/i18n';
 
 import { useConnection } from '../state/connection';
-import { OAUTH_METHODS_QUERY_KEY } from './AccountSignIn';
 import { vendorLabelFor } from './providerPresets';
 import type { SearchableSelectOption, SearchableSelectOptionBadge } from './SearchableSelect';
+
+const OAUTH_METHODS_QUERY_KEY = ['oauth-methods'] as const;
 
 type Translate = (key: I18nKey, params?: Record<string, string | number>) => string;
 

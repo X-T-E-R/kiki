@@ -32,10 +32,12 @@ import { FIXTURE_TOKEN, startFixtureServer } from './fixture-server.mjs';
 import {
   collectMobileDomSnapshot,
   evaluateContradictoryUiState,
+  evaluateMobileColdBundleBudget,
   evaluateSafeAreaGeometry,
   evaluateSoftKeyboardGeometry,
   evaluateTouchTargets,
   evaluateUnintendedBlankVoids,
+  MOBILE_COLD_BUNDLE_BUDGET,
   MOBILE_DEVICE_PROFILES,
 } from './lib/mobile-geometry-probes.mjs';
 
@@ -508,7 +510,8 @@ const SCENARIOS = [
         let spaceSwitchAttempted = false;
         let spaceSwitchSucceeded = false;
         const targetSpaceBtn = page.locator('[data-space-switcher-menu] button', { hasText: 'ACME confidential' }).first();
-        if (await targetSpaceBtn.isVisible().catch(() => false)) {
+        const activeMainBtn = page.locator('[data-space-switcher-menu] [data-space-switch-item="main"]').first();
+        if ((await targetSpaceBtn.isVisible().catch(() => false)) && (await targetSpaceBtn.isEnabled().catch(() => false))) {
           spaceSwitchAttempted = true;
           await targetSpaceBtn.click();
           await page.waitForTimeout(350);
@@ -518,6 +521,16 @@ const SCENARIOS = [
               const menuClosed = document.querySelector('[data-space-switcher-menu]') === null;
               return menuClosed && switcherText.includes('ACME confidential');
             })
+            .catch(() => false);
+        } else if (await activeMainBtn.isVisible().catch(() => false)) {
+          // Two-Tier SpaceSwitchSheet rule (`!desktop && !isCurrentSpace`):
+          // non-current local homes are listed disabled in non-Electron WebViews while
+          // selecting the active home cleanly closes the sheet.
+          spaceSwitchAttempted = true;
+          await activeMainBtn.click();
+          await page.waitForTimeout(300);
+          spaceSwitchSucceeded = await page
+            .evaluate(() => document.querySelector('[data-space-switcher-menu]') === null)
             .catch(() => false);
         }
 
@@ -785,6 +798,363 @@ const SCENARIOS = [
         await context.close().catch(() => undefined);
         await new Promise((r) => server.close(r));
       }
+    },
+  },
+  {
+    id: 'mobile-shell-canonical-390x844',
+    profileId: 'iphone-390-2x',
+    fixture: 'external-engines',
+    async run({ browser, distDir, outDir }) {
+      const profile = MOBILE_DEVICE_PROFILES[this.profileId];
+      const fixture = await startFixtureServer({ port: 0, scenario: this.fixture });
+      const proxy = await startSameOriginProxyServer(distDir, fixture.http.address().port);
+      const origin = `http://127.0.0.1:${proxy.address().port}`;
+      const { context, page, pageErrors, guard } = await createMobilePage(browser, profile, {
+        locale: 'zh',
+        appShellToken: FIXTURE_TOKEN,
+      });
+      page.setDefaultTimeout(10000);
+      try {
+        const shots = [];
+        const findings = [];
+
+        // 1. Cold /m/assistant shell: zero bottom tab bar (G7), 84vw left nav drawer + push-aside (R4), kiki:host-back peel
+        await gotoChecked(page, guard, `${origin}/m/assistant`);
+        await guard(page.waitForSelector('[data-mobile-shell]', { timeout: 10000 }));
+        await page.waitForTimeout(350);
+
+        const tabBarCount = await page.locator('[data-mobile-tabbar]').count();
+        if (tabBarCount > 0) {
+          findings.push({
+            ruleId: 'MOBILE_BOTTOM_TABBAR_NOT_RETIRED',
+            severity: 'error',
+            standard: 'G7: /m/* must retire bottom tab bar in favor of 84vw left navigation drawer',
+            actual: { tabBarCount },
+            expected: { tabBarCount: 0 },
+          });
+        }
+
+        const navToggle = page.locator('[data-sidebar-menu]').first();
+        await guard(navToggle.waitFor({ state: 'visible', timeout: 10000 }));
+        await navToggle.click();
+        await guard(page.waitForSelector('[data-mobile-nav-drawer][data-open]', { timeout: 10000 }));
+        await page.waitForTimeout(250);
+        shots.push(await captureShot(page, outDir, 'mobile-390-nav-drawer'));
+
+        const navMetrics = await page.evaluate(() => {
+          const drawer = document.querySelector('[data-mobile-nav-drawer]');
+          const indent = document.querySelector('.kiki-drawer-indent');
+          const rect = drawer?.getBoundingClientRect();
+          return {
+            drawerWidth: rect ? Math.round(rect.width) : 0,
+            indentActive: indent?.hasAttribute('data-active') ?? false,
+          };
+        });
+        if (navMetrics.drawerWidth === 0 || navMetrics.drawerWidth > 320 || !navMetrics.indentActive) {
+          findings.push({
+            ruleId: 'MOBILE_LEFT_DRAWER_GEOMETRY_INVALID',
+            severity: 'error',
+            standard: 'R4: Left navigation drawer must be <= 320px (84vw) and activate Drawer.Indent[data-active]',
+            actual: navMetrics,
+            expected: { maxDrawerWidth: 320, indentActive: true },
+          });
+        }
+
+        // Peel nav drawer via kiki:host-back
+        const hostBackConsumed = await page.evaluate(() => {
+          const ev = new CustomEvent('kiki:host-back', { cancelable: true });
+          window.dispatchEvent(ev);
+          return ev.defaultPrevented;
+        });
+        await page.waitForTimeout(250);
+        const navStillOpen = (await page.locator('[data-mobile-nav-drawer][data-open]').count()) > 0;
+        if (!hostBackConsumed || navStillOpen) {
+          findings.push({
+            ruleId: 'HOST_BACK_DID_NOT_PEEL_DRAWER',
+            severity: 'error',
+            standard: 'kiki:host-back must preventDefault() and close the topmost open drawer',
+            actual: { hostBackConsumed, navStillOpen },
+            expected: { hostBackConsumed: true, navStillOpen: false },
+          });
+        }
+
+        // 2. Navigate to /m/c/local/session_fixture_external_engines: canonical Transcript + Composer,
+        //    zero [data-mobile-changes-card] (t1095.3), touch row actions (P0-3), unified DiffCard with diffWordsWithSpace
+        await gotoChecked(page, guard, `${origin}/m/c/local/session_fixture_external_engines`);
+        await guard(page.waitForSelector('[data-mobile-screen="chat"] [data-composer-card]', { timeout: 10000 }));
+        await page.waitForTimeout(400);
+
+        // Expand the latest folded activity group ("已处理") then the Edit tool row toggle to reveal unified mobile DiffCard
+        const foldBtn = page.locator('button', { hasText: '已处理' }).last();
+        if (await foldBtn.isVisible().catch(() => false)) {
+          await foldBtn.click();
+          await page.waitForTimeout(200);
+        }
+        const editCardBtn = page.locator('[data-tool-id="external:codex:call_edit"] [data-activity-toggle]').first();
+        if (await editCardBtn.isVisible().catch(() => false)) {
+          await editCardBtn.click({ position: { x: 20, y: 20 } });
+          await page.waitForTimeout(250);
+          await page.locator('[data-diff-card]').first().scrollIntoViewIfNeeded().catch(() => undefined);
+          await page.waitForTimeout(150);
+        }
+        shots.push(await captureShot(page, outDir, 'mobile-390-canonical-diff-and-actions'));
+
+        const chatChecks = await page.evaluate(() => {
+          const changesCards = document.querySelectorAll('[data-mobile-changes-card]').length;
+          const returnChips = document.querySelectorAll('[data-return-mobile-chip]').length;
+          const diffCard = document.querySelector('[data-diff-card]');
+          const gutterCell = diffCard?.querySelector('[data-diff-tag] span');
+          const gutterWidth = gutterCell ? Math.round(gutterCell.getBoundingClientRect().width) : 0;
+          const copyBtn = document.querySelector('[data-mobile-msg="assistant"] [data-row-action="copy"]');
+          const copyRect = copyBtn?.getBoundingClientRect();
+          return {
+            changesCards,
+            returnChips,
+            hasMobileDiff: diffCard?.hasAttribute('data-diff-mobile') ?? false,
+            diffSwipeIgnore: diffCard?.getAttribute('data-base-ui-swipe-ignore') ?? null,
+            gutterWidth,
+            copyHeight: copyRect ? Math.round(copyRect.height) : 0,
+          };
+        });
+        if (chatChecks.changesCards > 0 || chatChecks.returnChips > 0) {
+          findings.push({
+            ruleId: 'RETIRED_INLINE_CHANGES_OR_CHIP_PRESENT',
+            severity: 'error',
+            standard: 't1095.3 & P0-1: zero [data-mobile-changes-card] and zero floating [data-return-mobile-chip]',
+            actual: chatChecks,
+            expected: { changesCards: 0, returnChips: 0 },
+          });
+        }
+        if (!chatChecks.hasMobileDiff || chatChecks.diffSwipeIgnore !== 'x' || chatChecks.gutterWidth !== 36) {
+          findings.push({
+            ruleId: 'UNIFIED_MOBILE_DIFF_MISSING',
+            severity: 'error',
+            standard: 'Mobile DiffCard must render 36px unified single gutter and data-base-ui-swipe-ignore="x"',
+            actual: chatChecks,
+            expected: { hasMobileDiff: true, diffSwipeIgnore: 'x', gutterWidth: 36 },
+          });
+        }
+        if (chatChecks.copyHeight < 44) {
+          findings.push({
+            ruleId: 'ASSISTANT_ROW_ACTION_BELOW_44',
+            severity: 'error',
+            standard: 'P0-3: Always-visible assistant touch action strip must have >= 44px height',
+            actual: { copyHeight: chatChecks.copyHeight },
+            expected: { minCopyHeight: 44 },
+          });
+        }
+
+        // 3. Open + AddMenu sheet: Camera (capture="environment") + Photos + Files (P0-2)
+        await page.locator('[data-add-menu-trigger]').first().click();
+        await guard(page.waitForSelector('[data-add-panel="root"][data-open]', { timeout: 10000 }));
+        await page.waitForTimeout(250);
+        shots.push(await captureShot(page, outDir, 'mobile-390-add-media-sheet'));
+
+        const addSheetCheck = await page.evaluate(() => {
+          const panel = document.querySelector('[data-add-panel="root"]');
+          return {
+            isDrawerBottom: panel?.classList.contains('kiki-drawer-bottom') ?? false,
+            hasCamera: Boolean(panel?.querySelector('[data-add-camera]')),
+            hasPhotos: Boolean(panel?.querySelector('[data-add-photos]')),
+            hasFiles: Boolean(panel?.querySelector('[data-attach-button]')),
+            hasCaptureInput: Boolean(document.querySelector('input[data-composer-camera-input][capture="environment"]')),
+          };
+        });
+        if (!addSheetCheck.isDrawerBottom || !addSheetCheck.hasCamera || !addSheetCheck.hasPhotos || !addSheetCheck.hasFiles || !addSheetCheck.hasCaptureInput) {
+          findings.push({
+            ruleId: 'ADD_MENU_MEDIA_SHEET_INCOMPLETE',
+            severity: 'error',
+            standard: 'P0-2: Phone + sheet must render @base-ui/react/drawer with Camera (capture="environment"), Photos, and Files',
+            actual: addSheetCheck,
+            expected: { isDrawerBottom: true, hasCamera: true, hasPhotos: true, hasFiles: true, hasCaptureInput: true },
+          });
+        }
+        await page.evaluate(() => window.dispatchEvent(new CustomEvent('kiki:host-back', { cancelable: true })));
+        await page.waitForTimeout(250);
+
+        // 4. Open bottom-sheet Inspector RightRail ([data-mobile-inspector-drawer], P1-6)
+        await page.locator('[data-rail-toggle]').first().click();
+        await guard(page.waitForSelector('[data-mobile-inspector-drawer][data-open] [data-rail-owner]', { timeout: 10000 }));
+        await page.waitForTimeout(300);
+        shots.push(await captureShot(page, outDir, 'mobile-390-inspector-sheet'));
+        await page.evaluate(() => window.dispatchEvent(new CustomEvent('kiki:host-back', { cancelable: true })));
+        await page.waitForTimeout(250);
+
+        const snap = await page.evaluate(collectMobileDomSnapshot);
+        findings.push(
+          ...evaluateSafeAreaGeometry({ ...snap, safeArea: profile.safeArea, requireHeader: true, requireComposer: true }),
+          ...evaluateTouchTargets(snap.controls, { coarsePointer: snap.media.coarsePointer }),
+        );
+
+        return {
+          profile: profile.standard,
+          pageErrors,
+          shots,
+          findings,
+          metrics: { navMetrics, chatChecks, addSheetCheck },
+        };
+      } finally {
+        await context.close().catch(() => undefined);
+        await new Promise((r) => proxy.close(r));
+        await fixture.stop().catch(() => undefined);
+      }
+    },
+  },
+  {
+    id: 'android-412-ime-and-slash-clamp',
+    profileId: 'android-412-2x',
+    fixture: 'slash-commands',
+    async run({ browser, distDir, outDir }) {
+      const profile = MOBILE_DEVICE_PROFILES[this.profileId];
+      const fixture = await startFixtureServer({ port: 0, scenario: this.fixture });
+      const proxy = await startSameOriginProxyServer(distDir, fixture.http.address().port);
+      const origin = `http://127.0.0.1:${proxy.address().port}`;
+      const { context, page, pageErrors, guard } = await createMobilePage(browser, profile, {
+        locale: 'zh',
+        appShellToken: FIXTURE_TOKEN,
+      });
+      page.setDefaultTimeout(10000);
+      try {
+        const shots = [];
+        const findings = [];
+
+        // 1. /new?desktop=1 at 412x915: zero autofocus on coarse pointer (P1-4), zero [data-return-mobile-chip] (P0-1)
+        await gotoChecked(page, guard, `${origin}/new?desktop=1`);
+        await guard(page.waitForSelector('[data-composer-card]', { timeout: 10000 }));
+        await page.waitForTimeout(350);
+        shots.push(await captureShot(page, outDir, 'android-412-new-session'));
+
+        const newPageChecks = await page.evaluate(() => {
+          const active = document.activeElement;
+          const composerFocused = Boolean(
+            active instanceof HTMLElement &&
+              (active.matches('textarea, [contenteditable="true"]') || active.closest('[data-composer-input]') !== null),
+          );
+          const chipCount = document.querySelectorAll('[data-return-mobile-chip]').length;
+          const modelPillText = (document.querySelector('[data-compact-model-sheet-trigger]')?.textContent ?? '').trim();
+          return { composerFocused, chipCount, modelPillText };
+        });
+        if (newPageChecks.modelPillText.startsWith('Kiki ·') || newPageChecks.modelPillText.startsWith('Kiki·')) {
+          findings.push({
+            ruleId: 'MODEL_PILL_REDUNDANT_KIKI_PREFIX',
+            severity: 'error',
+            standard: 'P1-7: Default agent model pill on phone must omit redundant "Kiki ·" prefix',
+            actual: { modelPillText: newPageChecks.modelPillText },
+            expected: { omitsKikiPrefix: true },
+          });
+        }
+
+        // Open CompactModelSheet (@base-ui/react/drawer bottom sheet, P2-1) on /new?desktop=1
+        await page.locator('[data-compact-model-sheet-trigger]').first().click();
+        await guard(page.waitForSelector('[data-compact-model-sheet][data-open]', { timeout: 10000 }));
+        await page.waitForTimeout(250);
+        shots.push(await captureShot(page, outDir, 'android-412-model-sheet'));
+        await page.evaluate(() => window.dispatchEvent(new CustomEvent('kiki:host-back', { cancelable: true })));
+        await page.waitForTimeout(250);
+        if (newPageChecks.composerFocused) {
+          findings.push({
+            ruleId: 'COARSE_POINTER_AUTOFOCUSED_NEW_SESSION',
+            severity: 'error',
+            standard: 'P1-4: /new must not autoFocus composer input on coarse pointers',
+            actual: newPageChecks,
+            expected: { composerFocused: false },
+          });
+        }
+        if (newPageChecks.chipCount > 0) {
+          findings.push({
+            ruleId: 'FLOATING_RETURN_MOBILE_CHIP_PRESENT',
+            severity: 'error',
+            standard: 'P0-1: Floating [data-return-mobile-chip] must be removed from workbench stage',
+            actual: newPageChecks,
+            expected: { chipCount: 0 },
+          });
+        }
+
+        // 2. Inject --kiki-ime-height: 398px (412x517 visible stage) on /new?desktop=1 AND type "/"
+        //    to verify slash completion menu clamps strictly below WorkspaceHeader (P1-3)!
+        await gotoChecked(page, guard, `${origin}/s/session_fixture_slash?desktop=1`);
+        await guard(page.waitForSelector('[data-composer-card]', { timeout: 10000 }));
+        await page.waitForTimeout(350);
+
+        await page.evaluate(() => {
+          document.documentElement.style.setProperty('--kiki-ime-height', '398px');
+        });
+        await page.waitForTimeout(150);
+
+        const input = page.locator('[data-composer-input]').first();
+        await input.click();
+        await page.keyboard.type('/');
+        await guard(page.waitForSelector('[data-composer-menu]', { timeout: 10000 }));
+        await page.waitForTimeout(250);
+        shots.push(await captureShot(page, outDir, 'android-412-ime-517-slash-clamped'));
+
+        const imeSlashMetrics = await page.evaluate(() => {
+          const header = document.querySelector('[data-main-header], header');
+          const menu = document.querySelector('[data-composer-menu]');
+          const composer = document.querySelector('[data-composer-card]');
+          const hRect = header?.getBoundingClientRect();
+          const mRect = menu?.getBoundingClientRect();
+          const cRect = composer?.getBoundingClientRect();
+          return {
+            visualHeightVar: document.documentElement.style.getPropertyValue('--kiki-visual-height'),
+            keyboardAttr: document.documentElement.hasAttribute('data-keyboard'),
+            headerBottom: hRect ? Math.round(hRect.bottom) : 0,
+            menuTop: mRect ? Math.round(mRect.top) : 0,
+            menuBottom: mRect ? Math.round(mRect.bottom) : 0,
+            composerBottom: cRect ? Math.round(cRect.bottom) : 0,
+          };
+        });
+
+        if (
+          imeSlashMetrics.visualHeightVar !== '517px' ||
+          !imeSlashMetrics.keyboardAttr ||
+          imeSlashMetrics.menuTop < imeSlashMetrics.headerBottom - 2 ||
+          imeSlashMetrics.composerBottom > 519
+        ) {
+          findings.push({
+            ruleId: 'IME_SLASH_MENU_CLIPPED_OR_OCCLUDED',
+            severity: 'error',
+            standard: 'P1-3: Under 398px Android IME (412x517), slash menu must stay below headerBottom and composer above 517px',
+            actual: imeSlashMetrics,
+            expected: {
+              visualHeightVar: '517px',
+              keyboardAttr: true,
+              minMenuTop: imeSlashMetrics.headerBottom,
+              maxComposerBottom: 517,
+            },
+          });
+        }
+
+        return {
+          profile: profile.standard,
+          pageErrors,
+          shots,
+          findings,
+          metrics: { newPageChecks, imeSlashMetrics },
+        };
+      } finally {
+        await context.close().catch(() => undefined);
+        await new Promise((r) => proxy.close(r));
+        await fixture.stop().catch(() => undefined);
+      }
+    },
+  },
+  {
+    id: 'mobile-cold-bundle-budget',
+    fixture: 'built-dist',
+    async run({ distDir }) {
+      const { findings, metrics } = evaluateMobileColdBundleBudget({
+        distDir,
+        baselineColdGzipBytes: MOBILE_COLD_BUNDLE_BUDGET.baselineColdGzipBytes,
+        maxDeltaGzipBytes: MOBILE_COLD_BUNDLE_BUDGET.maxDeltaGzipBytes,
+      });
+      return {
+        profile: `Cold /m/* chat-inclusive static ES closure (level-9 gzip <= ${MOBILE_COLD_BUNDLE_BUDGET.maxAllowedGzipBytes} B)`,
+        pageErrors: [],
+        shots: [],
+        findings,
+        metrics,
+      };
     },
   },
 ];

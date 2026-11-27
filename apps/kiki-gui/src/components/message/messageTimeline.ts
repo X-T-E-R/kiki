@@ -13,6 +13,8 @@ import {
   type UserBlock,
 } from '@kiki/session-core/session';
 
+import type { PersonaAvatarData } from '../persona/PersonaAvatar';
+
 function turnOf(block: Block): string | undefined {
   if (block.kind === 'subagent') return block.parentTurnId;
   if (block.kind === 'question' || block.kind === 'approval') {
@@ -100,4 +102,26 @@ export function presenceOf(nodes: readonly MessageViewNode[], busy: boolean): Pr
   const summary = last?.kind === 'activity-summary' ? last as ActivitySummary : undefined;
   const steps = summary === undefined ? 0 : summary.members.filter((member) => member.kind === 'tool' || member.kind === 'shell').length;
   return { kind: 'working', reads: summary?.counts.reads ?? 0, commands: summary?.counts.commands ?? 0, steps };
+}
+
+export function speakerOf(block: MessageBlock, fallback: PersonaAvatarData | undefined, agentLabel: string): PersonaAvatarData {
+  if (block.personaId !== undefined) {
+    const sameAsFallback = fallback !== undefined && fallback.id === block.personaId;
+    return {
+      id: block.personaId,
+      name: block.senderName ?? fallback?.name ?? block.personaId,
+      avatarUrl: sameAsFallback ? fallback.avatarUrl : `/api/personas/${encodeURIComponent(block.personaId)}/avatar`,
+    };
+  }
+  return fallback ?? { id: 'kiki-agent', name: agentLabel };
+}
+
+export function activitySteps(summary: ActivitySummary): number {
+  return summary.members.filter((member) => member.kind === 'tool' || member.kind === 'shell').length;
+}
+
+export function isSilentActivity(summary: ActivitySummary): boolean {
+  if (summary.running || summary.failed > 0) return false;
+  const { reads, commands, subagents, memories, thinking } = summary.counts;
+  return activitySteps(summary) === 0 && reads + commands + subagents + memories + thinking === 0;
 }

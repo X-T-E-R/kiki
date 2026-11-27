@@ -1,3 +1,4 @@
+import { Drawer } from '@base-ui/react/drawer';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
@@ -21,11 +22,15 @@ import {
   writeLayoutPreferences,
 } from '@kiki/session-core/settings';
 
+import { Icon } from '../components/icons';
 import { ToastAnchor, Toasts } from '../components/Toasts';
+import { Wordmark } from '../components/Wordmark';
 import { useI18n } from '../i18n';
 import { androidBridge, subscribeAndroidHostEvents } from '../lib/androidBridge';
 import { isEmbeddedAndroidHost } from '../lib/appShell';
 import { beginExplicitConversationOpen, useConversationSeen } from '../lib/conversationOpen';
+import { useHostBackBridge, useLayerHistory } from '../lib/layerHistory';
+import { anyOverlayOpen } from '../lib/uiBusy';
 import { useLayoutPreferences, useVisualViewportHeightVar } from '../lib/layoutHooks';
 import { requestScopeNavigation } from '../lib/navScope';
 import { remoteSpaceKey, remoteSpaceScope } from '../lib/remoteConnections';
@@ -42,10 +47,9 @@ import { useSpacePreferencesFrame } from '../lib/spacePreferences';
 import { spaceSettingsTargetOf } from '../lib/spaceSettings';
 import { useConnection } from '../state/connection';
 
+import { lazyComponent } from '../lib/lazyComponent';
 import { MobileChatScreen } from './chat/MobileChatScreen';
-import { MobileVoiceOverlay } from './chat/MobileVoiceOverlay';
 import type { AssistantComputer } from './components/AssistantSetupView';
-import { QuickCaptureSheet } from './components/QuickCaptureSheet';
 import { useMobileClientResolver } from './mobileClientPool';
 import {
   desktopWorkbenchPath,
@@ -59,12 +63,24 @@ import {
   normalizeDeepLinkRoute,
   writeDesktopOverride,
 } from './mobileShellRoute';
-import { MobileSpaceSheet } from './MobileSpaceSheet';
-import { MobileTabBar, type MobileRootTab } from './MobileTabBar';
 import { AssistantTab } from './tabs/AssistantTab';
-import { ChatsTab } from './tabs/ChatsTab';
-import { SpacesTab } from './tabs/SpacesTab';
 import { useSoftKeyboardOpen } from './useSoftKeyboardOpen';
+
+const ChatsTab = lazyComponent(() => import('./tabs/ChatsTab').then((m) => m.ChatsTab));
+const SpacesTab = lazyComponent(() => import('./tabs/SpacesTab').then((m) => m.SpacesTab));
+const MobileSpaceSheet = lazyComponent(() => import('./MobileSpaceSheet').then((m) => m.MobileSpaceSheet));
+const QuickCaptureSheet = lazyComponent(() => import('./components/QuickCaptureSheet').then((m) => m.QuickCaptureSheet));
+const MobileVoiceOverlay = lazyComponent(() => import('./chat/MobileVoiceOverlay').then((m) => m.MobileVoiceOverlay));
+
+if (import.meta.env.MODE === 'test') {
+  await Promise.all([
+    ChatsTab.preload(),
+    SpacesTab.preload(),
+    MobileSpaceSheet.preload(),
+    QuickCaptureSheet.preload(),
+    MobileVoiceOverlay.preload(),
+  ]);
+}
 
 function ChatRouteBridge({
   resolveClient,
@@ -508,202 +524,349 @@ export function MobileAppShell() {
 
   const inChat = isMobileChatPath(location.pathname);
   const inOnboarding = location.pathname === MOBILE_ONBOARDING_PATH;
-  const activeTab: MobileRootTab = location.pathname.startsWith(MOBILE_CHATS_PATH)
+  const activeTab: 'assistant' | 'chats' | 'spaces' = location.pathname.startsWith(MOBILE_CHATS_PATH)
     ? 'chats'
     : location.pathname.startsWith(MOBILE_SPACES_PATH)
       ? 'spaces'
       : 'assistant';
 
+  const [navDrawerOpen, setNavDrawerOpen] = useState(false);
+  useHostBackBridge();
+  useLayerHistory('mobile-nav-drawer', navDrawerOpen, () => {
+    setNavDrawerOpen(false);
+  });
+
+  useEffect(() => {
+    setNavDrawerOpen(false);
+  }, [location.pathname]);
+
+  const navBadgeTotal = globalInbox.needsYouCount + globalInbox.unreadCount;
 
   return (
-    <div
-      ref={shellRef}
-      data-mobile-shell
-      data-keyboard-open={keyboardOpen ? '' : undefined}
-      className="kiki-mobile-shell"
-    >
-      <ToastAnchor className="kiki-mobile-toast-anchor" />
-      <Routes>
-        <Route
-          path="/m/assistant"
-          element={
-            <AssistantTab
-              scopeSpaceKey={activeScopeKey}
-              computers={assistantComputers}
-              resolveClient={resolveClient}
-              resolveSpaceName={resolveSpaceName}
-              needsYouItems={globalInbox.active.filter((item) => item.needsYou)}
-              onOpenItem={openItem}
-              onRefresh={() => {
-                void queryClient.invalidateQueries({ queryKey: ['mobile-sessions'] });
-                void multiSpace.refetchRemotes();
-              }}
-              onPairComputer={() => { void navigate(MOBILE_SPACES_PATH); }}
-              onOpenWorkbench={openDesktopWorkbench}
-              onOpenProviderSettings={openProviderSettings}
-              onOpenVoiceForChat={(onResult) => {
-                voiceCallbackRef.current = onResult;
-                setVoiceOpen(true);
-              }}
-              onScopeChange={(scope) => { writeLayoutPreferences({ spaceScope: scope }); }}
-            />
-          }
-        />
-        <Route path={MOBILE_TODAY_PATH} element={<Navigate to={MOBILE_ASSISTANT_PATH} replace />} />
-        <Route
-          path="/m/chats"
-          element={
-            <ChatsTab
-              spaceLabel={currentSpaceLabel}
-              spaceStatusTone={currentSpaceTone}
-              items={allChatItems}
-              showSpaceTag={activeScope === ALL_SPACE_SCOPE && multiSpace.hasMultipleSpaces}
-              hasMore={hasMoreChats}
-              loadingMore={loadingMoreChats}
-              onLoadMore={loadMoreChats}
-              onSearch={searchChatItems}
-              onOpenSpaceSheet={() => { setSpaceSheetOpen(true); }}
-              onOpenItem={openItem}
-              onMarkRead={(item) => { markConversationSeen(item.ref, item.attentionCursor); }}
-              onArchive={(item) => { void archiveItem(item); }}
-            />
-          }
-        />
-        <Route
-          path="/m/spaces"
-          element={
-            <SpacesTab
-              localSpaceKey={multiSpace.localSpaceKey}
-              localSpaceName={multiSpace.localSpaceName}
-              localRunningCount={localCounts.running}
-              remoteConnections={multiSpace.remoteConnections}
-              healthBySpace={multiSpace.healthBySpace}
-              activeScope={activeScope}
-              onSelectScope={(scope) => {
-                writeLayoutPreferences({ spaceScope: scope });
-                void navigate(MOBILE_ASSISTANT_PATH);
-              }}
-              onRefreshRemotes={multiSpace.refetchRemotes}
-              onOpenWorkbench={() => { openDesktopWorkbench(); }}
-            />
-          }
-        />
-        <Route
-          path="/m/c/:spaceKey/:sessionId"
-          element={
-            <ChatRouteBridge
-              resolveClient={resolveClient}
-              resolveSpaceName={resolveSpaceName}
-              onBack={() => {
-                if (window.history.length > 1) void navigate(-1);
-                else void navigate(MOBILE_CHATS_PATH);
-              }}
-              onOpenWorkbench={openDesktopWorkbench}
-              onOpenProviderSettings={openProviderSettings}
-              onOpenVoiceForChat={(onResult) => {
-                voiceCallbackRef.current = onResult;
-                setVoiceOpen(true);
-              }}
-            />
-          }
-        />
-        <Route
-          path="/m/onboarding"
-          element={
-            <SpacesTab
-              localSpaceKey={multiSpace.localSpaceKey}
-              localSpaceName={multiSpace.localSpaceName}
-              localRunningCount={localCounts.running}
-              remoteConnections={multiSpace.remoteConnections}
-              healthBySpace={multiSpace.healthBySpace}
-              activeScope={activeScope}
-              onSelectScope={(scope) => {
-                writeLayoutPreferences({ spaceScope: scope });
-                void navigate(MOBILE_ASSISTANT_PATH);
-              }}
-              onRefreshRemotes={multiSpace.refetchRemotes}
-              onOpenWorkbench={() => { openDesktopWorkbench(); }}
-            />
-          }
-        />
-        <Route path="/s/:sessionId/*" element={<DesktopSessionRouteRedirect />} />
-        <Route path="/sessions/:sessionId/*" element={<DesktopSessionRouteRedirect />} />
-        <Route path="/p/:connectionId/s/:sessionId/*" element={<DesktopSessionRouteRedirect />} />
-        <Route path="*" element={<Navigate to={MOBILE_ASSISTANT_PATH} replace />} />
-      </Routes>
+    <Drawer.Provider>
+      <div
+        ref={shellRef}
+        data-mobile-shell
+        data-keyboard-open={keyboardOpen ? '' : undefined}
+        className="kiki-mobile-shell"
+      >
+        <ToastAnchor className="kiki-mobile-toast-anchor" />
 
-      <MobileTabBar
-        activeTab={activeTab}
-        hidden={inChat || inOnboarding}
-        needsYouCount={globalInbox.needsYouCount}
-        unreadCount={globalInbox.unreadCount}
-        onSelectTab={(path) => { void navigate(path); }}
-        onQuickCapture={() => {
-          setQuickInitialText('');
-          setQuickOpen(true);
-        }}
-        onVoiceCapture={() => {
-          voiceCallbackRef.current = (spoken) => {
-            setQuickInitialText(spoken);
-            setQuickOpen(true);
-          };
-          setVoiceOpen(true);
-        }}
-      />
+        <Drawer.Root
+          open={navDrawerOpen}
+          modal="trap-focus"
+          onOpenChange={(nextOpen, eventDetails) => {
+            if (!nextOpen && (eventDetails.reason === 'outside-press' || eventDetails.reason === 'escape-key') && anyOverlayOpen()) {
+              eventDetails.cancel();
+              return;
+            }
+            setNavDrawerOpen(nextOpen);
+          }}
+          swipeDirection="left"
+        >
+          {!inChat && !inOnboarding && !spaceSheetOpen && !quickOpen && !voiceOpen ? (
+            <Drawer.SwipeArea
+              swipeDirection="right"
+              data-mobile-swipe-area=""
+              className="fixed inset-y-0 left-0 z-30 w-5"
+            />
+          ) : null}
 
-      <MobileSpaceSheet
-        open={spaceSheetOpen}
-        onClose={() => { setSpaceSheetOpen(false); }}
-        activeScope={activeScope}
-        onSelectScope={(scope) => { writeLayoutPreferences({ spaceScope: scope }); }}
-        localSpaceKey={multiSpace.localSpaceKey}
-        localSpaceName={multiSpace.localSpaceName}
-        localWaitingCount={localCounts.waiting}
-        localRunningCount={localCounts.running}
-        healthBySpace={multiSpace.healthBySpace}
-        remoteConnections={multiSpace.remoteConnections}
-        totalOnlineCount={onlineSpacesCount}
-        totalWaitingCount={globalInbox.needsYouCount}
-        onPairNew={() => { void navigate(MOBILE_SPACES_PATH); }}
-        onRetryRemotes={multiSpace.refetchRemotes}
-        onOpenWorkbench={() => { openDesktopWorkbench(); }}
-      />
+          <Drawer.Indent className="kiki-drawer-indent flex min-h-0 flex-1 flex-col">
+            <Routes>
+              <Route
+                path="/m/assistant"
+                element={
+                  <AssistantTab
+                    scopeSpaceKey={activeScopeKey}
+                    computers={assistantComputers}
+                    resolveClient={resolveClient}
+                    resolveSpaceName={resolveSpaceName}
+                    needsYouItems={globalInbox.active.filter((item) => item.needsYou)}
+                    onOpenItem={openItem}
+                    onRefresh={() => {
+                      void queryClient.invalidateQueries({ queryKey: ['mobile-sessions'] });
+                      void multiSpace.refetchRemotes();
+                    }}
+                    onPairComputer={() => { void navigate(MOBILE_SPACES_PATH); }}
+                    onOpenWorkbench={openDesktopWorkbench}
+                    onOpenProviderSettings={openProviderSettings}
+                    onOpenVoiceForChat={(onResult) => {
+                      voiceCallbackRef.current = onResult;
+                      setVoiceOpen(true);
+                    }}
+                    onScopeChange={(scope) => { writeLayoutPreferences({ spaceScope: scope }); }}
+                    onOpenNavDrawer={() => { setNavDrawerOpen(true); }}
+                    navUnreadBadge={navBadgeTotal}
+                  />
+                }
+              />
+              <Route path={MOBILE_TODAY_PATH} element={<Navigate to={MOBILE_ASSISTANT_PATH} replace />} />
+              <Route
+                path="/m/chats"
+                element={
+                  <ChatsTab
+                    spaceLabel={currentSpaceLabel}
+                    spaceStatusTone={currentSpaceTone}
+                    items={allChatItems}
+                    showSpaceTag={activeScope === ALL_SPACE_SCOPE && multiSpace.hasMultipleSpaces}
+                    hasMore={hasMoreChats}
+                    loadingMore={loadingMoreChats}
+                    onLoadMore={loadMoreChats}
+                    onSearch={searchChatItems}
+                    onOpenSpaceSheet={() => { setSpaceSheetOpen(true); }}
+                    onOpenItem={openItem}
+                    onMarkRead={(item) => { markConversationSeen(item.ref, item.attentionCursor); }}
+                    onArchive={(item) => { void archiveItem(item); }}
+                    onOpenNavDrawer={() => { setNavDrawerOpen(true); }}
+                  />
+                }
+              />
+              <Route
+                path="/m/spaces"
+                element={
+                  <SpacesTab
+                    localSpaceKey={multiSpace.localSpaceKey}
+                    localSpaceName={multiSpace.localSpaceName}
+                    localRunningCount={localCounts.running}
+                    remoteConnections={multiSpace.remoteConnections}
+                    healthBySpace={multiSpace.healthBySpace}
+                    activeScope={activeScope}
+                    onSelectScope={(scope) => {
+                      writeLayoutPreferences({ spaceScope: scope });
+                      void navigate(MOBILE_ASSISTANT_PATH);
+                    }}
+                    onRefreshRemotes={multiSpace.refetchRemotes}
+                    onOpenWorkbench={() => { openDesktopWorkbench(); }}
+                    onOpenNavDrawer={() => { setNavDrawerOpen(true); }}
+                  />
+                }
+              />
+              <Route
+                path="/m/c/:spaceKey/:sessionId"
+                element={
+                  <ChatRouteBridge
+                    resolveClient={resolveClient}
+                    resolveSpaceName={resolveSpaceName}
+                    onBack={() => {
+                      if (window.history.length > 1) void navigate(-1);
+                      else void navigate(MOBILE_CHATS_PATH);
+                    }}
+                    onOpenWorkbench={openDesktopWorkbench}
+                    onOpenProviderSettings={openProviderSettings}
+                    onOpenVoiceForChat={(onResult) => {
+                      voiceCallbackRef.current = onResult;
+                      setVoiceOpen(true);
+                    }}
+                  />
+                }
+              />
+              <Route
+                path="/m/onboarding"
+                element={
+                  <SpacesTab
+                    localSpaceKey={multiSpace.localSpaceKey}
+                    localSpaceName={multiSpace.localSpaceName}
+                    localRunningCount={localCounts.running}
+                    remoteConnections={multiSpace.remoteConnections}
+                    healthBySpace={multiSpace.healthBySpace}
+                    activeScope={activeScope}
+                    onSelectScope={(scope) => {
+                      writeLayoutPreferences({ spaceScope: scope });
+                      void navigate(MOBILE_ASSISTANT_PATH);
+                    }}
+                    onRefreshRemotes={multiSpace.refetchRemotes}
+                    onOpenWorkbench={() => { openDesktopWorkbench(); }}
+                  />
+                }
+              />
+              <Route path="/s/:sessionId/*" element={<DesktopSessionRouteRedirect />} />
+              <Route path="/sessions/:sessionId/*" element={<DesktopSessionRouteRedirect />} />
+              <Route path="/p/:connectionId/s/:sessionId/*" element={<DesktopSessionRouteRedirect />} />
+              <Route path="*" element={<Navigate to={MOBILE_ASSISTANT_PATH} replace />} />
+            </Routes>
+          </Drawer.Indent>
 
-      <QuickCaptureSheet
-        open={quickOpen}
-        initialText={quickInitialText}
-        targetSpaceKey={targetCaptureSpaceKey}
-        targetSpaceName={targetCaptureSpaceName}
-        client={resolveClient(targetCaptureSpaceKey)}
-        onClose={() => { setQuickOpen(false); }}
-        onOpenSpacePicker={() => {
-          setQuickOpen(false);
-          setSpaceSheetOpen(true);
-        }}
-        onOpenVoice={() => {
-          voiceCallbackRef.current = (spoken) => {
-            setQuickInitialText(spoken);
-            setQuickOpen(true);
-          };
-          setVoiceOpen(true);
-        }}
-        onCreatedSession={(spaceKey, sessionId) => {
-          void queryClient.invalidateQueries({ queryKey: ['mobile-sessions'] });
-          void navigate(mobileChatPath(spaceKey, sessionId));
-        }}
-      />
+          <Drawer.Portal>
+            <Drawer.Backdrop className="kiki-drawer-backdrop" />
+            <Drawer.Viewport className="kiki-drawer-viewport-left">
+              <Drawer.Popup
+                data-mobile-nav-drawer=""
+                aria-label={t('mobile.tab.nav')}
+                className="kiki-drawer-left pt-[var(--kiki-safe-top-inset)] pb-[var(--kiki-safe-bottom-inset)]"
+              >
+                <div className="flex h-12 shrink-0 items-center justify-between border-b border-hairline/70 pl-[18px] pr-2.5">
+                  <Wordmark size="md" />
+                  <button
+                    type="button"
+                    aria-label={t('common.close')}
+                    onClick={() => { setNavDrawerOpen(false); }}
+                    className="flex h-11 w-11 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink"
+                  >
+                    <Icon name="close" size={16} />
+                  </button>
+                </div>
 
-      <MobileVoiceOverlay
-        open={voiceOpen}
-        onClose={() => { setVoiceOpen(false); }}
-        onSubmitText={(spoken) => {
-          const cb = voiceCallbackRef.current;
-          voiceCallbackRef.current = null;
-          cb?.(spoken);
-        }}
-      />
+                <div className="px-2.5 pt-3 pb-2">
+                  <button
+                    type="button"
+                    data-mobile-quick-trigger=""
+                    onClick={() => {
+                      setNavDrawerOpen(false);
+                      setQuickInitialText('');
+                      setQuickOpen(true);
+                    }}
+                    className="flex min-h-11 w-full items-center gap-2.5 rounded-xl bg-ink/[0.05] px-3 text-left text-[14px] font-normal text-ink transition-colors hover:bg-ink/[0.08]"
+                  >
+                    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/14 text-accent-ink">
+                      <Icon name="plus" size={12} />
+                    </span>
+                    <span className="flex-1 truncate">{t('mobile.tab.quick')}</span>
+                  </button>
+                </div>
 
-      <Toasts />
-    </div>
+                <nav aria-label="Mobile navigation" className="flex-1 space-y-1 overflow-y-auto px-2.5 py-1">
+                  <button
+                    type="button"
+                    data-mobile-tab="assistant"
+                    aria-current={activeTab === 'assistant' ? 'page' : undefined}
+                    onClick={() => {
+                      setNavDrawerOpen(false);
+                      void navigate(MOBILE_ASSISTANT_PATH);
+                    }}
+                    className={`flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-[14px] transition-colors ${
+                      activeTab === 'assistant'
+                        ? 'bg-selected font-normal text-ink'
+                        : 'text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
+                    }`}
+                  >
+                    <Icon name="persona" size={16} />
+                    <span className="flex-1 truncate">{t('mobile.tab.assistant')}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    data-mobile-tab="chats"
+                    aria-current={activeTab === 'chats' ? 'page' : undefined}
+                    onClick={() => {
+                      setNavDrawerOpen(false);
+                      void navigate(MOBILE_CHATS_PATH);
+                    }}
+                    className={`flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-[14px] transition-colors ${
+                      activeTab === 'chats'
+                        ? 'bg-selected font-normal text-ink'
+                        : 'text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
+                    }`}
+                  >
+                    <Icon name="thread" size={16} />
+                    <span className="flex-1 truncate">{t('mobile.tab.chats')}</span>
+                    {globalInbox.needsYouCount > 0 ? (
+                      <span className="rounded-full bg-accent px-2 py-0.5 text-[11px] font-bold text-on-accent tabular-nums">
+                        {globalInbox.needsYouCount}
+                      </span>
+                    ) : globalInbox.unreadCount > 0 ? (
+                      <span className="h-2 w-2 rounded-full bg-selected-ink" aria-hidden="true" />
+                    ) : null}
+                  </button>
+
+                  <button
+                    type="button"
+                    data-mobile-tab="spaces"
+                    aria-current={activeTab === 'spaces' ? 'page' : undefined}
+                    onClick={() => {
+                      setNavDrawerOpen(false);
+                      void navigate(MOBILE_SPACES_PATH);
+                    }}
+                    className={`flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-[14px] transition-colors ${
+                      activeTab === 'spaces'
+                        ? 'bg-selected font-normal text-ink'
+                        : 'text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
+                    }`}
+                  >
+                    <Icon name="web" size={16} />
+                    <span className="flex-1 truncate">{t('mobile.tab.spaces')}</span>
+                  </button>
+                </nav>
+
+                <div className="border-t border-hairline/70 px-2.5 py-2">
+                  <button
+                    type="button"
+                    data-mobile-open-workbench=""
+                    onClick={() => {
+                      setNavDrawerOpen(false);
+                      openDesktopWorkbench();
+                    }}
+                    className="flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-[13.5px] text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink"
+                  >
+                    <Icon name="expand" size={16} />
+                    <span className="flex-1 truncate">{t('mobile.chat.openWorkbench')}</span>
+                  </button>
+                </div>
+              </Drawer.Popup>
+            </Drawer.Viewport>
+          </Drawer.Portal>
+        </Drawer.Root>
+
+        {spaceSheetOpen ? (
+          <MobileSpaceSheet
+            open={spaceSheetOpen}
+            onClose={() => { setSpaceSheetOpen(false); }}
+            activeScope={activeScope}
+            onSelectScope={(scope) => { writeLayoutPreferences({ spaceScope: scope }); }}
+            localSpaceKey={multiSpace.localSpaceKey}
+            localSpaceName={multiSpace.localSpaceName}
+            localWaitingCount={localCounts.waiting}
+            localRunningCount={localCounts.running}
+            healthBySpace={multiSpace.healthBySpace}
+            remoteConnections={multiSpace.remoteConnections}
+            totalOnlineCount={onlineSpacesCount}
+            totalWaitingCount={globalInbox.needsYouCount}
+            onPairNew={() => { void navigate(MOBILE_SPACES_PATH); }}
+            onRetryRemotes={multiSpace.refetchRemotes}
+            onOpenWorkbench={() => { openDesktopWorkbench(); }}
+          />
+        ) : null}
+
+        {quickOpen ? (
+          <QuickCaptureSheet
+            open={quickOpen}
+            initialText={quickInitialText}
+            targetSpaceKey={targetCaptureSpaceKey}
+            targetSpaceName={targetCaptureSpaceName}
+            client={resolveClient(targetCaptureSpaceKey)}
+            onClose={() => { setQuickOpen(false); }}
+            onOpenSpacePicker={() => {
+              setQuickOpen(false);
+              setSpaceSheetOpen(true);
+            }}
+            onOpenVoice={() => {
+              voiceCallbackRef.current = (spoken) => {
+                setQuickInitialText(spoken);
+                setQuickOpen(true);
+              };
+              setVoiceOpen(true);
+            }}
+            onCreatedSession={(spaceKey, sessionId) => {
+              void queryClient.invalidateQueries({ queryKey: ['mobile-sessions'] });
+              void navigate(mobileChatPath(spaceKey, sessionId));
+            }}
+          />
+        ) : null}
+
+        {voiceOpen ? (
+          <MobileVoiceOverlay
+            open={voiceOpen}
+            onClose={() => { setVoiceOpen(false); }}
+            onSubmitText={(spoken) => {
+              const cb = voiceCallbackRef.current;
+              voiceCallbackRef.current = null;
+              cb?.(spoken);
+            }}
+          />
+        ) : null}
+
+        <Toasts />
+      </div>
+    </Drawer.Provider>
   );
 }

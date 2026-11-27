@@ -50,9 +50,12 @@ interface LayerEntry {
   pushed: boolean;
   /** Closed in-app; its entry waits for the reconcile to consume it. */
   closed: boolean;
+  /** Guard against duplicate synchronous host-back dispatches before commit. */
+  closingViaHostBack?: boolean;
 }
 
 import { asRecord } from './record';
+import { anyOverlayOpen } from './uiBusy';
 
 const stack: LayerEntry[] = [];
 const pageNonce = Math.random().toString(36).slice(2, 10);
@@ -121,10 +124,54 @@ function onPopState(): void {
   reconcile();
 }
 
+function onHostBack(event: Event): void {
+  for (let i = stack.length - 1; i >= 0; i -= 1) {
+    const entry = stack[i]!;
+    if (!entry.closed && !entry.closingViaHostBack) {
+      event.preventDefault();
+      entry.closingViaHostBack = true;
+      entry.onClose();
+      return;
+    }
+  }
+  const openPopup =
+    typeof document !== 'undefined'
+      ? document.querySelector(
+          '.kiki-drawer-left[data-open]:not([data-ending-style]), .kiki-drawer-bottom[data-open]:not([data-ending-style]), [data-composer-menu], [role="dialog"][data-open]:not([data-ending-style]), [data-popup-open]',
+        )
+      : null;
+  if (anyOverlayOpen() || openPopup !== null) {
+    event.preventDefault();
+    const target =
+      (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null) ?? (typeof document !== 'undefined' ? document.body : null);
+    target?.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Escape',
+        code: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  }
+}
+
 function armListener(): void {
   if (listenerArmed) return;
   listenerArmed = true;
   window.addEventListener('popstate', onPopState);
+  window.addEventListener('kiki:host-back', onHostBack);
+}
+
+/**
+ * Ensures the native `kiki:host-back` CustomEvent bridge is armed from app boot
+ * even before the first `useLayerHistory` layer has opened.
+ */
+export function useHostBackBridge(): void {
+  useEffect(() => {
+    armListener();
+  }, []);
 }
 
 /**

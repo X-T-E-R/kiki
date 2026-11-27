@@ -35,6 +35,7 @@ interface SpacesTabProps {
   readonly onSelectScope: (scope: string) => void;
   readonly onRefreshRemotes: () => Promise<void>;
   readonly onOpenWorkbench: () => void;
+  readonly onOpenNavDrawer?: () => void;
 }
 
 interface CapacitorKikiShellPlugin {
@@ -59,6 +60,7 @@ export function SpacesTab({
   onSelectScope,
   onRefreshRemotes,
   onOpenWorkbench,
+  onOpenNavDrawer,
 }: SpacesTabProps) {
   const { t, locale, setLocale } = useI18n();
   const { client, localClient } = useConnection();
@@ -160,10 +162,23 @@ export function SpacesTab({
 
   return (
     <div data-mobile-screen="spaces" className="flex min-h-0 flex-1 flex-col">
-      <header className="mx-auto flex h-12 w-full max-w-[572px] shrink-0 items-center justify-between px-4">
-        <h1 className="font-display text-[22px] font-bold text-ink">
-          {t('mobile.spaces.title')}
-        </h1>
+      <header data-main-header="" className="mx-auto flex h-12 w-full max-w-[572px] shrink-0 items-center justify-between px-2">
+        <div className="flex min-w-0 items-center gap-1">
+          {onOpenNavDrawer !== undefined ? (
+            <button
+              type="button"
+              data-sidebar-menu=""
+              aria-label={t('mobile.tab.nav')}
+              onClick={onOpenNavDrawer}
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-ink transition-colors hover:bg-ink/[0.05]"
+            >
+              <Icon name="menu" size={16} />
+            </button>
+          ) : null}
+          <h1 className="px-1 font-display text-[20px] font-bold text-ink">
+            {t('mobile.spaces.title')}
+          </h1>
+        </div>
         <button
           type="button"
           data-mobile-scan-qr
@@ -186,8 +201,9 @@ export function SpacesTab({
                 <h2 className="text-[15px] font-bold text-ink">{t('mobile.onboarding.title')}</h2>
                 <button
                   type="button"
+                  aria-label={t('common.close')}
                   onClick={() => { setPairOpen(false); }}
-                  className="flex h-7 w-7 items-center justify-center rounded-full text-ink-faint hover:bg-ink/[0.06]"
+                  className="flex h-11 w-11 items-center justify-center rounded-full text-ink-faint hover:bg-ink/[0.06]"
                 >
                   <Icon name="close" size={14} />
                 </button>

@@ -5,19 +5,10 @@
  * presentational building blocks that consume it: MediaPartList
  * (thumbnails/chips for message media refs) and FilePathLink (clickable host
  * paths).
- *
- * The workspace portals into ConversationShell's `preview` slot so it docks
- * between the conversation column and the right rail; without a shell (unit
- * tests, static pages) it renders as a fixed right overlay. Dirty buffers
- * report upward so tab dots, close confirmations, the app-level dirty guard,
- * and the beforeunload guard all read one set. Collapsing the panel hides it
- * rather than unmounting it, so open buffers keep their drafts (and stay in
- * that dirty set); closing the last tab is what unmounts the workspace.
  */
 
-import { Suspense, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { UNSAFE_LocationContext } from 'react-router-dom';
-import type { HostSaveSink } from '../host/host';
 import { createPortal } from 'react-dom';
 
 import { useI18n } from '../i18n';
@@ -30,15 +21,16 @@ import {
   resolveActiveDraftKey,
   revokeAttachmentPreviewUrl,
 } from '@kiki/session-core/composer';
-import { basenameOf, formatBytes, resolveHostPath, type FileReference, type MediaRef } from '@kiki/session-core/composer/media';
+import { formatBytes, resolveHostPath, type FileReference, type MediaRef } from '@kiki/session-core/composer/media';
 import { pushToast } from '../lib/toasts';
-import type { AnnotationRecord, MediaLightboxThumbnail } from './MediaLightbox';
+import type { AnnotationRecord } from './MediaLightbox';
 import { useOptionalConnection } from '../state/connection';
 import type { PreviewResource } from '../state/previewResource';
 import {
   closeAllPreviewTabs,
   closeOtherPreviewTabs,
   closePreviewTab,
+  DEFAULT_PREVIEW_WIDTH,
   EMPTY_PREVIEW_TABS,
   hostFileResource,
   mediaRefResource,
@@ -50,37 +42,34 @@ import {
 } from '../state/previewWorkspace';
 import type { AgentForest, SessionController, SessionViewState } from '@kiki/session-core/session';
 import type { AgentWorkspaceNavigation } from './agent-workspace';
-import { ConfirmDialog } from './ConfirmDialog';
+import { lazyComponent } from '../lib/lazyComponent';
 import { useOptionalConversationShell } from './ConversationShell';
 import { locateInTimeline } from '../lib/timelineLocate';
 import { registerSessionPluginPanelOpener } from '../lib/pluginPanelPreview';
 import { useLayerHistory } from '../lib/layerHistory';
-import { useMediaQuery } from '../lib/layoutHooks';
+import { useMediaQuery, usePhoneMode } from '../lib/layoutHooks';
 import { getReadingSnapshot, previewSnapshotKey, type PreviewReadingSnapshot } from '../lib/navViewState';
 import { useNavSnapshotAdapter, useNavVisitId } from '../lib/useNavSnapshot';
 import { useDirtyReporter } from './dirtyGuard';
-import { httpImageLink, isOnKikiComputer, mediaOutcomeKey, resolveImageMime } from './imageActions';
-import { imagePreviewLabel, safeImagePreviewName } from './imagePreviewName';
-import { ActiveDraftKeyProvider, attachmentName, useSessionMedia } from './mediaParts';
+import { isOnKikiComputer } from './imageActions';
+import { ActiveDraftKeyProvider, attachmentName } from './mediaParts';
 import { remoteImageUrl } from './RemoteImageGate';
 import { blockGalleryImages, canonicalGalleryItem, galleryImageId, orderedGalleryImages, type GalleryImage } from './mediaGallery';
-import {
-  LazyMediaLightbox,
-  LazyPreviewWorkspace,
-  LightboxLoadFailure,
-  LightboxLoadingShell,
-  PreviewLoadBoundary,
-  PreviewPanelLoadFailure,
-  PreviewPanelLoadingShell,
-} from './preview/PreviewLoadBoundary';
+import type { PreviewCloseAction } from './MediaPreviewOverlays';
 import {
   MediaPreviewContext,
-  useMediaPreview,
   type MediaPreviewApi,
 } from './mediaPreviewContext';
-import { DEFAULT_PREVIEW_WIDTH } from './preview/shared';
 
 export { useMediaPreview } from './mediaPreviewContext';
+
+const LazyMediaPreviewOverlays = lazyComponent(() =>
+  import('./MediaPreviewOverlays').then((m) => m.MediaPreviewOverlays),
+);
+
+if (import.meta.env.MODE === 'test') {
+  await LazyMediaPreviewOverlays.preload();
+}
 
 const WIDTH_STORAGE_KEY = 'kiki.previewPanelWidth';
 
@@ -94,10 +83,7 @@ function readStoredWidth(): number {
   }
 }
 
-type CloseAction =
-  | { readonly kind: 'tab'; readonly key: string }
-  | { readonly kind: 'others'; readonly key: string }
-  | { readonly kind: 'all' };
+type CloseAction = PreviewCloseAction;
 
 function applyCloseAction(state: PreviewTabsState, action: CloseAction, cwd?: string): PreviewTabsState {
   switch (action.kind) {
@@ -475,7 +461,6 @@ export function MediaPreviewProvider({
     }
   }, []);
 
-  // Navigation + unload guards while any buffer is dirty.
   useDirtyReporter('preview-workspace', dirtyPaths.size > 0);
   useEffect(() => {
     if (dirtyPaths.size === 0) return;
@@ -612,130 +597,83 @@ export function MediaPreviewProvider({
     }
   }, [api, apiRef]);
 
+  const phoneMode = usePhoneMode();
   const panelHidden = !panelOpen;
-  const panelOverlay = shell?.slots.preview === null || shell?.slots.preview === undefined;
-  const panel = tabsState.tabs.length > 0 ? (
-    <PreviewLoadBoundary
-      resetKey={previewKey}
-      renderFailure={(error) => (
-        <PreviewPanelLoadFailure
-          error={error}
-          width={width}
-          hidden={panelHidden}
-          overlay={panelOverlay}
-          onCollapse={collapsePanel}
-        />
-      )}
-    >
-      <Suspense fallback={<PreviewPanelLoadingShell width={width} hidden={panelHidden} overlay={panelOverlay} />}>
-        <LazyPreviewWorkspace
-          tabs={tabsState.tabs}
-          active={tabsState.active}
-          navigation={navigation}
-          dirtyPaths={dirtyPaths}
-          width={width}
-          hidden={panelHidden}
-          isFullscreen={effectiveMaximized}
-          onToggleFullscreen={togglePreviewMaximized}
-          onExitFullscreen={exitPreviewMaximized}
-          sessionViewState={workspaceSessionState ?? sessionViewState}
-          agentForest={agentForest}
-          onOpenSubagent={onOpenSubagent}
-          controller={controller}
-          workspaceNavigation={workspaceNavigation}
-          onCancelTask={onCancelTask}
-          onStopAgentTask={onStopAgentTask}
-          onActivate={(key) => { setNavigation(undefined); setTabsState((state) => ({ ...state, active: key })); }}
-          onClose={(key) => { requestClose({ kind: 'tab', key }); }}
-          onCloseOthers={(key) => { requestClose({ kind: 'others', key }); }}
-          onCloseAll={() => { requestClose({ kind: 'all' }); }}
-          onMove={handleMove}
-          onCollapse={collapsePanel}
-          onWidthChange={handleWidthChange}
-          onOpenImage={(src, name, sourcePath) => { setImage({ src, name, sourcePath, client: clientIdentity, sessionId, agentId: snapshotAgentId }); }}
-          reportDirty={reportDirty}
-          scrollPositions={positions}
-          onScrollPosition={reportPosition}
-          overlay={panelOverlay}
-          cwd={cwd}
-          sessionId={sessionId}
-        />
-      </Suspense>
-    </PreviewLoadBoundary>
-  ) : null;
+  const panelOverlay = phoneMode || shell?.slots.preview === null || shell?.slots.preview === undefined;
+  const activeGallery =
+    gallery !== null &&
+    gallery.client === clientIdentity &&
+    gallery.sessionId === sessionId &&
+    gallery.scopeAgentId === snapshotAgentId &&
+    gallery.images[gallery.selected] !== undefined
+      ? gallery
+      : null;
+  const activeImage =
+    image !== null &&
+    image.client === clientIdentity &&
+    image.sessionId === sessionId &&
+    image.agentId === snapshotAgentId
+      ? image
+      : null;
+  const hasActiveOverlays =
+    tabsState.tabs.length > 0 ||
+    confirmClose !== null ||
+    activeGallery !== null ||
+    activeImage !== null;
 
   return (
     <ActiveDraftKeyProvider sessionId={sessionId} draftKey={activeDraftKey}>
       <MediaPreviewContext.Provider value={api}>
         {children}
-        {panel !== null && shell?.slots.preview !== null && shell?.slots.preview !== undefined
-          ? createPortal(panel, shell.slots.preview)
-          : panel}
-        {confirmClose !== null ? (
-          <ConfirmDialog
-            open
-            overlayId="preview-close-dirty"
-            title={t('preview.discardTitle')}
-            body={
-              confirmClose.dirty.length === 1
-                ? t('preview.discardBody', { name: basenameOf(confirmClose.dirty[0] ?? '') })
-                : t('preview.discardBodyMany', { count: confirmClose.dirty.length })
-            }
-            confirmLabel={t('preview.discard')}
-            tone="danger"
-            onConfirm={confirmCloseRun}
-            onCancel={() => { setConfirmClose(null); }}
-          />
-        ) : null}
-        {gallery !== null && gallery.client === clientIdentity && gallery.sessionId === sessionId && gallery.scopeAgentId === snapshotAgentId && gallery.images[gallery.selected] !== undefined ? (
-          <GalleryLightbox
-            images={gallery.images}
-            image={gallery.images[gallery.selected]!}
+        {hasActiveOverlays ? (
+          <LazyMediaPreviewOverlays
+            previewKey={previewKey}
+            tabsState={tabsState}
+            navigation={navigation}
+            dirtyPaths={dirtyPaths}
+            width={width}
+            panelHidden={panelHidden}
+            panelOverlay={panelOverlay}
+            phoneMode={phoneMode}
+            effectiveMaximized={effectiveMaximized}
+            togglePreviewMaximized={togglePreviewMaximized}
+            exitPreviewMaximized={exitPreviewMaximized}
+            sessionViewState={workspaceSessionState ?? sessionViewState}
+            agentForest={agentForest}
+            onOpenSubagent={onOpenSubagent}
+            controller={controller}
+            workspaceNavigation={workspaceNavigation}
+            onCancelTask={onCancelTask}
+            onStopAgentTask={onStopAgentTask}
+            onActivate={(key) => { setNavigation(undefined); setTabsState((state) => ({ ...state, active: key })); }}
+            onRequestClose={requestClose}
+            onMove={handleMove}
+            collapsePanel={collapsePanel}
+            onWidthChange={handleWidthChange}
+            onOpenImage={(src, name, sourcePath) => { setImage({ src, name, sourcePath, client: clientIdentity, sessionId, agentId: snapshotAgentId }); }}
+            reportDirty={reportDirty}
+            positions={positions}
+            reportPosition={reportPosition}
+            cwd={cwd}
             sessionId={sessionId}
+            renderDesktopPortal={(panel) =>
+              shell?.slots.preview !== null && shell?.slots.preview !== undefined
+                ? createPortal(panel, shell.slots.preview)
+                : panel
+            }
+            confirmClose={confirmClose}
+            confirmCloseRun={confirmCloseRun}
+            onCancelConfirmClose={() => { setConfirmClose(null); }}
+            activeGallery={activeGallery}
+            onSelectGallery={(selected) => { setGallery((current) => current === null ? null : { ...current, selected }); }}
+            onCloseGallery={() => { setGallery(null); }}
+            activeImage={activeImage}
+            onCloseImage={() => { setImage(null); }}
             localKikiComputer={localKikiComputer}
-            seededSrc={gallery.seededId === gallery.images[gallery.selected]!.id ? gallery.seededSrc : undefined}
-            index={gallery.selected}
-            count={gallery.images.length}
-            savedAnnotations={lightboxAnnotations}
-            onAnnotationsChange={setLightboxAnnotations}
-            onAttachAnnotatedImage={attachAnnotatedImageFor(gallery.targetAgentId)}
-            onSelect={(selected) => { setGallery((current) => current === null ? null : { ...current, selected }); }}
-            onClose={() => { setGallery(null); }}
+            lightboxAnnotations={lightboxAnnotations}
+            setLightboxAnnotations={setLightboxAnnotations}
+            attachAnnotatedImageFor={attachAnnotatedImageFor}
           />
-        ) : null}
-        {image !== null && image.client === clientIdentity && image.sessionId === sessionId && image.agentId === snapshotAgentId ? (
-          <PreviewLoadBoundary
-            resetKey={image.src}
-            renderFailure={(error) => (
-              <LightboxLoadFailure
-                error={error}
-                label={imagePreviewLabel({ name: image.name }, t('media.image'))}
-                onClose={() => { setImage(null); }}
-              />
-            )}
-          >
-            <Suspense
-              fallback={
-                <LightboxLoadingShell
-                  label={imagePreviewLabel({ name: image.name }, t('media.image'))}
-                  onClose={() => { setImage(null); }}
-                />
-              }
-            >
-              <LazyMediaLightbox
-                src={image.src}
-                name={image.name}
-                sourcePath={image.sourcePath}
-                linkUrl={httpImageLink(image.src)}
-                outcomeKey={mediaOutcomeKey({ url: image.src })}
-                localKikiComputer={localKikiComputer}
-                savedAnnotations={lightboxAnnotations}
-                onAnnotationsChange={setLightboxAnnotations}
-                onAttachAnnotatedImage={attachAnnotatedImageFor(image.targetAgentId)}
-                onClose={() => { setImage(null); }}
-              />
-            </Suspense>
-          </PreviewLoadBoundary>
         ) : null}
       </MediaPreviewContext.Provider>
     </ActiveDraftKeyProvider>
@@ -743,121 +681,5 @@ export function MediaPreviewProvider({
 }
 
 export { PreviewToggleButton, WorkspacePanelsControl } from './PreviewToggleButton';
-
-// ---------------------------------------------------------------------------
-
-/**
- * A media store answers saved tool results under a generic type, and a decoder
- * that trusts the label refuses them. The bytes are already in hand, so the URL
- * handed to the viewer is minted with the type they really are — the same bytes,
- * one correct label.
- */
-function useTypedImageUrl(bytes: Uint8Array | undefined, declared: string | undefined): string | undefined {
-  const [typed, setTyped] = useState<{ readonly url: string }>();
-  useEffect(() => {
-    if (bytes === undefined) return;
-    const mime = resolveImageMime(bytes, declared);
-    if (mime === undefined || mime === declared) return;
-    const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime }));
-    setTyped({ url });
-    return () => {
-      URL.revokeObjectURL(url);
-      setTyped((current) => current?.url === url ? undefined : current);
-    };
-  }, [bytes, declared]);
-  return typed?.url;
-}
-
-function GalleryLightbox({ images, image, sessionId, localKikiComputer = false, seededSrc, index, count, savedAnnotations, onAnnotationsChange, onAttachAnnotatedImage, onSelect, onClose }: { images: readonly GalleryImage[]; image: GalleryImage; sessionId?: string; localKikiComputer?: boolean; seededSrc?: string; index: number; count: number; savedAnnotations?: Readonly<Record<string, AnnotationRecord>>; onAnnotationsChange?: (updater: (previous: Record<string, AnnotationRecord>) => Record<string, AnnotationRecord>) => void; onAttachAnnotatedImage?: (blob: Blob, filename: string) => Promise<boolean> | boolean; onSelect: (index: number) => void; onClose: () => void }) {
-  const { t } = useI18n();
-  const connection = useOptionalConnection();
-  const client = connection?.client;
-  const preview = useMediaPreview();
-  const hostPath = image.item.path === undefined ? undefined : resolveHostPath(image.item.path, preview?.cwd);
-  const [retry, setRetry] = useState({ id: image.id, attempt: 0 });
-  const hasCanonicalSource =
-    (sessionId !== undefined && image.item.fileId !== undefined && typeof (client as { readSessionMediaBytes?: unknown } | undefined)?.readSessionMediaBytes === 'function') ||
-    (hostPath !== undefined && typeof (client as { readHostFileBytes?: unknown } | undefined)?.readHostFileBytes === 'function');
-  const retryAttempt = retry.id === image.id ? retry.attempt : 0;
-  const load = useSessionMedia(image.item, sessionId, hasCanonicalSource, false, retryAttempt);
-  const bytes = load.status === 'ready' ? load.bytes : undefined;
-  const mime = bytes === undefined ? image.item.mime : resolveImageMime(bytes, load.status === 'ready' ? load.mime : image.item.mime) ?? image.item.mime;
-  const typedSrc = useTypedImageUrl(bytes, load.status === 'ready' ? load.mime : undefined);
-  const externalSeedSrc = hasCanonicalSource && seededSrc?.startsWith('blob:') === true ? undefined : seededSrc;
-  const previewFallbackSrc = load.status === 'failed'
-    ? undefined
-    : (externalSeedSrc ?? (load.status !== 'ready' ? load.thumbnailUrl : undefined));
-  const fullSrc = hasCanonicalSource
-    ? (load.status === 'ready' ? (typedSrc ?? load.url) : undefined)
-    : (externalSeedSrc ?? image.item.url);
-  const src = fullSrc ?? previewFallbackSrc;
-  const size = load.status === 'ready' ? load.bytes.byteLength : image.item.size;
-  const isLoading = src === undefined && hasCanonicalSource && load.status === 'loading';
-  const isFailed = src === undefined && hasCanonicalSource && load.status === 'failed';
-
-  const onSaveOriginal = useMemo(() => {
-    if (client === undefined || (hostPath === undefined && (sessionId === undefined || image.item.fileId === undefined))) return undefined;
-    return async (sink: HostSaveSink, signal: AbortSignal, onProgress: (bytes: number, total?: number) => void) => {
-      const consume: import('@kiki/klient').HttpRestMediaSink = async (chunk, progress) => {
-        await sink.write(chunk);
-        onProgress(progress.bytes, progress.totalBytes);
-      };
-      const options = { ...client.readingOptions(), signal };
-      if (hostPath !== undefined) await client.downloadHostFile(hostPath, consume, options);
-      else await client.downloadSessionMedia(sessionId!, image.item.fileId!, consume, options);
-    };
-  }, [client, sessionId, hostPath, image.item.fileId]);
-
-  const thumbnails = useMemo<readonly MediaLightboxThumbnail[] | undefined>(
-    () => (images.length > 1
-      ? images.map((entry, entryIndex) => ({
-          id: entry.occurrenceId ?? `${entry.id}:${entryIndex}`,
-          src: entry.item.url,
-          label: safeImagePreviewName({ name: entry.item.name, path: entry.item.path }),
-        }))
-      : undefined),
-    [images],
-  );
-
-  const resolvedName = safeImagePreviewName({
-    name: image.item.name,
-    metadataName: load.status === 'ready' ? load.name : undefined,
-    path: image.item.path,
-  });
-  const fallbackLabel = imagePreviewLabel({ name: resolvedName }, t('media.image'));
-
-  return (
-    <PreviewLoadBoundary
-      resetKey={image.id}
-      renderFailure={(error) => <LightboxLoadFailure error={error} label={fallbackLabel} onClose={onClose} />}
-    >
-      <Suspense fallback={<LightboxLoadingShell label={fallbackLabel} onClose={onClose} />}>
-        <LazyMediaLightbox
-          src={src}
-          identity={image.id}
-          name={resolvedName}
-          sourcePath={hostPath}
-          linkUrl={httpImageLink(image.item.url)}
-          outcomeKey={mediaOutcomeKey({ ...image.item, sessionId })}
-          localKikiComputer={localKikiComputer}
-          mime={mime}
-          size={size}
-          loading={isLoading}
-          failed={isFailed}
-          onRetry={() => { setRetry((current) => ({ id: image.id, attempt: current.id === image.id ? current.attempt + 1 : 1 })); }}
-          onSaveOriginal={onSaveOriginal}
-          savedAnnotations={savedAnnotations}
-          onAnnotationsChange={onAnnotationsChange}
-          onAttachAnnotatedImage={onAttachAnnotatedImage}
-          index={index}
-          count={count}
-          thumbnails={thumbnails}
-          onSelect={onSelect}
-          onClose={onClose}
-        />
-      </Suspense>
-    </PreviewLoadBoundary>
-  );
-}
 
 export { FilePathLink, MediaPart, MediaPartList, type MediaThumbSize } from './mediaParts';

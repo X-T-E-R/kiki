@@ -262,8 +262,13 @@ body {
  * pinch-zoom must keep the layout height. */
 @media (pointer: coarse) {
   html,
-  body,
+  body {
+    height: 100%;
+    overflow: hidden;
+  }
   #root {
+    position: relative;
+    top: var(--kiki-visual-offset-top, 0px);
     height: var(--kiki-visual-height, 100%);
   }
   /* iOS zooms the page when a field under 16px takes focus and leaves it
@@ -2038,6 +2043,7 @@ input[data-add-search]:focus-visible {
   background: color-mix(in srgb, var(--color-ink) 6%, transparent);
   border-radius: 4px;
   padding: 0.1em 0.32em;
+  margin-inline: 0.12em;
 }
 .kiki-md pre {
   background: var(--color-panel);
@@ -2337,6 +2343,7 @@ input[data-add-search]:focus-visible {
   flex-direction: column;
   overflow: hidden;
   padding-top: 0;
+  padding-bottom: max(12px, calc(8px + var(--kiki-safe-bottom-inset)));
 }
 
 /* ============================================================================
@@ -2461,4 +2468,208 @@ input[data-add-search]:focus-visible {
   background-color: color-mix(in srgb, var(--color-ink-faint) 35%, transparent);
   margin: 8px auto 6px;
   flex-shrink: 0;
+}
+
+/* ============================================================================
+ * Mobile Overhaul (@base-ui/react/drawer physics, push-aside, coarse scrollbars)
+ * ============================================================================ */
+
+/* Suppress ugly native WebView/mobile scrollbar thumbs on inputs, composer
+ * pills, completion menus, sheets, and horizontal strips on touch devices. */
+@media (pointer: coarse) {
+  input,
+  textarea,
+  [contenteditable='true'],
+  [data-composer-root],
+  [data-composer-root] *,
+  [data-mobile-composer],
+  [data-mobile-composer] *,
+  [data-composer-menu],
+  [data-composer-menu] *,
+  .kiki-drawer-left,
+  .kiki-drawer-left *,
+  .kiki-drawer-bottom,
+  .kiki-drawer-bottom *,
+  .kiki-action-sheet,
+  .kiki-action-sheet *,
+  .app-sidebar *,
+  .app-rail * {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  input::-webkit-scrollbar,
+  textarea::-webkit-scrollbar,
+  [contenteditable='true']::-webkit-scrollbar,
+  [data-composer-root]::-webkit-scrollbar,
+  [data-composer-root] *::-webkit-scrollbar,
+  [data-mobile-composer]::-webkit-scrollbar,
+  [data-mobile-composer] *::-webkit-scrollbar,
+  [data-composer-menu]::-webkit-scrollbar,
+  [data-composer-menu] *::-webkit-scrollbar,
+  .kiki-drawer-left::-webkit-scrollbar,
+  .kiki-drawer-left *::-webkit-scrollbar,
+  .kiki-drawer-bottom::-webkit-scrollbar,
+  .kiki-drawer-bottom *::-webkit-scrollbar,
+  .kiki-action-sheet::-webkit-scrollbar,
+  .kiki-action-sheet *::-webkit-scrollbar,
+  .app-sidebar *::-webkit-scrollbar,
+  .app-rail *::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+  }
+}
+
+:root {
+  --drawer-swipe-progress: 0;
+  --drawer-swipe-movement-x: 0px;
+  --drawer-swipe-movement-y: 0px;
+  --drawer-snap-point-offset: 0px;
+  --drawer-keyboard-inset: 0px;
+}
+
+.kiki-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  background-color: rgb(var(--kiki-shadow-ink) / calc(0.28 * (1 - var(--drawer-swipe-progress, 0))));
+  transition: opacity 220ms cubic-bezier(0.32, 0.72, 0, 1), background-color 220ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.kiki-drawer-backdrop[data-starting-style],
+.kiki-drawer-backdrop[data-ending-style],
+.kiki-drawer-backdrop:not([data-open]):not([data-swiping]):not([data-ending-style]) {
+  opacity: 0;
+  pointer-events: none;
+}
+.kiki-drawer-backdrop[data-swiping] {
+  transition: none;
+}
+
+.kiki-drawer-viewport-left {
+  position: fixed;
+  inset: 0;
+  z-index: 46;
+  display: flex;
+  justify-content: flex-start;
+  pointer-events: none;
+}
+
+.kiki-drawer-left {
+  pointer-events: auto;
+  width: 84vw;
+  max-width: 320px;
+  height: var(--kiki-visual-height, 100dvh);
+  top: var(--kiki-visual-offset-top, 0px);
+  display: flex;
+  flex-direction: column;
+  background-color: var(--color-paper);
+  border-right: 1px solid var(--color-hairline);
+  box-shadow: 16px 0 40px -16px rgb(var(--kiki-shadow-ink) / 0.28);
+  transform: translate3d(var(--drawer-swipe-movement-x, 0px), 0, 0);
+  transition: transform 260ms cubic-bezier(0.32, 0.72, 0, 1);
+  will-change: transform;
+  outline: none;
+}
+.kiki-drawer-left[data-starting-style],
+.kiki-drawer-left[data-ending-style],
+.kiki-drawer-left:not([data-open]):not([data-swiping]):not([data-ending-style]) {
+  transform: translate3d(-100%, 0, 0);
+  pointer-events: none;
+  box-shadow: none;
+}
+.kiki-drawer-left[data-swiping] {
+  transition: none;
+}
+
+/* Children mounted inside a @base-ui/react/drawer Popup yield their legacy
+ * fixed/translateX positioning to the Popup's spring gesture container. */
+:is(.kiki-drawer-left, .kiki-drawer-bottom) .app-sidebar,
+:is(.kiki-drawer-left, .kiki-drawer-bottom) .app-rail,
+:is(.kiki-drawer-left, .kiki-drawer-bottom) .app-rail-shell,
+:is(.kiki-drawer-left, .kiki-drawer-bottom) .preview-workspace {
+  position: relative !important;
+  inset: auto !important;
+  width: 100% !important;
+  max-width: none !important;
+  height: 100% !important;
+  padding: 0 !important;
+  transform: none !important;
+  box-shadow: none !important;
+  border-left: 0 !important;
+  border-right: 0 !important;
+}
+
+.kiki-drawer-viewport-bottom {
+  position: fixed;
+  top: var(--kiki-visual-offset-top, 0px);
+  right: 0;
+  left: 0;
+  height: calc(var(--kiki-visual-height, 100dvh) - var(--drawer-keyboard-inset, 0px));
+  z-index: 52;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  pointer-events: none;
+}
+
+.kiki-drawer-bottom {
+  pointer-events: auto;
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 34rem;
+  max-height: calc(var(--kiki-visual-height, 100dvh) - var(--kiki-safe-top-inset) - 1.5rem);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 18px 18px 0 0;
+  background-color: var(--color-panel);
+  border-top: 1px solid var(--color-hairline);
+  box-shadow: var(--kiki-sheet-shadow), 0 -14px 42px -16px rgb(var(--kiki-shadow-ink) / 0.38);
+  padding-bottom: var(--kiki-safe-bottom-inset);
+  transform: translate3d(0, calc(var(--drawer-snap-point-offset, 0px) + var(--drawer-swipe-movement-y, 0px)), 0);
+  transition: transform 260ms cubic-bezier(0.32, 0.72, 0, 1);
+  will-change: transform;
+  outline: none;
+}
+.kiki-drawer-bottom[data-starting-style],
+.kiki-drawer-bottom[data-ending-style],
+.kiki-drawer-bottom:not([data-open]):not([data-swiping]):not([data-ending-style]) {
+  transform: translate3d(0, 100%, 0);
+  pointer-events: none;
+  box-shadow: none;
+}
+.kiki-drawer-bottom[data-swiping] {
+  transition: none;
+}
+
+/* Explicit push-aside indent when the left navigation drawer opens (R4). */
+.kiki-drawer-indent {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 0%;
+  transition: transform 260ms cubic-bezier(0.32, 0.72, 0, 1), border-radius 260ms cubic-bezier(0.32, 0.72, 0, 1);
+  transform-origin: right center;
+}
+@media (max-width: 767px) {
+  .kiki-drawer-indent[data-active] {
+    transform: translate3d(calc((1 - var(--drawer-swipe-progress, 0)) * 16px), 0, 0)
+      scale(calc(1 - (1 - var(--drawer-swipe-progress, 0)) * 0.025));
+    border-radius: 14px;
+    overflow: hidden;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kiki-drawer-backdrop,
+  .kiki-drawer-left,
+  .kiki-drawer-bottom,
+  .kiki-drawer-indent {
+    transition: none !important;
+  }
+  .kiki-drawer-indent[data-active] {
+    transform: none !important;
+  }
 }

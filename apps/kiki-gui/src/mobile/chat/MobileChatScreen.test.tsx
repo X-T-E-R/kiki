@@ -188,4 +188,54 @@ describe('MobileChatScreen initial load failures', () => {
     expect(alert?.textContent).toContain('session session_test does not exist');
     expect(container.querySelector('[data-mobile-retry-load]')).toBeNull();
   });
+
+  it('converges onto canonical Transcript + Composer with active Persona working line and zero inline changes card (t1095)', async () => {
+    const getSnapshot = vi.fn(async (): Promise<SessionSnapshotResponse> => ({
+      as_of_seq: 5,
+      epoch: 'epoch-1',
+      session: {
+        id: 'session_test',
+        workspace_id: 'wd_test_000000000000',
+        title: 'Nia Persona Session',
+        created_at: '2026-11-27T00:00:00Z',
+        updated_at: '2026-11-27T00:00:05Z',
+        busy: true,
+        main_turn_active: true,
+        delivery: 'message',
+        metadata: { cwd: '/repo' },
+        agent_config: {
+          model: 'axon-message/gemini-4-neon',
+          persona: { id: 'nia-fast', name: '妮娅' },
+        },
+        usage: {
+          input_tokens: 1200,
+          output_tokens: 340,
+          cache_read_tokens: 0,
+          cache_creation_tokens: 0,
+          total_cost_usd: 0,
+          context_tokens: 1540,
+          context_limit: 200000,
+          turn_count: 1,
+        },
+        permission_rules: [],
+        message_count: 2,
+        last_seq: 5,
+      },
+      messages: { items: [], has_more: false },
+      in_flight_turn: null,
+      pending_approvals: [],
+      pending_questions: [],
+    }));
+    const container = await mountMobileChat(createStubClient({ getSnapshot }));
+    await vi.waitFor(
+      () => {
+        expect(container.querySelector('[data-composer-card]')).not.toBeNull();
+      },
+      { timeout: 5_000 },
+    );
+    await flushMicrotasks();
+
+    expect(container.querySelector('[data-composer-working]')).not.toBeNull();
+    expect(container.querySelector('[data-mobile-changes-card]')).toBeNull();
+  });
 });

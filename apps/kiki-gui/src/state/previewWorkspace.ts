@@ -16,6 +16,8 @@ import {
   type PreviewResource,
 } from './previewResource';
 
+export const DEFAULT_PREVIEW_WIDTH = 480;
+
 export interface ResourceTab {
   readonly kind: 'resource';
   readonly resource: PreviewResource;

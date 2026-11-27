@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { isCoarsePointer } from './layoutHooks';
 import { anyOverlayOpen } from './uiBusy';
 import { composerInputOf } from './composerInput';
 
@@ -37,7 +38,9 @@ export function useNavigationComposerFocus(scopeId: string, sessionId: string | 
   }, [scopeId]);
 
   useEffect(() => {
-    if (sessionId === undefined || shouldYieldComposerFocus(document.activeElement)) return;
+    // Coarse-pointer mobile screens keep the reading stage unobstructed until
+    // the user explicitly taps the composer (P1-4).
+    if (sessionId === undefined || isCoarsePointer() || shouldYieldComposerFocus(document.activeElement)) return;
     let finished = false;
     let frame = 0;
     const observer = new MutationObserver(() => schedule());

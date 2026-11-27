@@ -16,7 +16,6 @@
  */
 
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Popover } from '@base-ui/react/popover';
 import type { SshHostAttachment } from '@kiki/session-core/composer';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
@@ -60,13 +59,29 @@ import {
   subscribeFloatingGroup,
 } from '../../lib/uiBusy';
 import { useConnection } from '../../state/connection';
+import { lazyComponent } from '../../lib/lazyComponent';
 import { Toggle } from '../controls';
-import { MODAL_ESCAPE_ATTRIBUTE } from '../Dialog';
 import { Icon } from '../icons';
-import { POPOVER_SURFACE_CLASS } from '../SearchableSelect';
-import { ComposerMeshSection } from './ComposerMeshSection';
+import { POPOVER_SURFACE_CLASS } from '../popoverSurfaceClass';
 import { SSH_HOST_CHIP_CLASS, SshStateMark, stateDotClass } from './SshBits';
-import { SshHostFormDialog } from './SshHostFormDialog';
+
+const LazyComposerMeshSection = lazyComponent(() =>
+  import('./ComposerMeshSection').then((m) => m.ComposerMeshSection),
+);
+const LazySshHostFormDialog = lazyComponent(() =>
+  import('./SshHostFormDialog').then((m) => m.SshHostFormDialog),
+);
+const LazyAnchoredFloatingPopover = lazyComponent(() =>
+  import('../ComposerPopovers').then((m) => m.AnchoredFloatingPopover),
+);
+
+if (import.meta.env.MODE === 'test') {
+  await Promise.all([
+    LazyComposerMeshSection.preload(),
+    LazySshHostFormDialog.preload(),
+    LazyAnchoredFloatingPopover.preload(),
+  ]);
+}
 
 const NO_INFLIGHT_HOSTS: ReadonlySet<string> = new Set();
 
@@ -394,116 +409,107 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
       data-composer-ssh-open={listOpen ? '' : undefined}
       className="inline-flex min-w-0 shrink items-center"
     >
-      <Popover.Root open={listOpen} onOpenChange={setListOpen}>
-        <Popover.Trigger
-          ref={triggerRef}
-          type="button"
-          data-composer-ssh-toggle
-          data-composer-ssh-summary=""
-          aria-controls={listId}
-          title={triggerTitle}
-          className={`inline-flex h-6 max-w-44 min-w-0 shrink cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-[12px] leading-4 text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-8 @[480px]/statusline:max-w-52 ${listOpen ? 'bg-ink/[0.06] text-ink' : ''}`}
-        >
-          <Icon name="terminal" size={12} className="shrink-0 text-ink-faint" />
-          <span className="min-w-0 truncate">{summaryLabel}</span>
-          {primaryState !== undefined ? (
-            <span aria-label={t(`st.ssh.state.${primaryState}`)} role="img" className={`h-1.5 w-1.5 shrink-0 rounded-full ${stateDotClass(primaryState)}`} />
-          ) : meshTone !== undefined ? (
-            <span
-              aria-hidden
-              data-composer-mesh-tone={meshTone}
-              className={`h-1.5 w-1.5 shrink-0 rounded-full ${meshTone === 'danger' ? 'bg-danger' : 'bg-amber-rule'}`}
-            />
-          ) : null}
-          <Icon
-            name="chevron"
-            size={12}
-            className={`shrink-0 text-ink-faint transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${listOpen ? '-rotate-90' : 'rotate-90'}`}
+      <button
+        ref={triggerRef}
+        type="button"
+        data-composer-ssh-toggle
+        data-composer-ssh-summary=""
+        aria-expanded={listOpen}
+        aria-controls={listId}
+        title={triggerTitle}
+        onClick={() => { setListOpen((prev) => !prev); }}
+        className={`inline-flex h-6 max-w-44 min-w-0 shrink cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-[12px] leading-4 text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-8 @[480px]/statusline:max-w-52 ${listOpen ? 'bg-ink/[0.06] text-ink' : ''}`}
+      >
+        <Icon name="terminal" size={12} className="shrink-0 text-ink-faint" />
+        <span className="min-w-0 truncate">{summaryLabel}</span>
+        {primaryState !== undefined ? (
+          <span aria-label={t(`st.ssh.state.${primaryState}`)} role="img" className={`h-1.5 w-1.5 shrink-0 rounded-full ${stateDotClass(primaryState)}`} />
+        ) : meshTone !== undefined ? (
+          <span
+            aria-hidden
+            data-composer-mesh-tone={meshTone}
+            className={`h-1.5 w-1.5 shrink-0 rounded-full ${meshTone === 'danger' ? 'bg-danger' : 'bg-amber-rule'}`}
           />
-        </Popover.Trigger>
-        <Popover.Portal>
-          <Popover.Positioner
-            side="top"
-            align="start"
-            sideOffset={6}
-            collisionPadding={8}
-            positionMethod="fixed"
-            style={{ zIndex: floatingSurfaceZIndex(triggerRef.current) }}
-            className="outline-none"
-          >
-            <Popover.Popup
-              id={listId}
-              data-composer-ssh-list
-              role="group"
-              aria-label={sshCount > 0 ? t('composer.ssh.heading') : t('composer.mesh.heading')}
-              {...{
-                [FLOATING_OWNER_ATTRIBUTE]: 'composer-ssh-strip',
-                [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(triggerRef.current, 'composer-ssh-strip'),
-                [MODAL_ESCAPE_ATTRIBUTE]: owningModalId(triggerRef.current),
-              }}
-              className={`anim-enter flex w-72 max-w-[calc(100vw-24px)] flex-col overflow-hidden rounded-[10px] p-1 outline-none ${POPOVER_SURFACE_CLASS}`}
-            >
-              <div className="max-h-[min(320px,52vh)] overflow-y-auto overscroll-contain">
-                {sshCount > 0 ? (
-                  <div className="flex flex-wrap items-center gap-1 border-b border-hairline/70 px-1.5 pt-1 pb-1.5" role="list">
-                    {activeJoined.map(({ host, status }) => {
-                      const state = visibleState(status);
-                      const target = sshTargetLabel(host);
-                      return (
-                        <span
-                          key={host.id}
-                          role="listitem"
-                          data-composer-ssh-chip={host.id}
-                          title={target === undefined ? host.id : `${host.id} · ${target}`}
-                          className={`anim-enter ${SSH_HOST_CHIP_CLASS} pr-0.5 pl-2`}
-                        >
-                          <Icon name="terminal" size={12} className="text-ink-faint" />
-                          <span className="min-w-0 truncate">{host.name}</span>
-                          {state !== undefined ? (
-                            <span aria-label={t(`st.ssh.state.${state}`)} role="img" className={`h-1.5 w-1.5 shrink-0 rounded-full ${stateDotClass(state)}`} />
-                          ) : null}
-                          <button
-                            type="button"
-                            data-composer-ssh-chip-remove
-                            aria-label={t('composer.ssh.removeChip', { name: host.name })}
-                            title={t('composer.ssh.removeChip', { name: host.name })}
-                            disabled={pending.has(host.id)}
-                            onClick={() => void toggle(host, false)}
-                            className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-faint transition-colors hover:bg-ink/[0.07] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:ml-1 pointer-coarse:h-8 pointer-coarse:w-8"
-                          >
-                            <Icon name="close" size={12} />
-                          </button>
-                        </span>
-                      );
-                    })}
-                  </div>
-                ) : null}
-                {meshCount > 0 && meshLease !== undefined ? (
-                  <div className={available ? 'border-b border-hairline/70 pb-1' : ''}>
-                    <ComposerMeshSection
-                      lease={meshLease}
-                      humanTakeovers={humanTakeovers}
-                      pendingKeys={meshPending}
-                      onUnpin={(kind, id, label) => { void unpinMesh(kind, id, label); }}
-                      onCloseTunnel={(tunnel) => { void closeMeshTunnel(tunnel); }}
-                    />
-                  </div>
-                ) : null}
-                {available ? (
-                  <div className={sshCount > 0 || meshCount > 0 ? 'pt-1' : ''}>
-                    {renderPanel(() => { setListOpen(false); })}
-                  </div>
-                ) : null}
+        ) : null}
+        <Icon
+          name="chevron"
+          size={12}
+          className={`shrink-0 text-ink-faint transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${listOpen ? '-rotate-90' : 'rotate-90'}`}
+        />
+      </button>
+      {listOpen ? (
+        <LazyAnchoredFloatingPopover
+          anchorRef={triggerRef}
+          side="top"
+          align="start"
+          sideOffset={6}
+          ownerId="composer-ssh-strip"
+          popupId={listId}
+          role="group"
+          ariaLabel={sshCount > 0 ? t('composer.ssh.heading') : t('composer.mesh.heading')}
+          dataAttrs={{ 'data-composer-ssh-list': '' }}
+          onOpenChange={(nextOpen) => { setListOpen(nextOpen); }}
+          className={`anim-enter flex w-72 max-w-[calc(100vw-24px)] flex-col overflow-hidden rounded-[10px] p-1 outline-none ${POPOVER_SURFACE_CLASS}`}
+        >
+          <div className="max-h-[min(320px,52vh)] overflow-y-auto overscroll-contain">
+            {sshCount > 0 ? (
+              <div className="flex flex-wrap items-center gap-1 border-b border-hairline/70 px-1.5 pt-1 pb-1.5" role="list">
+                {activeJoined.map(({ host, status }) => {
+                  const state = visibleState(status);
+                  const target = sshTargetLabel(host);
+                  return (
+                    <span
+                      key={host.id}
+                      role="listitem"
+                      data-composer-ssh-chip={host.id}
+                      title={target === undefined ? host.id : `${host.id} · ${target}`}
+                      className={`anim-enter ${SSH_HOST_CHIP_CLASS} pr-0.5 pl-2`}
+                    >
+                      <Icon name="terminal" size={12} className="text-ink-faint" />
+                      <span className="min-w-0 truncate">{host.name}</span>
+                      {state !== undefined ? (
+                        <span aria-label={t(`st.ssh.state.${state}`)} role="img" className={`h-1.5 w-1.5 shrink-0 rounded-full ${stateDotClass(state)}`} />
+                      ) : null}
+                      <button
+                        type="button"
+                        data-composer-ssh-chip-remove
+                        aria-label={t('composer.ssh.removeChip', { name: host.name })}
+                        title={t('composer.ssh.removeChip', { name: host.name })}
+                        disabled={pending.has(host.id)}
+                        onClick={() => void toggle(host, false)}
+                        className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-faint transition-colors hover:bg-ink/[0.07] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:ml-1 pointer-coarse:h-8 pointer-coarse:w-8"
+                      >
+                        <Icon name="close" size={12} />
+                      </button>
+                    </span>
+                  );
+                })}
               </div>
-            </Popover.Popup>
-          </Popover.Positioner>
-        </Popover.Portal>
-      </Popover.Root>
+            ) : null}
+            {meshCount > 0 && meshLease !== undefined ? (
+              <div className={available ? 'border-b border-hairline/70 pb-1' : ''}>
+                <LazyComposerMeshSection
+                  lease={meshLease}
+                  humanTakeovers={humanTakeovers}
+                  pendingKeys={meshPending}
+                  onUnpin={(kind, id, label) => { void unpinMesh(kind, id, label); }}
+                  onCloseTunnel={(tunnel) => { void closeMeshTunnel(tunnel); }}
+                />
+              </div>
+            ) : null}
+            {available ? (
+              <div className={sshCount > 0 || meshCount > 0 ? 'pt-1' : ''}>
+                {renderPanel(() => { setListOpen(false); })}
+              </div>
+            ) : null}
+          </div>
+        </LazyAnchoredFloatingPopover>
+      ) : null}
     </div>
   ) : null;
 
   const dialog = creating ? (
-    <SshHostFormDialog
+    <LazySshHostFormDialog
       mode={{ kind: 'create' }}
       onClose={() => { setCreating(false); }}
       onSubmit={async (id, input) => {

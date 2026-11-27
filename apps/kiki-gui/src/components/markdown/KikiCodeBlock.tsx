@@ -14,7 +14,6 @@
  */
 
 import { useEffect, useLayoutEffect, useRef, useState, type ComponentProps, type ReactElement, type ReactNode } from 'react';
-import { CodeBlock } from 'streamdown';
 
 import { canonicalSelectionText } from '@kiki/session-core/composer';
 import { useI18n } from '../../i18n';
@@ -25,6 +24,7 @@ import { pushToast } from '../../lib/toasts';
 import { Icon } from '../icons';
 import { registerCodeBlockBody, unwrapDomAnnotationMarks } from './domAnnotationMarks';
 import { useMermaidEngine } from './streamdown-plugins';
+import { useStreamdownRuntime } from './streamdown-runtime';
 
 /** A settled fence longer than this collapses behind "View more". */
 const COLLAPSE_AFTER_LINES = 40;
@@ -88,7 +88,7 @@ function KikiMermaidBlock({ children, isIncomplete }: PreProps) {
     return <KikiCodeBlock isIncomplete={isIncomplete}>{children}</KikiCodeBlock>;
   }
   return (
-    <div className="kiki-md-mermaid my-3 overflow-x-auto rounded-[10px] border border-hairline bg-panel p-3">
+    <div data-base-ui-swipe-ignore="x" className="kiki-md-mermaid my-3 overflow-x-auto rounded-[10px] border border-hairline bg-panel p-3">
       <img src={rendered.url} alt={code} className="mx-auto h-auto max-w-full" />
     </div>
   );
@@ -101,7 +101,10 @@ export function KikiMarkdownPre(props: PreProps) {
 
 export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
   const { t } = useI18n();
-  const phoneMode = usePhoneMode() || useMediaQuery('(max-width: 767px)');
+  const runtime = useStreamdownRuntime(true);
+  const isPhone = usePhoneMode();
+  const isNarrowViewport = useMediaQuery('(max-width: 767px)');
+  const phoneMode = isPhone || isNarrowViewport;
   // The open/closed decision is taken once, when the block first renders: a
   // fence still streaming in is never clamped (the reader is watching it
   // grow), and once it settles it stays open rather than snapping shut under
@@ -210,6 +213,7 @@ export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
 
       <div
         ref={bodyRef}
+        data-base-ui-swipe-ignore="x"
         className="kiki-cb-body overflow-x-auto"
         style={{
           maxHeight: collapsed
@@ -228,8 +232,10 @@ export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
           >
             <pre className="font-mono whitespace-pre"><code>{previewCode}</code></pre>
           </div>
+        ) : runtime === null ? (
+          <div data-streamdown="code-block-body"><pre className="font-mono whitespace-pre"><code>{code}</code></pre></div>
         ) : (
-          <CodeBlock code={code} language={language as never} isIncomplete={isIncomplete ?? false} />
+          <runtime.CodeBlock code={code} language={language as never} isIncomplete={isIncomplete ?? false} />
         )}
       </div>
 

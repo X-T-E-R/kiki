@@ -127,6 +127,13 @@ import { useSessionSeen } from '../lib/sessionSeen';
 import { useSessionActivity } from './ActivityPanel';
 import { ConfirmDialog } from './ConfirmDialog';
 import { useGuardedNavigate } from './dirtyGuard';
+import {
+  isMobileAppShellUserAgent,
+  MOBILE_ASSISTANT_PATH,
+  mobileChatPath,
+  readDesktopOverride,
+  writeDesktopOverride,
+} from '../mobile/mobileShellRoute';
 import { ActionSheet } from './overlays/ActionSheet';
 import { AnchoredPopover } from './overlays/AnchoredPopover';
 import { LifeMark } from './LifeMark';
@@ -989,6 +996,7 @@ export function Sidebar({
   sidebarMode?: SidebarMode;
 }) {
   const host = useHost();
+  const isPhone = usePhoneMode();
   const navigate = useGuardedNavigate();
   const { client, scopeId, wsStatus, spaceKey: connSpaceKey, localSpaceKey: connLocalSpaceKey, localScopeId: connLocalScopeId } = useConnection();
   const placePool = useOptionalPlaceClientPool();
@@ -3747,6 +3755,20 @@ export function Sidebar({
           <span className={`flex h-5 w-5 shrink-0 items-center justify-center ${location.pathname.startsWith('/settings') ? 'text-ink' : 'text-ink-faint'}`}><Icon name="settings" size={16} className={ICON} /></span>
           <span className="min-w-0 flex-1 truncate">{t('sidebar.settings')}</span>
         </button>
+        {readDesktopOverride() || isPhone || isMobileAppShellUserAgent() ? (
+          <button
+            type="button"
+            data-return-mobile-action
+            onClick={() => {
+              writeDesktopOverride(false);
+              onClose?.();
+              void navigate(activeSessionId !== undefined ? mobileChatPath('local', activeSessionId) : MOBILE_ASSISTANT_PATH);
+            }}
+            className="row-interactive flex h-9 shrink-0 items-center gap-1.5 px-2.5 text-[12.5px] text-ink-soft hover:text-ink pointer-coarse:h-11"
+          >
+            <span>{t('mobile.desktop.returnMobile')}</span>
+          </button>
+        ) : null}
         <button
           type="button"
           data-sidebar-toggle="collapse"

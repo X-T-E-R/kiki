@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState, useSyncExternalStore } from 'react';
 
-import type { ApprovalDecision, DeferredAppendTiming, QuestionAnswer } from '@kiki/protocol';
+import type {
+  ApprovalDecision,
+  DeferredAppendTiming,
+  MessageContent,
+  PermissionMode,
+  PromptSkillActivation,
+  QuestionAnswer,
+} from '@kiki/protocol';
 import { SessionController, createViewState, type SessionViewState } from '@kiki/session-core/session';
 import { sessionAttentionCursor } from '@kiki/session-core/sessions';
 
@@ -12,16 +19,22 @@ import { useControllerRegistry } from '../../state/connection';
 const NOOP_UNSUBSCRIBE = () => {};
 
 export interface MobileSessionStreamResult {
+  readonly controller: SessionController | null;
   readonly state: SessionViewState;
   readonly loadingOlder: boolean;
-  readonly loadOlder: () => Promise<void>;
+  readonly loadOlder: (signal?: AbortSignal) => Promise<boolean>;
   readonly retryLoad: () => Promise<void>;
   readonly sendPrompt: (input: {
     readonly text: string;
+    readonly content?: readonly MessageContent[];
     readonly model?: string;
+    readonly thinking?: string | null;
+    readonly permissionMode?: PermissionMode;
     readonly planMode?: boolean;
     readonly timing?: DeferredAppendTiming;
     readonly personaGreetingReply?: boolean;
+    readonly skills?: readonly PromptSkillActivation[];
+    readonly now?: boolean;
   }) => Promise<boolean>;
   readonly abort: () => Promise<void>;
   readonly resolveApproval: (approvalId: string, decision: ApprovalDecision, reason?: string) => Promise<void>;
@@ -70,11 +83,12 @@ export function useMobileSessionStream(
     );
   }, [sessionId, spaceKey, state.loaded, state.session]);
 
-  const loadOlder = useCallback(async () => {
-    if (controller === null || loadingOlder || !state.hasMoreHistory) return;
+  const loadOlder = useCallback(async (signal?: AbortSignal): Promise<boolean> => {
+    if (controller === null || loadingOlder || !state.hasMoreHistory) return false;
     setLoadingOlder(true);
     try {
-      await controller.loadOlderHistory();
+      const result = await controller.loadOlderHistory(undefined, signal);
+      return result.changed;
     } finally {
       setLoadingOlder(false);
     }
@@ -83,21 +97,38 @@ export function useMobileSessionStream(
   const sendPrompt = useCallback(
     async (input: {
       readonly text: string;
+      readonly content?: readonly MessageContent[];
       readonly model?: string;
+      readonly thinking?: string | null;
+      readonly permissionMode?: PermissionMode;
       readonly planMode?: boolean;
       readonly timing?: DeferredAppendTiming;
       readonly personaGreetingReply?: boolean;
+      readonly skills?: readonly PromptSkillActivation[];
+      readonly now?: boolean;
     }): Promise<boolean> => {
       if (controller === null) return false;
       const trimmed = input.text.trim();
-      if (trimmed === '') return false;
+      const hasMedia = input.content?.some((part) => part.type !== 'text') === true;
+      if (trimmed === '' && !hasMedia) return false;
       try {
+        if (input.now === true) {
+          await controller.sendPromptNow({
+            text: trimmed,
+            ...(input.content !== undefined ? { content: [...input.content] } : {}),
+          });
+          return true;
+        }
         await controller.sendPrompt({
           text: trimmed,
+          ...(input.content !== undefined ? { content: [...input.content] } : {}),
           ...(input.model !== undefined && input.model !== '' ? { model: input.model } : {}),
+          ...(input.thinking !== undefined ? { thinking: input.thinking } : {}),
+          ...(input.permissionMode !== undefined ? { permissionMode: input.permissionMode } : {}),
           ...(input.planMode === true ? { planMode: true } : {}),
           ...(input.timing !== undefined ? { appendTiming: input.timing } : {}),
           ...(input.personaGreetingReply === true ? { personaGreetingReply: true } : {}),
+          ...(input.skills !== undefined && input.skills.length > 0 ? { skills: [...input.skills] } : {}),
         });
         return true;
       } catch (error) {
@@ -195,6 +226,7 @@ export function useMobileSessionStream(
   }, [controller]);
 
   return {
+    controller,
     state,
     loadingOlder,
     loadOlder,

@@ -55,7 +55,7 @@ const writeMock = vi.fn(async (path: string, text: string) => {
 });
 const connectionMock = vi.hoisted(() => ({
   activeClient: null as unknown, defaultClient: null as unknown, scopeId: 'local',
-  connectionSource: 'desktop' as 'desktop' | 'remote' | 'ssh' | null,
+  connectionSource: 'desktop' as 'desktop' | 'remote' | 'ssh' | 'app-shell' | null,
   config: null as { readonly url?: string } | null,
 }));
 const hostMock = vi.hoisted(() => ({ desktop: false, revealPath: vi.fn(), openPath: vi.fn() }));
@@ -3209,6 +3209,29 @@ describe('PreviewWorkspace attachment actions & copy marking (#29)', () => {
     await settle();
     expect(previewHostFileSpy).toHaveBeenCalledWith('/work/src/server.ts');
     expect(fsReadSpy).not.toHaveBeenCalled();
+
+    // Paired mobile app-shell connection (`connectionSource === 'app-shell'`)
+    // falls back to `/api/fs:content` when a session-referenced file lives
+    // outside `cwd` (e.g. `.tmp/` or sibling worktree, P1-9).
+    previewHostFileSpy.mockClear();
+    fsReadSpy.mockClear();
+    previewHostFileSpy.mockResolvedValueOnce({ text: 'console.log("twin ok");\n', truncated: false, lossless: true, etag: 'e-twin' });
+    connectionMock.connectionSource = 'app-shell';
+    connectionMock.scopeId = 'direct:';
+    const appShellProbe = makeRoot();
+    await renderSettled(
+      appShellProbe.root,
+      <MediaPreviewProvider cwd="/work" sessionId="sess-37">
+        <OpenButton path="/tmp/s20-compaction-cache-twin.mjs" />
+      </MediaPreviewProvider>,
+    );
+    await openFile(appShellProbe.container, '/tmp/s20-compaction-cache-twin.mjs');
+    await settle();
+    expect(previewHostFileSpy).toHaveBeenCalledWith('/tmp/s20-compaction-cache-twin.mjs');
+    const twinPanel = appShellProbe.container.querySelector<HTMLElement>(
+      '[data-preview-tabpanel="/tmp/s20-compaction-cache-twin.mjs"]',
+    )!;
+    expect(twinPanel.querySelector<HTMLTextAreaElement>('[data-testid="editor"]')?.value).toContain('twin ok');
   });
 
   it('replaces the tab strip with a title + tab sheet in phone touch mode, exposes @ and actions via header more sheet, and scrolls active desktop tabs into view (#36)', async () => {

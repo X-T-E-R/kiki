@@ -38,7 +38,7 @@ import {
   resolveFloatingOwners,
 } from '../../lib/uiBusy';
 import { MODAL_ESCAPE_ATTRIBUTE } from '../Dialog';
-import { POPOVER_SURFACE_CLASS } from '../SearchableSelect';
+import { POPOVER_SURFACE_CLASS } from '../popoverSurfaceClass';
 
 const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 

@@ -57,6 +57,7 @@ export function KikiMarkdownTable({ children, className, node: _node, ...props }
     >
       <div
         ref={scrollRef}
+        data-base-ui-swipe-ignore="x"
         tabIndex={overflow.hasOverflow ? 0 : undefined}
         onScroll={measure}
         className="kiki-md-table-scroll"

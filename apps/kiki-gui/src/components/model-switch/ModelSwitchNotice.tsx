@@ -7,18 +7,13 @@ import { Icon } from '../icons';
 import { ActivityRow, TimelineDivider } from '../timeline/ActivityRow';
 import { CopyButton } from '../timeline/ContentCopyButton';
 import { useResolvedModelDisplay } from '../timeline/ModelDisplayContext';
+import {
+  ModelSwitchActionsContext,
+  type ModelSwitchNoticeActions,
+} from '../timeline/transcriptDeliveryContext';
 import { TimelineErrorCallout, type TimelineErrorAction } from '../timeline/TimelineErrorCallout';
 
-export interface ModelSwitchNoticeActions {
-  readonly edit?: (operationId: string) => void;
-  readonly cancel?: (operationId: string) => void;
-  readonly retry?: (operationId: string) => void;
-  readonly retryAsFresh?: (operationId: string) => void;
-  readonly keepOriginal?: (operationId: string) => void;
-  readonly pendingOperationId?: string;
-}
-
-export const ModelSwitchActionsContext = createContext<ModelSwitchNoticeActions | undefined>(undefined);
+export { ModelSwitchActionsContext, type ModelSwitchNoticeActions };
 
 type ModelSwitchBlock = NonNullable<NoticeBlock['modelSwitch']>;
 

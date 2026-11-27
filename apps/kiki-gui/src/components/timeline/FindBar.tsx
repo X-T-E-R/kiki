@@ -30,7 +30,7 @@ import {
 } from '../../lib/timelineFind';
 import { useOptionalConnection } from '../../state/connection';
 import { Icon } from '../icons';
-import { POPOVER_SURFACE_CLASS } from '../SearchableSelect';
+import { POPOVER_SURFACE_CLASS } from '../popoverSurfaceClass';
 import { useTranscriptController } from '../transcriptDetail';
 
 export interface FindBarProps {

@@ -22,7 +22,7 @@ import { floatingSurfaceZIndex, registerOverlay } from '../../lib/uiBusy';
 import { STATUS_SEGMENT_CLASS } from '../ComposerControls';
 import { Icon, Spinner } from '../icons';
 import { FOCUS_RING } from '../rail-variants/shell';
-import { POPOVER_SURFACE_CLASS } from '../SearchableSelect';
+import { POPOVER_SURFACE_CLASS } from '../popoverSurfaceClass';
 import { useExecutePluginSlotAction, usePluginGuiSlots } from './PluginComposerSlots';
 
 const MAX_INLINE_CAPSULES = 3;

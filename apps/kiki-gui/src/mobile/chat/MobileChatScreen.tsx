@@ -1,22 +1,39 @@
-import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react';
+import { lazy, Suspense, useCallback, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import { MAIN_AGENT_ID, personaGreeting, type UserBlock } from '@kiki/session-core/session';
 import { pushToast } from '../../lib/toasts';
 
 import { Icon } from '../../components/icons';
+
+function InspectorIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <rect x="2" y="2.5" width="12" height="11" rx="2" stroke="currentColor" strokeWidth="1.35" />
+      <path d="M10 2.75V13.25" stroke="currentColor" strokeWidth="1.35" />
+    </svg>
+  );
+}
+import { lazyComponent } from '../../lib/lazyComponent';
 import {
+  canFaithfullyRetryUserBlock,
   ModelSwitchActionsContext,
   type ModelSwitchNoticeActions,
-} from '../../components/model-switch/ModelSwitchNotice';
-import { canFaithfullyRetryUserBlock } from '../../components/timeline/TurnTailSurface';
+} from '../../components/timeline/transcriptDeliveryContext';
+
+const ActionSheet = lazyComponent(() =>
+  import('../../components/overlays/ActionSheet').then((m) => m.ActionSheet),
+);
+
+if (import.meta.env.MODE === 'test') {
+  await ActionSheet.preload();
+}
 import { ToastAnchor } from '../../components/Toasts';
 import { useI18n } from '../../i18n';
 import { isSessionNotFoundMessage, type KikiClient } from '../../lib/client';
-import { LiftTheHoodSheet, type HoodTab } from './LiftTheHoodSheet';
-import { MobileComposer } from './MobileComposer';
-import { MobileTranscript } from './MobileTranscript';
 import { useMobileSessionStream } from './useMobileSessionStream';
+
+const LazyMobileChatWorkspace = lazy(() => import('./MobileChatWorkspace'));
 
 interface MobileChatScreenProps {
   readonly spaceKey: string;
@@ -25,7 +42,7 @@ interface MobileChatScreenProps {
   readonly client: KikiClient;
   /**
    * `push`: a pushed thread with a back arrow and edge swipe.
-   * `root`: the Assistant tab's resident chat, which sits above the tab bar.
+   * `root`: the Assistant tab's resident chat.
    */
   readonly variant?: 'push' | 'root';
   /** Replaces the back arrow and title (root variant: the assistant switcher). */
@@ -56,10 +73,8 @@ export function MobileChatScreen({
 }: MobileChatScreenProps) {
   const { t, locale } = useI18n();
   const stream = useMobileSessionStream(client, spaceKey, sessionId);
-  const [hoodOpen, setHoodOpen] = useState(false);
-  const [hoodTab, setHoodTab] = useState<HoodTab>('info');
-  const [hoodChangeId, setHoodChangeId] = useState<string | undefined>(undefined);
-  const [hoodModels, setHoodModels] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [selectedModel, setSelectedModel] = useState<string | undefined>(undefined);
   const [planMode, setPlanMode] = useState(false);
   const [recoveringInterruption, setRecoveringInterruption] = useState(false);
@@ -67,26 +82,18 @@ export function MobileChatScreen({
   const [restoreDraft, setRestoreDraft] = useState<{ readonly text: string; readonly nonce: number } | undefined>(undefined);
   const isRoot = variant === 'root';
 
-  // Smooth touch left-edge swipe-back gesture (zero document reload).
+  // Smooth touch left-edge swipe-back gesture on pushed chat screens.
   const [swipeX, setSwipeX] = useState(0);
   const edgeSwipeRef = useRef<{ readonly startX: number; readonly startY: number; active: boolean } | null>(null);
-
-  const openHood = (tab: HoodTab, changeId?: string, models = false) => {
-    setHoodTab(tab);
-    setHoodChangeId(changeId);
-    setHoodModels(models);
-    setHoodOpen(true);
-  };
 
   const session = stream.state.session;
   const persona = session?.agent_config?.persona;
   const messageMode = session?.delivery === 'message';
   const hasUserTurn = useMemo(() => stream.state.blocks.some((block) => block.kind === 'user'), [stream.state.blocks]);
 
-  // The persona's local greeting opens an empty home chat at zero token cost.
   const personaQuery = useQuery({
     queryKey: ['mobile-persona', spaceKey, client.baseUrl, persona?.id],
-    enabled: persona?.id !== undefined && stream.state.loaded && !hasUserTurn,
+    enabled: persona?.id !== undefined && stream.state.loaded && !hasUserTurn && typeof client.getPersona === 'function',
     staleTime: 5 * 60_000,
     queryFn: async () => (await client.getPersona(persona!.id)).definition,
   });
@@ -98,7 +105,15 @@ export function MobileChatScreen({
 
   const title = session?.title?.trim() || persona?.name || t('mobile.chats.title');
   const runningTasksCount = stream.state.tasks.filter((task) => task.status === 'running').length;
-  const subStatus = stream.state.busy ? `${spaceName} · ${t('mobile.chat.thinking')}` : spaceName;
+  const waitingCount = useMemo(
+    () =>
+      stream.state.blocks.filter(
+        (block) =>
+          (block.kind === 'approval' && block.resolution === undefined) ||
+          (block.kind === 'question' && block.outcome === undefined),
+      ).length || (stream.state.pendingInteraction !== 'none' ? 1 : 0),
+    [stream.state.blocks, stream.state.pendingInteraction],
+  );
   const loadError =
     stream.state.loadError ??
     (!stream.state.loaded && stream.state.resyncFailed ? stream.state.resyncError?.message : undefined);
@@ -188,7 +203,9 @@ export function MobileChatScreen({
 
   const modelSwitchActions = useMemo<ModelSwitchNoticeActions>(() => ({
     pendingOperationId: pendingSwitchOperationId,
-    edit: () => { openHood('info', undefined, true); },
+    edit: () => {
+      document.querySelector<HTMLButtonElement>('[data-composer-compact-sheet-trigger], [data-model-picker-trigger]')?.click();
+    },
     cancel: typeof client.cancelAgentModelSwitch === 'function'
       ? (operationId) => {
           runModelSwitchAction(
@@ -252,18 +269,14 @@ export function MobileChatScreen({
     });
   }, [client, sessionId, stream.state.busy]);
 
-  const handleOpenModelPicker = useCallback(() => {
-    openHood('info', undefined, true);
-  }, []);
-
   return (
     <div
       data-mobile-screen={isRoot ? 'assistant-chat' : 'chat'}
       style={swipeX > 0 ? { transform: `translate3d(${swipeX}px, 0, 0)` } : undefined}
       onTouchStart={(event) => {
-        if (isRoot) return;
+        if (isRoot || inspectorOpen || moreMenuOpen) return;
         const touch = event.touches[0];
-        if (touch === undefined || touch.clientX > 28) return;
+        if (touch === undefined || touch.clientX > 24) return;
         edgeSwipeRef.current = { startX: touch.clientX, startY: touch.clientY, active: false };
       }}
       onTouchMove={(event) => {
@@ -291,7 +304,10 @@ export function MobileChatScreen({
       }}
       className={`flex min-h-0 flex-1 flex-col bg-paper ${isRoot ? '' : 'kiki-mobile-push-screen'}`}
     >
-      <header className="flex h-14 shrink-0 items-center gap-1.5 border-b border-hairline/65 px-2">
+      <header
+        data-main-header=""
+        className="flex h-12 shrink-0 items-center gap-1 border-b border-hairline/70 px-2"
+      >
         {leading ?? (
           <>
             <button
@@ -299,34 +315,79 @@ export function MobileChatScreen({
               data-mobile-chat-back
               aria-label={t('mobile.chat.back')}
               onClick={onBack}
-              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-ink transition-colors hover:bg-ink/[0.05]"
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-ink transition-colors hover:bg-ink/[0.05]"
             >
               <Icon name="arrowLeft" size={16} />
             </button>
 
             <button
               type="button"
-              onClick={() => { openHood('info'); }}
-              className="flex min-h-11 min-w-0 flex-1 flex-col items-start justify-center text-left"
+              onClick={() => { setInspectorOpen(true); }}
+              className="flex min-h-11 min-w-0 flex-1 items-center gap-2 px-1 text-left"
             >
-              <span className="w-full truncate font-sans text-[16px] font-bold leading-6 text-ink">{title}</span>
-              <span className="mt-0.5 flex w-full items-center gap-1.5 text-[12px] leading-4 text-ink-faint">
-                <span
-                  className={`h-[6px] w-[6px] shrink-0 rounded-full ${stream.state.busy ? 'bg-accent' : 'bg-success'}`}
-                  aria-hidden="true"
-                />
-                <span className="min-w-0 truncate">{subStatus}</span>
-              </span>
+              <h1 className="min-w-0 flex-1 truncate font-sans text-[15px] font-bold leading-5 text-ink">
+                {title}
+              </h1>
+              <span
+                className={`h-1.5 w-1.5 shrink-0 rounded-full ${stream.state.busy ? 'status-dot-busy bg-accent' : 'bg-success/80'}`}
+                title={spaceName}
+                aria-hidden="true"
+              />
             </button>
           </>
         )}
 
         <button
           type="button"
+          data-mobile-voice-trigger=""
+          aria-label={t('mobile.chat.voice')}
+          title={t('mobile.chat.voice')}
+          onClick={() => {
+            onOpenVoiceForChat((spoken) => {
+              const trimmed = spoken.trim();
+              if (trimmed === '') return;
+              void stream.sendPrompt({
+                text: trimmed,
+                model: selectedModel,
+                planMode,
+                ...(greeting !== undefined && stream.state.blocks.length === 0 ? { personaGreetingReply: true } : {}),
+              });
+            });
+          }}
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+            <line x1="12" x2="12" y1="19" y2="22" />
+          </svg>
+        </button>
+
+        <button
+          type="button"
+          data-rail-toggle=""
+          aria-label={t('sv.togglePanelAria')}
+          aria-expanded={inspectorOpen}
+          onClick={() => { setInspectorOpen((prev) => !prev); }}
+          className={`relative flex h-11 min-w-11 shrink-0 items-center justify-center gap-1 rounded-lg px-2 transition-colors ${
+            inspectorOpen ? 'bg-canvas text-ink' : 'text-ink-soft hover:bg-ink/[0.05] hover:text-ink'
+          }`}
+        >
+          <InspectorIcon />
+          {waitingCount > 0 ? (
+            <span className="text-[11px] font-bold text-accent-ink tabular-nums">{waitingCount}</span>
+          ) : runningTasksCount > 0 ? (
+            <span className="text-[11px] text-ink-faint tabular-nums">{runningTasksCount}</span>
+          ) : null}
+        </button>
+
+        <button
+          type="button"
           data-mobile-chat-more
           aria-label={t('mobile.chat.more')}
-          onClick={() => { openHood('info'); }}
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink"
+          aria-expanded={moreMenuOpen}
+          onClick={() => { setMoreMenuOpen(true); }}
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink"
         >
           <Icon name="more" size={16} />
         </button>
@@ -334,97 +395,121 @@ export function MobileChatScreen({
 
       {belowHeader}
 
-      <ModelSwitchActionsContext.Provider value={modelSwitchActions}>
-        <MobileTranscript
-          state={stream.state}
-          blocks={stream.state.blocks}
-          loaded={stream.state.loaded}
-          loadError={loadError}
-          busy={stream.state.busy}
-          hasMoreHistory={stream.state.hasMoreHistory}
-          loadingOlder={stream.loadingOlder}
-          messageMode={messageMode}
-          personaName={persona?.name}
-          greeting={greeting}
-          modelCatalog={modelsQuery.data}
-          modelCatalogScope={spaceKey}
-          interruptedWork={session?.interrupted_work}
-          recoveringInterruption={recoveringInterruption}
-          onLoadOlder={() => { void stream.loadOlder(); }}
-          onRetryLoad={canRetryLoad ? () => { void stream.retryLoad(); } : undefined}
-          onOpenHood={openHood}
-          onResolveApproval={(approvalId, decision, reason) => { void stream.resolveApproval(approvalId, decision, reason); }}
-          onAnswerQuestion={stream.answerQuestion}
-          onDismissQuestion={stream.dismissQuestion}
-          onOpenWorkbench={onOpenWorkbench}
-          onContinueFailedTurn={handleContinueFailedTurn}
-          onRetryFailedTurn={handleRetryFailedTurn}
-          onRestoreDraft={handleRestoreDraft}
-          onOpenModelPicker={handleOpenModelPicker}
-          onOpenProviderSettings={handleOpenProviderSettings}
-          onRecoverInterruption={typeof client.recoverSession === 'function' ? handleRecoverInterruption : undefined}
-          onRetryCompaction={typeof client.compactSession === 'function' ? handleRetryCompaction : undefined}
-        />
-      </ModelSwitchActionsContext.Provider>
-
-      <div className="relative shrink-0">
+      <div className="relative flex min-h-0 flex-1 flex-col">
         <ToastAnchor className="kiki-mobile-toast-anchor-inline" />
-        {runningTasksCount > 0 ? (
-          <div className="px-3 pb-1">
-            <button
-              type="button"
-              data-mobile-live-pill
-              onClick={() => { openHood('tools'); }}
-              className="mx-auto flex h-11 w-full max-w-[640px] items-center justify-between gap-2 rounded-2xl border border-hairline/90 bg-panel px-3.5 text-[13px] text-ink shadow-xs"
-            >
-              <span className="flex min-w-0 items-center gap-2">
-                <span className="h-2 w-2 shrink-0 rounded-full bg-accent" aria-hidden="true" />
-                <span className="truncate font-normal">
-                  {t('mobile.chat.liveRunPill', { count: runningTasksCount })}
-                </span>
-              </span>
-              <Icon name="chevron" size={12} className="shrink-0 text-ink-faint" />
-            </button>
+        {loadError !== undefined && (!stream.state.loaded || stream.state.blocks.length === 0) ? (
+          <div
+            role="alert"
+            data-mobile-load-error=""
+            className="flex flex-1 flex-col items-center justify-center gap-4 px-6"
+          >
+            <div className="max-w-[360px] rounded-2xl border border-danger/30 bg-danger/5 p-4 text-center">
+              <p className="text-[13px] font-bold text-danger">{t('transcript.couldNotOpen')}</p>
+              <p className="mt-1 break-words font-mono text-[11px] text-danger/80">{loadError}</p>
+              {canRetryLoad ? (
+                <button
+                  type="button"
+                  data-mobile-retry-load=""
+                  onClick={() => { void stream.retryLoad(); }}
+                  className="mt-3 min-h-11 rounded-xl bg-accent px-4 py-2 text-[13px] font-normal text-on-accent transition-colors hover:bg-accent-deep"
+                >
+                  {t('common.retry')}
+                </button>
+              ) : null}
+            </div>
           </div>
-        ) : null}
-
-        <MobileComposer
-          draftKey={`${spaceKey}::${sessionId}`}
-          spaceName={persona?.name ?? personaNameHint ?? spaceName}
-          busy={stream.state.busy}
-          planMode={planMode}
-          onPlanModeChange={setPlanMode}
-          onOpenModelPicker={() => { openHood('info', undefined, true); }}
-          onOpenVoice={() => {
-            onOpenVoiceForChat((spoken) => {
-              void send(spoken);
-            });
-          }}
-          onSend={(text, timing) => send(text, timing)}
-          onAbort={stream.abort}
-          restoreDraft={restoreDraft}
-        />
+        ) : (
+          <ModelSwitchActionsContext.Provider value={modelSwitchActions}>
+            <Suspense
+              fallback={
+                <div className="flex flex-1 items-center justify-center text-[12px] text-ink-faint">
+                  {t('transcript.opening')}
+                </div>
+              }
+            >
+              <LazyMobileChatWorkspace
+                spaceKey={spaceKey}
+                spaceName={spaceName}
+                sessionId={sessionId}
+                client={client}
+                stream={stream}
+                messageMode={messageMode}
+                greeting={greeting?.text}
+                persona={persona}
+                personaNameHint={personaNameHint}
+                modelCatalog={modelsQuery.data}
+                selectedModel={selectedModel}
+                onSelectModel={setSelectedModel}
+                planMode={planMode}
+                onPlanModeChange={setPlanMode}
+                restoreDraft={restoreDraft}
+                recoveringInterruption={recoveringInterruption}
+                inspectorOpen={inspectorOpen}
+                onInspectorOpenChange={setInspectorOpen}
+                onRetryLoad={canRetryLoad ? () => { void stream.retryLoad(); } : undefined}
+                onContinueFailedTurn={handleContinueFailedTurn}
+                onRetryFailedTurn={handleRetryFailedTurn}
+                onRetryCompaction={typeof client.compactSession === 'function' ? handleRetryCompaction : undefined}
+                onRecoverInterruption={typeof client.recoverSession === 'function' ? handleRecoverInterruption : undefined}
+                onOpenProviderSettings={handleOpenProviderSettings}
+              />
+            </Suspense>
+          </ModelSwitchActionsContext.Provider>
+        )}
       </div>
 
-      {isRoot ? <div className="kiki-mobile-tabbar-spacer" aria-hidden="true" /> : null}
-
-      <LiftTheHoodSheet
-        open={hoodOpen}
-        initialTab={hoodTab}
-        initialChangeId={hoodChangeId}
-        initialModelPicker={hoodModels}
-        onClose={() => { setHoodOpen(false); }}
-        client={client}
-        spaceKey={spaceKey}
-        spaceName={spaceName}
-        sessionTitle={title}
-        currentModel={stream.state.model}
-        personaName={persona?.name}
-        selectedModel={selectedModel}
-        onSelectModel={setSelectedModel}
-        blocks={stream.state.blocks}
-        onOpenWorkbench={onOpenWorkbench}
-      />
+      {moreMenuOpen ? (
+        <ActionSheet
+          ariaLabel={t('mobile.chat.more')}
+          overlayId="mobile-chat-more-sheet"
+          dataAttribute="data-mobile-chat-more-sheet"
+          onClose={() => { setMoreMenuOpen(false); }}
+        >
+          <div className="kiki-mobile-sheet-grabber" aria-hidden="true" />
+          <div className="flex flex-col gap-0.5 py-1">
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setMoreMenuOpen(false);
+                setInspectorOpen(true);
+              }}
+              className="flex w-full items-center gap-3 text-left text-ink hover:bg-ink/[0.04]"
+            >
+              <InspectorIcon />
+              <span>{t('sv.showPanel')}</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              data-mobile-open-workbench=""
+              onClick={() => {
+                setMoreMenuOpen(false);
+                onOpenWorkbench();
+              }}
+              className="flex w-full items-center gap-3 text-left text-ink hover:bg-ink/[0.04]"
+            >
+              <Icon name="expand" size={16} className="text-ink-soft" />
+              <span>{t('mobile.chat.openWorkbench')}</span>
+            </button>
+            {typeof client.compactSession === 'function' ? (
+              <button
+                type="button"
+                role="menuitem"
+                disabled={stream.state.busy}
+                onClick={() => {
+                  setMoreMenuOpen(false);
+                  handleRetryCompaction('summarize');
+                }}
+                className="flex w-full items-center gap-3 text-left text-ink hover:bg-ink/[0.04] disabled:opacity-50"
+              >
+                <Icon name="collapse" size={16} className="text-ink-soft" />
+                <span>{locale === 'zh' ? '压缩上下文' : 'Compact context'}</span>
+              </button>
+            ) : null}
+          </div>
+        </ActionSheet>
+      ) : null}
     </div>
   );
 }

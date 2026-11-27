@@ -34,10 +34,16 @@ import { registerOverlay } from '../lib/uiBusy';
 import { unzoomedRect, unzoomedViewport } from '../lib/uiZoom';
 import { Icon } from './icons';
 import type { ComposerAttachment } from '@kiki/session-core/composer';
-import { Composer } from './Composer';
-import { ActionSheet } from './overlays/ActionSheet';
-import { PluginMessageActions, useRolePluginMessageActions } from './plugins/PluginMessageActions';
+import { lazyComponent } from '../lib/lazyComponent';
+import { useRolePluginMessageActions } from './plugins/PluginMessageActions';
 import { useTranscriptTarget } from './transcriptDetail';
+
+const ActionSheet = lazyComponent(() => import('./overlays/ActionSheet').then((m) => m.ActionSheet));
+const PluginMessageActions = lazyComponent(() => import('./plugins/PluginMessageActions').then((m) => m.PluginMessageActions));
+
+if (import.meta.env.MODE === 'test') {
+  await Promise.all([ActionSheet.preload(), PluginMessageActions.preload()]);
+}
 
 /**
  * The in-app deep link to a message row, in the `?block=` shape SessionView's
@@ -133,9 +139,9 @@ export interface MessageRowActionsProps {
 
 const FORK_SEED_MODES: readonly SessionSeedMode[] = ['verbatim', 'fresh', 'compact'];
 
-/** A row-action target: 14px glyph in a 28px box (40px on touch) — no border, no pill. */
+/** A row-action target: 14px glyph in a 28px box (44px on touch) — no border, no pill. */
 const TILE =
-  'flex h-7 w-7 pointer-coarse:h-10 pointer-coarse:w-10 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-40';
+  'flex h-7 w-7 pointer-coarse:h-11 pointer-coarse:w-11 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-40';
 const MENU_ITEM =
   'flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40';
 
@@ -360,12 +366,15 @@ export function MessageRowActions({
     }
   };
 
-  // The `⋯` menu's rows: a popover on a fine pointer, an action sheet on touch.
+  // On coarse pointers, settled assistant turns show a quiet inline action
+  // strip directly below the message (Copy, Retry, ⋯) so mobile readers never
+  // hunt for hover-only icons (P0-3).
+  const alwaysVisibleTouchStrip = coarse && role === 'assistant';
   const menuItems = (
     <>
-      {/* Below `sm` the tiles fold in here (`sm:hidden`): a narrow lane keeps
-          the one `⋯` and every action stays a tap away. */}
-      {showCopy ? (
+      {/* Below `sm` the tiles fold in here (`sm:hidden`), except when the
+          assistant touch strip already surfaces Copy & Retry inline. */}
+      {showCopy && !alwaysVisibleTouchStrip ? (
         <button
           type="button"
           role="menuitem"
@@ -394,12 +403,12 @@ export function MessageRowActions({
             setMenuOpen(false);
             onEdit();
           }}
-          className={`${MENU_ITEM} sm:hidden`}
+          className={`${MENU_ITEM} ${alwaysVisibleTouchStrip ? '' : 'sm:hidden'}`}
         >
           {t('transcript.edit')}
         </button>
       ) : null}
-      {showRegenerate ? (
+      {showRegenerate && !alwaysVisibleTouchStrip ? (
         <button
           type="button"
           role="menuitem"
@@ -427,7 +436,7 @@ export function MessageRowActions({
           onClick={() => {
             triggerFork();
           }}
-          className={`${MENU_ITEM} sm:hidden`}
+          className={`${MENU_ITEM} ${alwaysVisibleTouchStrip ? '' : 'sm:hidden'}`}
         >
           {t('transcript.fork')}
         </button>
@@ -469,7 +478,7 @@ export function MessageRowActions({
   // conditions: hidden icons never catch a click, and whatever the overlay
   // hangs over keeps its clicks and its text selection.
   const anyMenuOpen = menuOpen || forkMenuOpen;
-  const visibility = anyMenuOpen
+  const visibility = alwaysVisibleTouchStrip || anyMenuOpen
     ? 'pointer-events-auto opacity-100 transition-opacity'
     : 'pointer-events-none opacity-0 transition-opacity group-hover/msg:pointer-events-auto group-hover/msg:opacity-100 group-focus-within/msg:pointer-events-auto group-focus-within/msg:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100 group-data-[actions-open]/msg:pointer-events-auto group-data-[actions-open]/msg:opacity-100';
 
@@ -477,29 +486,26 @@ export function MessageRowActions({
   // trigger is needed at every width while one of them exists; a strip of tiled
   // actions alone folds it away above `sm`, where those tiles are already on screen.
   const menuOnly = showLink || showPluginActions;
+  const showMoreTrigger = alwaysVisibleTouchStrip
+    ? (menuOnly || showFork || showEdit)
+    : true;
 
-  // `absolute top-full`: the strip hangs from the row's bottom edge into the
-  // gap under the message, so it reserves no height and revealing it moves
-  // nothing. It spans the row's full width: any path down from the text stays
-  // over a row descendant, so the row's hover holds all the way to the icons
-  // (a tile-width box would drop diagonal approaches mid-glide). `z-20` keeps
-  // the open `⋯` above the row's own chrome (a rotated chevron on a collapsed
-  // message paints like a positioned box and would otherwise show through the
-  // panel). On touch the band stays 28px and the 40px tiles sit on its bottom
-  // edge, growing up into the row they belong to — they cover no more of the
-  // next row than the band already does.
   return (
     <span
       ref={menuContainerRef}
       data-row-actions
       data-row-actions-align={align}
       data-row-menu-open={anyMenuOpen || undefined}
-      className={`${visibility} absolute top-full right-0 left-0 z-20 -mt-1.5 flex h-6 items-center pointer-coarse:mt-0 pointer-coarse:h-7 pointer-coarse:items-end ${
+      className={`${visibility} ${
+        alwaysVisibleTouchStrip
+          ? 'relative z-20 mt-0.5 -ml-2 flex h-11 items-center'
+          : 'absolute top-full right-0 left-0 z-20 -mt-1.5 flex h-6 items-center pointer-coarse:mt-0 pointer-coarse:h-11 pointer-coarse:items-end'
+      } ${
         align === 'right' ? 'justify-end' : 'justify-start'
       }`}
     >
-      <span className="relative inline-flex items-center gap-0.5 rounded-md bg-paper/95 px-0.5 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06)]">
-      <span data-row-action-tiles className="hidden items-center gap-0.5 sm:flex">
+      <span className={alwaysVisibleTouchStrip ? 'relative inline-flex items-center gap-0.5' : 'relative inline-flex items-center gap-0.5 rounded-md bg-paper/95 px-0.5 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06)]'}>
+      <span data-row-action-tiles className={alwaysVisibleTouchStrip ? 'flex items-center gap-0.5' : 'hidden items-center gap-0.5 sm:flex'}>
         {showCopy ? (
           <button
             type="button"
@@ -514,7 +520,7 @@ export function MessageRowActions({
               : <Icon name="copy" size={14} />}
           </button>
         ) : null}
-        {showEdit ? (
+        {showEdit && !alwaysVisibleTouchStrip ? (
           <button
             type="button"
             data-row-action="edit"
@@ -540,7 +546,7 @@ export function MessageRowActions({
             <RegenerateIcon />
           </button>
         ) : null}
-        {showFork ? (
+        {showFork && !alwaysVisibleTouchStrip ? (
           <span className="relative inline-flex items-center">
             <button
               ref={forkTriggerRef}
@@ -636,19 +642,21 @@ export function MessageRowActions({
           </span>
         ) : null}
       </span>
-      <button
-        ref={triggerRef}
-        type="button"
-        data-row-more
-        aria-label={t('transcript.moreActions')}
-        title={t('transcript.moreActions')}
-        aria-haspopup="menu"
-        aria-expanded={menuOpen}
-        onClick={toggleMenu}
-        className={`${TILE} ${menuOnly ? '' : 'sm:hidden'}`}
-      >
-        <Icon name="more" size={14} />
-      </button>
+      {showMoreTrigger ? (
+        <button
+          ref={triggerRef}
+          type="button"
+          data-row-more
+          aria-label={t('transcript.moreActions')}
+          title={t('transcript.moreActions')}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          onClick={toggleMenu}
+          className={`${TILE} ${alwaysVisibleTouchStrip || menuOnly ? '' : 'sm:hidden'}`}
+        >
+          <Icon name="more" size={14} />
+        </button>
+      ) : null}
       {coarse ? (
         menuOpen ? (
           // No focus hand-back: the strip reveals itself on focus-within, so a
@@ -718,92 +726,4 @@ export function mergeLoadedAttachments(
   });
   const discovered = remaining.filter((item) => !initial.some((candidate) => sameAttachment(item, candidate)));
   return [...discovered, ...updated];
-}
-
-/** Inline edit-resend with the same attachment pipeline as the main composer. */
-export function UserMessageEditor({
-  initialText,
-  initialAttachments = [],
-  loadAttachments,
-  onSubmit,
-  onCancel,
-}: {
-  initialText: string;
-  initialAttachments?: readonly ComposerAttachment[];
-  loadAttachments?: (signal: AbortSignal) => Promise<readonly ComposerAttachment[]>;
-  onSubmit: (text: string, attachments: readonly ComposerAttachment[], presentation?: import('@kiki/transcript').TextPresentation) => void | Promise<void>;
-  onCancel: () => void;
-}) {
-  const { t } = useI18n();
-  const target = useTranscriptTarget();
-  const [text, setText] = useState(initialText);
-  const [attachments, setAttachments] = useState<readonly ComposerAttachment[]>(initialAttachments);
-  const [loading, setLoading] = useState(loadAttachments !== undefined);
-  const [loadError, setLoadError] = useState(false);
-  const [attempt, setAttempt] = useState(0);
-  const [submitting, setSubmitting] = useState(false);
-  const loaderRef = useRef(loadAttachments);
-  loaderRef.current = loadAttachments;
-  const initialRef = useRef(initialAttachments);
-
-  useEffect(() => {
-    const load = loaderRef.current;
-    if (load === undefined) {
-      setLoading(false);
-      return;
-    }
-    let active = true;
-    const abort = new AbortController();
-    setLoading(true);
-    setLoadError(false);
-    void load(abort.signal).then((media) => {
-      if (active) {
-        setAttachments((current) => mergeLoadedAttachments(current, media, initialRef.current));
-      }
-    })
-      .catch(() => { if (active) setLoadError(true); })
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; abort.abort(); };
-  }, [attempt]);
-
-  const cancel = () => { if (!submitting) onCancel(); };
-  return (
-    // No card shell around the editor: the composer brings its own surface and
-    // the X beside its send button is where this edit ends, so an outer border,
-    // background and padding only drew a second frame around both.
-    <div data-edit-editor className="w-full max-w-[85%]">
-      <Composer
-        busy={false}
-        disabled={submitting}
-        sendDisabled={loading || loadError || submitting}
-        sendDisabledTitle={loading ? t('preview.loading') : loadError ? t('preview.failed') : undefined}
-        variant="subagent" messageEditing autoFocus
-        sessionId={target?.sessionId} agentId={target?.agentId}
-        value={text} onChange={setText}
-        attachments={attachments} onChangeAttachments={setAttachments}
-        model={undefined} defaultModel={undefined} serverDefaultModel={undefined}
-        modelSource="server-default" agentProfileCatalogMode={{ mode: 'global' }}
-        permissionMode="manual" planMode={false} efforts={undefined} effort={undefined}
-        onChangeModel={() => {}} onChangePermissionMode={() => {}}
-        onChangePlanMode={() => {}} onChangeEffort={() => {}}
-        onQueueEditCancel={cancel}
-        onSend={async (body, media, options) => {
-          setSubmitting(true);
-          try { await onSubmit(body, media, options?.presentation); } finally { setSubmitting(false); }
-        }}
-      />
-      {loadError ? (
-        <div className="mt-2 flex items-center px-1">
-          <button
-            type="button"
-            data-edit-retry
-            onClick={() => { setAttempt((value) => value + 1); }}
-            className="cursor-pointer text-[11px] text-danger hover:underline"
-          >
-            {t('preview.failed')} · {t('transcript.detail.retry')}
-          </button>
-        </div>
-      ) : null}
-    </div>
-  );
 }

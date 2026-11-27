@@ -12,6 +12,10 @@
  * - Android high-DPI narrow 360x800 @3x: top 28px, bottom 24px
  */
 
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { gzipSync } from 'node:zlib';
+
 export const TOUCH_STANDARDS = Object.freeze({
   wcagMinimumPx: 24,
   appleHigPrimaryPx: 44,
@@ -73,6 +77,30 @@ export const MOBILE_DEVICE_PROFILES = Object.freeze({
     userAgent:
       'Mozilla/5.0 (iPad; CPU OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 KikiApp/ios',
     standard: 'iPad portrait (820x1180 @2x, >767px coarse pointer, top=24px, bottom=20px)',
+  }),
+  'iphone-390-2x': Object.freeze({
+    id: 'iphone-390-2x',
+    width: 390,
+    height: 844,
+    deviceScaleFactor: 2,
+    isMobile: true,
+    hasTouch: true,
+    safeArea: Object.freeze({ top: 47, right: 0, bottom: 34, left: 0 }),
+    userAgent:
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 KikiApp/ios',
+    standard: 'iPhone 14 portrait (390x844 @2x, top=47px, bottom=34px)',
+  }),
+  'android-412-2x': Object.freeze({
+    id: 'android-412-2x',
+    width: 412,
+    height: 915,
+    deviceScaleFactor: 2,
+    isMobile: true,
+    hasTouch: true,
+    safeArea: Object.freeze({ top: 28, right: 0, bottom: 24, left: 0 }),
+    userAgent:
+      'Mozilla/5.0 (Linux; Android 15; Xiaomi 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Mobile Safari/537.36 KikiApp/android',
+    standard: 'Android flagship portrait (412x915 @2x, top=28px, bottom=24px; 412x517 with 398px IME)',
   }),
 });
 
@@ -735,6 +763,158 @@ export function collectMobileDomSnapshot() {
       offsetTop: document.documentElement.style.getPropertyValue('--kiki-visual-offset-top') || rootStyle.getPropertyValue('--kiki-visual-offset-top').trim(),
       safeTop: rootStyle.getPropertyValue('--kiki-safe-top-inset').trim(),
       safeBottom: rootStyle.getPropertyValue('--kiki-safe-bottom-inset').trim(),
+    },
+  };
+}
+
+export const MOBILE_COLD_BUNDLE_BUDGET = Object.freeze({
+  baselineColdGzipBytes: 767_136,
+  maxDeltaGzipBytes: 35 * 1024,
+  maxAllowedGzipBytes: 767_136 + 35 * 1024,
+});
+
+const STATIC_CHUNK_IMPORT_RE =
+  /(?:^|[;\n}])\s*(?:import|export)\s*(?:[^;"'()]*?\s*from\s*)?["']\.\/([^"'\s]+\.js)["']/g;
+
+/**
+ * Evaluates the chat-inclusive cold `/m/*` static ES module closure
+ * (`index-*.js` entry + `MobileAppShell-*.js` + `MobileChatWorkspace-*.js`
+ * and all transitive static `import`/`export ... from './...'` chunks)
+ * at gzip compression level 9 against the Frame Audit R3 `+35 KB` budget
+ * (`767,136 B` baseline + `35,840 B` = `802,976 B`).
+ */
+export function evaluateMobileColdBundleBudget({
+  distDir,
+  baselineColdGzipBytes = MOBILE_COLD_BUNDLE_BUDGET.baselineColdGzipBytes,
+  maxDeltaGzipBytes = MOBILE_COLD_BUNDLE_BUDGET.maxDeltaGzipBytes,
+} = {}) {
+  const findings = [];
+  const maxAllowedGzipBytes = baselineColdGzipBytes + maxDeltaGzipBytes;
+  const indexHtmlPath = distDir ? join(distDir, 'index.html') : '';
+  const assetsDir = distDir ? join(distDir, 'assets') : '';
+
+  if (!distDir || !existsSync(indexHtmlPath) || !existsSync(assetsDir)) {
+    findings.push({
+      ruleId: 'MOBILE_COLD_BUNDLE_MISSING_CHUNK',
+      severity: 'error',
+      standard: 'Frame Audit R3: built GUI dist/index.html and dist/assets must exist for cold bundle verification',
+      actual: { distDir: distDir ?? null, indexHtmlExists: Boolean(distDir && existsSync(indexHtmlPath)), assetsDirExists: Boolean(distDir && existsSync(assetsDir)) },
+      expected: { indexHtmlExists: true, assetsDirExists: true },
+    });
+    return {
+      findings,
+      metrics: null,
+    };
+  }
+
+  const indexHtml = readFileSync(indexHtmlPath, 'utf8');
+  const entryMatch = indexHtml.match(/<script\b[^>]*\bsrc=["'](?:\.|)?\/assets\/(index-[^"']+\.js)["']/i);
+  const jsFiles = readdirSync(assetsDir).filter((file) => file.endsWith('.js'));
+  const mobileShellChunks = jsFiles.filter((file) => /^MobileAppShell-[^/\\]+\.js$/.test(file));
+  const mobileWorkspaceChunks = jsFiles.filter((file) => /^MobileChatWorkspace-[^/\\]+\.js$/.test(file));
+
+  if (!entryMatch || mobileShellChunks.length === 0 || mobileWorkspaceChunks.length === 0) {
+    findings.push({
+      ruleId: 'MOBILE_COLD_BUNDLE_MISSING_CHUNK',
+      severity: 'error',
+      standard: 'Frame Audit R3: cold /m/* closure requires entry index-*.js, MobileAppShell-*.js, and MobileChatWorkspace-*.js',
+      actual: {
+        entryChunk: entryMatch ? entryMatch[1] : null,
+        mobileShellChunks,
+        mobileWorkspaceChunks,
+      },
+      expected: {
+        entryChunkPresent: true,
+        mobileShellChunkPresent: true,
+        mobileWorkspaceChunkPresent: true,
+      },
+    });
+    return {
+      findings,
+      metrics: null,
+    };
+  }
+
+  const roots = [entryMatch[1], ...mobileShellChunks, ...mobileWorkspaceChunks];
+  const seen = new Set();
+  const queue = [...roots];
+  const missingImports = [];
+
+  while (queue.length > 0) {
+    const chunk = queue.shift();
+    if (!chunk || seen.has(chunk)) continue;
+    const chunkPath = join(assetsDir, chunk);
+    if (!existsSync(chunkPath)) {
+      missingImports.push(chunk);
+      continue;
+    }
+    seen.add(chunk);
+    const source = readFileSync(chunkPath, 'utf8');
+    for (const match of source.matchAll(STATIC_CHUNK_IMPORT_RE)) {
+      const target = match[1];
+      if (target && !seen.has(target)) {
+        queue.push(target);
+      }
+    }
+  }
+
+  if (missingImports.length > 0) {
+    findings.push({
+      ruleId: 'MOBILE_COLD_BUNDLE_MISSING_CHUNK',
+      severity: 'error',
+      standard: 'Frame Audit R3: all static ES imports in the cold /m/* closure must resolve on disk',
+      actual: { missingImports },
+      expected: { missingImports: [] },
+    });
+  }
+
+  const chunkStats = [...seen]
+    .map((file) => {
+      const buf = readFileSync(join(assetsDir, file));
+      return {
+        file,
+        rawBytes: buf.length,
+        gzipBytes: gzipSync(buf, { level: 9 }).length,
+      };
+    })
+    .sort((a, b) => b.gzipBytes - a.gzipBytes);
+
+  const totalRawBytes = chunkStats.reduce((sum, item) => sum + item.rawBytes, 0);
+  const totalGzipBytes = chunkStats.reduce((sum, item) => sum + item.gzipBytes, 0);
+  const deltaGzipBytes = totalGzipBytes - baselineColdGzipBytes;
+  const headroomGzipBytes = maxAllowedGzipBytes - totalGzipBytes;
+
+  if (totalGzipBytes > maxAllowedGzipBytes) {
+    findings.push({
+      ruleId: 'MOBILE_COLD_BUNDLE_BUDGET_EXCEEDED',
+      severity: 'error',
+      standard: `Frame Audit R3: chat-inclusive cold /m/* static closure (level-9 gzip) must be <= ${maxAllowedGzipBytes} B (${baselineColdGzipBytes} B + ${maxDeltaGzipBytes} B)`,
+      actual: {
+        totalGzipBytes,
+        deltaGzipBytes,
+        overBudgetBytes: totalGzipBytes - maxAllowedGzipBytes,
+        chunkCount: chunkStats.length,
+      },
+      expected: {
+        maxAllowedGzipBytes,
+        maxDeltaGzipBytes,
+      },
+    });
+  }
+
+  return {
+    findings,
+    metrics: {
+      roots,
+      chunkCount: chunkStats.length,
+      totalRawBytes,
+      totalGzipBytes,
+      baselineColdGzipBytes,
+      maxDeltaGzipBytes,
+      maxAllowedGzipBytes,
+      deltaGzipBytes,
+      headroomGzipBytes,
+      topChunks: chunkStats.slice(0, 15),
     },
   };
 }

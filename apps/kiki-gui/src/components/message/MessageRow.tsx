@@ -65,21 +65,12 @@ import {
   type MessageWebLink,
 } from './messageMedia';
 
+import { speakerOf } from './messageTimeline';
+
+export { speakerOf } from './messageTimeline';
+
 export interface MessageSpeaker {
   readonly persona: PersonaAvatarData;
-}
-
-/** Who a message speaks as: the receipt's sender, else the session's persona, else a neutral agent face. */
-export function speakerOf(block: MessageBlock, fallback: PersonaAvatarData | undefined, agentLabel: string): PersonaAvatarData {
-  if (block.personaId !== undefined) {
-    const sameAsFallback = fallback !== undefined && fallback.id === block.personaId;
-    return {
-      id: block.personaId,
-      name: block.senderName ?? fallback?.name ?? block.personaId,
-      avatarUrl: sameAsFallback ? fallback.avatarUrl : `/api/personas/${encodeURIComponent(block.personaId)}/avatar`,
-    };
-  }
-  return fallback ?? { id: 'kiki-agent', name: agentLabel };
 }
 
 /** The visible text: the committed text once sent, the partial draft while sending. */

@@ -4,12 +4,23 @@ import { useQuery } from '@tanstack/react-query';
 import type { UnifiedInboxItem } from '@kiki/session-core/sessions';
 
 import { Icon } from '../../components/icons';
-import { ActionSheet } from '../../components/overlays/ActionSheet';
 import { PersonaAvatar, personaAvatarOf } from '../../components/persona/PersonaAvatar';
 import { useI18n } from '../../i18n';
 import type { KikiClient } from '../../lib/client';
+import { lazyComponent } from '../../lib/lazyComponent';
 import { MobileChatScreen } from '../chat/MobileChatScreen';
-import { AssistantSetupView, type AssistantComputer } from '../components/AssistantSetupView';
+import type { AssistantComputer } from '../components/AssistantSetupView';
+
+const ActionSheet = lazyComponent(() =>
+  import('../../components/overlays/ActionSheet').then((m) => m.ActionSheet),
+);
+const AssistantSetupView = lazyComponent(() =>
+  import('../components/AssistantSetupView').then((m) => m.AssistantSetupView),
+);
+
+if (import.meta.env.MODE === 'test') {
+  await Promise.all([ActionSheet.preload(), AssistantSetupView.preload()]);
+}
 import { NeedsYouSheet, NeedsYouStrip } from '../components/NeedsYouStrip';
 import { spaceKeyToScope } from '../../lib/useMultiSpaceSessions';
 import { assistantScopeTarget, useMobileAssistant, writeMobileAssistant, type MobileAssistantBinding } from '../mobileAssistantStore';
@@ -29,6 +40,8 @@ interface AssistantTabProps {
   readonly onOpenVoiceForChat: (onResult: (text: string) => void) => void;
   /** Moves the global space scope (a `spaceScope` token). */
   readonly onScopeChange: (scope: string) => void;
+  readonly onOpenNavDrawer?: () => void;
+  readonly navUnreadBadge?: number;
 }
 
 /**
@@ -49,6 +62,8 @@ export function AssistantTab({
   onOpenProviderSettings,
   onOpenVoiceForChat,
   onScopeChange,
+  onOpenNavDrawer,
+  navUnreadBadge = 0,
 }: AssistantTabProps) {
   const { t } = useI18n();
   const recent = useMobileAssistant(undefined);
@@ -88,6 +103,24 @@ export function AssistantTab({
   if (binding === undefined || bindingClient === undefined) {
     return (
       <div data-mobile-screen="assistant-setup" className="flex min-h-0 flex-1 flex-col">
+        {onOpenNavDrawer !== undefined ? (
+          <header data-main-header="" className="flex h-12 shrink-0 items-center justify-between border-b border-hairline/70 px-2">
+            <button
+              type="button"
+              data-sidebar-menu=""
+              aria-label={t('mobile.tab.nav')}
+              onClick={onOpenNavDrawer}
+              className="relative flex h-11 w-11 items-center justify-center rounded-lg text-ink transition-colors hover:bg-ink/[0.05]"
+            >
+              <Icon name="menu" size={16} />
+              {navUnreadBadge > 0 ? (
+                <span className="absolute top-2 right-2 h-2 w-2 rounded-full bg-accent" aria-hidden="true" />
+              ) : null}
+            </button>
+            <span className="font-display text-[17px] font-bold text-ink">{t('mobile.tab.assistant')}</span>
+            <span className="h-11 w-11" aria-hidden="true" />
+          </header>
+        ) : null}
         <NeedsYouStrip count={needsYouItems.length} onOpen={() => { setNeedsYouOpen(true); }} />
         <AssistantSetupView
           variant="page"
@@ -116,25 +149,41 @@ export function AssistantTab({
         sessionId={binding.sessionId}
         client={bindingClient}
         leading={
-          <button
-            type="button"
-            data-mobile-assistant-switch
-            aria-label={t('mobile.assistant.switch')}
-            onClick={() => {
-              setSetupChoice(undefined);
-              setSwitcherOpen(true);
-            }}
-            className="flex min-h-11 min-w-0 flex-1 items-center gap-2.5 rounded-full py-1 pl-1.5 pr-3 text-left transition-colors hover:bg-ink/[0.04]"
-          >
-            <PersonaAvatar persona={personaAvatarOf({ id: binding.personaId, name: personaName })} size={34} />
-            <span className="min-w-0">
-              <span className="flex items-center gap-1 text-[15px] font-normal leading-tight text-ink">
-                <span className="truncate">{personaName}</span>
-                <Icon name="chevron" size={12} className="shrink-0 rotate-90 text-ink-faint" />
+          <div className="flex min-w-0 flex-1 items-center gap-1">
+            {onOpenNavDrawer !== undefined ? (
+              <button
+                type="button"
+                data-sidebar-menu=""
+                aria-label={t('mobile.tab.nav')}
+                onClick={onOpenNavDrawer}
+                className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-ink transition-colors hover:bg-ink/[0.05]"
+              >
+                <Icon name="menu" size={16} />
+                {navUnreadBadge > 0 ? (
+                  <span className="absolute top-2 right-2 h-2 w-2 rounded-full bg-accent" aria-hidden="true" />
+                ) : null}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              data-mobile-assistant-switch
+              aria-label={t('mobile.assistant.switch')}
+              onClick={() => {
+                setSetupChoice(undefined);
+                setSwitcherOpen(true);
+              }}
+              className="flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-full py-1 pl-1 pr-2.5 text-left transition-colors hover:bg-ink/[0.04]"
+            >
+              <PersonaAvatar persona={personaAvatarOf({ id: binding.personaId, name: personaName })} size={30} />
+              <span className="min-w-0">
+                <span className="flex items-center gap-1 text-[14.5px] font-bold leading-tight text-ink">
+                  <span className="truncate">{personaName}</span>
+                  <Icon name="chevron" size={12} className="shrink-0 rotate-90 text-ink-faint" />
+                </span>
+                <span className="mt-0.5 block truncate text-[11px] leading-none text-ink-faint">{spaceName}</span>
               </span>
-              <span className="mt-0.5 block truncate text-[12px] leading-none text-ink-faint">{spaceName}</span>
-            </span>
-          </button>
+            </button>
+          </div>
         }
         belowHeader={<NeedsYouStrip count={needsYouItems.length} onOpen={() => { setNeedsYouOpen(true); }} />}
         onOpenWorkbench={() => { onOpenWorkbench(binding.spaceKey, binding.sessionId); }}

@@ -10,24 +10,25 @@ import { memo, useState, type ReactNode } from 'react';
 
 import type { ActivitySummary, Block, NoticeBlock } from '@kiki/session-core/session';
 
+import { lazyComponent } from '../../lib/lazyComponent';
 import { useI18n } from '../../i18n';
 import { plainFailure } from '../agent-panel/failureText';
 import { LifeMark } from '../LifeMark';
 import { DisclosureChevron, Icon, Spinner } from '../icons';
-import { TimelineErrorCallout, type TimelineErrorAction } from '../timeline/TimelineErrorCallout';
+import type { TimelineErrorAction } from '../timeline/TimelineErrorCallout';
 import { MESSAGE_FACE } from './MessageRow';
 
-/** Tool calls and shell runs: the same unit the process view's fold counts as steps. */
-export function activitySteps(summary: ActivitySummary): number {
-  return summary.members.filter((member) => member.kind === 'tool' || member.kind === 'shell').length;
+const TimelineErrorCallout = lazyComponent(() =>
+  import('../timeline/TimelineErrorCallout').then((m) => m.TimelineErrorCallout),
+);
+
+if (import.meta.env.MODE === 'test') {
+  await TimelineErrorCallout.preload();
 }
 
-/** A settled stretch with nothing to count (only internal prose): it draws no line. */
-export function isSilentActivity(summary: ActivitySummary): boolean {
-  if (summary.running || summary.failed > 0) return false;
-  const { reads, commands, subagents, memories, thinking } = summary.counts;
-  return activitySteps(summary) === 0 && reads + commands + subagents + memories + thinking === 0;
-}
+import { activitySteps, isSilentActivity } from './messageTimeline';
+
+export { activitySteps, isSilentActivity } from './messageTimeline';
 
 export function activityParts(
   summary: ActivitySummary,

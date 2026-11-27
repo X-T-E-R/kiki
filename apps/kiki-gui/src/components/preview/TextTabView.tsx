@@ -205,7 +205,7 @@ export function TextTabView({
         readPreviewFileText(
           client,
           target,
-          { sessionId, workspaceRoot, localKikiComputer },
+          { sessionId, workspaceRoot, localKikiComputer, remoteBrokered: remoteBrokerHtmlScope },
           options === undefined ? undefined : { ifNoneMatch: options.ifNoneMatch },
         ),
       writeFile: host.writeFileText,
@@ -217,7 +217,7 @@ export function TextTabView({
       next.dispose();
       setController(null);
     };
-  }, [client, host, localKikiComputer, path, sessionId, workspaceRoot]);
+  }, [client, host, localKikiComputer, path, remoteBrokerHtmlScope, sessionId, workspaceRoot]);
 
   const reloadTab = useCallback(() => {
     void controller?.reload();

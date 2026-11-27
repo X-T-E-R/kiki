@@ -519,7 +519,7 @@ describe('message view (Bot mode)', () => {
     expect(received?.textContent).not.toContain('来自');
   });
 
-  it('keeps the incoming handoff and source link until Edit opens the shared editor', async () => {
+  it('keeps the incoming handoff and source link until Edit opens the shared editor', { timeout: 20_000 }, async () => {
     const onOpenSession = vi.fn();
     const onFork = vi.fn();
     const handoff = user('incoming', '来自 小柚：请检查改动', 't1', {

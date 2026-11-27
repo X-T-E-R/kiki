@@ -1314,14 +1314,7 @@ export function hasToolSemantics(name: string): boolean {
 }
 
 /** Extract the messageId of a peer ThreadSend call whose persisted receipt is still `pending`. */
-export function extractPendingThreadMessageId(block: ToolBlock): string | undefined {
-  if (block.name !== 'ThreadSend') return undefined;
-  const args = rec(block.args);
-  if (str(args?.['room']) !== undefined) return undefined;
-  const result = rec(outputJson(block.output));
-  if (str(result?.['delivery']) !== 'pending') return undefined;
-  return str(result?.['messageId']) ?? str(result?.['message_id']);
-}
+export { extractPendingThreadMessageId } from './timeline/transcriptDeliveryContext';
 
 /** The semantic reading of a built-in tool call, or undefined for any other tool. */
 export function describeTool(block: ToolBlock, ctx: SemanticContext): ToolSemantics | undefined {

@@ -27,13 +27,13 @@ import {
   type PreviewReadFailureReason,
   type PreviewResource,
 } from '#/state/previewResource';
-import { mediaRefResource } from '#/state/previewWorkspace';
+import { DEFAULT_PREVIEW_WIDTH, mediaRefResource } from '#/state/previewWorkspace';
 import { imageDownloadFailureText, saveMediaToDisk } from '../imageActions';
 import { attachmentName } from '../mediaParts';
 import { useMediaPreview } from '../mediaPreviewContext';
 
+export { DEFAULT_PREVIEW_WIDTH };
 const MIN_WIDTH = 320;
-export const DEFAULT_PREVIEW_WIDTH = 480;
 export const MAX_PREVIEW_WIDTH = 1100;
 
 export function conversationCenterFloor(viewport: number): number {
@@ -109,6 +109,8 @@ export interface SessionWorkspaceReadScope {
   readonly sessionId?: string;
   readonly workspaceRoot?: string;
   readonly localKikiComputer?: boolean;
+  /** True only when routed through a remote broker (`connectionSource === 'remote'`), where `/api/fs:content` is forbidden. */
+  readonly remoteBrokered?: boolean;
 }
 
 /**
@@ -380,6 +382,20 @@ export function webUrlDisplayLabel(url: string, title?: string): string {
   }
 }
 
+function isSessionFsPathEscapeError(error: unknown): boolean {
+  if (isRemoteUnavailableError(error)) return true;
+  if (typeof error !== 'object' || error === null) return false;
+  const record = error as { readonly code?: unknown; readonly msg?: unknown; readonly message?: unknown };
+  if (record.code === 41304) return true;
+  const message =
+    typeof record.msg === 'string'
+      ? record.msg
+      : typeof record.message === 'string'
+        ? record.message
+        : '';
+  return message.includes('escapes') || message.includes('fs.path_escapes');
+}
+
 export async function readPreviewFileText(
   client: KikiClient,
   path: string,
@@ -388,20 +404,31 @@ export async function readPreviewFileText(
 ): Promise<HostFileReadResult> {
   const canUseSessionFs =
     scope.sessionId !== undefined && typeof (client as { fsRead?: unknown }).fsRead === 'function';
-  if (scope.localKikiComputer === false && canUseSessionFs) {
-    return readWorkspaceTextViaSession(client, scope.sessionId!, path, scope.workspaceRoot, {
-      ifNoneMatch: options?.ifNoneMatch,
-      length: options?.maxBytes ?? SESSION_FS_READ_TEXT_BYTES,
-      signal: options?.signal,
-    });
-  }
-  try {
-    return await (options === undefined
+  const readViaHost = () =>
+    options === undefined
       ? client.previewHostFile(path)
       : client.previewHostFile(path, options.maxBytes, {
           ifNoneMatch: options.ifNoneMatch,
           signal: options.signal,
-        }));
+        });
+  if (scope.localKikiComputer === false && canUseSessionFs) {
+    try {
+      return await readWorkspaceTextViaSession(client, scope.sessionId!, path, scope.workspaceRoot, {
+        ifNoneMatch: options?.ifNoneMatch,
+        length: options?.maxBytes ?? SESSION_FS_READ_TEXT_BYTES,
+        signal: options?.signal,
+      });
+    } catch (error) {
+      // Paired app-shell / LAN / Tailscale HTTP clients (`remoteBrokered !== true`)
+      // can read admitted paths outside `cwd` via `/api/fs:content` (P1-9).
+      if (scope.remoteBrokered !== true && isSessionFsPathEscapeError(error) && typeof client.previewHostFile === 'function') {
+        return readViaHost();
+      }
+      throw error;
+    }
+  }
+  try {
+    return await readViaHost();
   } catch (error) {
     if (canUseSessionFs && isRemoteUnavailableError(error)) {
       return readWorkspaceTextViaSession(client, scope.sessionId!, path, scope.workspaceRoot, {
@@ -428,7 +455,14 @@ export async function readPreviewFileBytes(
   const canUseSessionFs =
     scope.sessionId !== undefined && typeof (client as { fsRead?: unknown }).fsRead === 'function';
   if (scope.localKikiComputer === false && canUseSessionFs) {
-    return readWorkspaceBytesViaSession(client, scope.sessionId!, path, scope.workspaceRoot, options);
+    try {
+      return await readWorkspaceBytesViaSession(client, scope.sessionId!, path, scope.workspaceRoot, options);
+    } catch (error) {
+      if (scope.remoteBrokered !== true && isSessionFsPathEscapeError(error) && typeof client.readHostFileBytes === 'function') {
+        return client.readHostFileBytes(path, options);
+      }
+      throw error;
+    }
   }
   try {
     return await client.readHostFileBytes(path, options);
@@ -593,11 +627,11 @@ export const CAPTION_ACTION_CLASS =
 
 // Secondary body button beside the neutral ink download.
 export const BODY_ACTION_CLASS =
-  'rounded-lg border border-hairline px-3 py-1.5 text-[12px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
+  'inline-flex items-center justify-center rounded-lg border border-hairline px-3 py-1.5 text-[12px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:px-3.5';
 
 // Neutral ink primary button (used for unsupported/damaged download instead of vermilion accent).
 export const INK_BUTTON_CLASS =
-  'rounded-lg border border-ink bg-ink px-3 py-1.5 text-[12px] font-normal text-paper transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
+  'inline-flex items-center justify-center rounded-lg border border-ink bg-ink px-3 py-1.5 text-[12px] font-normal text-paper transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:px-3.5';
 
 export function TabPathCaption({ path }: { readonly path: string }) {
   return (
@@ -681,12 +715,12 @@ export function PreviewReadFailureView({
         <p className="text-[13px] text-ink-soft" role="alert">
           {message}
         </p>
-        {reason === 'missing' && path !== undefined ? (
+        {(reason === 'missing' || reason === 'remote-unreadable') && path !== undefined ? (
           <p className="break-all font-mono text-[11px] text-ink-faint">{path}</p>
         ) : null}
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        {(reason === 'missing' || reason === 'permission-denied' || reason === 'error') && onReload !== undefined ? (
+        {(reason === 'missing' || reason === 'permission-denied' || reason === 'remote-unreadable' || reason === 'error') && onReload !== undefined ? (
           <button
             type="button"
             data-preview-reload

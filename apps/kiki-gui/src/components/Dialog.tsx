@@ -28,6 +28,7 @@ import {
   hasOpenOwnedFloatingPortal,
   MODAL_BASE_Z_INDEX,
   MODAL_DEPTH_ATTRIBUTE,
+  MODAL_ESCAPE_ATTRIBUTE,
   MODAL_ID_ATTRIBUTE,
   nextModalDepth,
   registerModal,
@@ -45,7 +46,7 @@ export function useStackedDialog(): boolean { return useContext(ModalDepth) !== 
  * Names the dialog a portaled surface belongs to, so stacked modal focus and
  * Escape ownership can tell an owned floating surface from an unrelated one.
  */
-export const MODAL_ESCAPE_ATTRIBUTE = 'data-modal-escape';
+export { MODAL_ESCAPE_ATTRIBUTE };
 
 const FOCUSABLE_SELECTOR =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';

@@ -1,38 +1,37 @@
 /**
  * MiniContextMenu — the small fixed-position context menu shared by the
- * link/file-path surfaces (markdown anchors, file chips, preview tabs). No
- * Radix: outside-click and Escape close, and the panel size is measured after
- * mount so the position clamps inside the viewport on both axes (right-click
- * near an edge). Items are data — each surface composes its own list, so
- * desktop-only entries simply stay out of the browser build's array.
+ * link/file-path surfaces (markdown anchors, file chips, preview tabs).
  *
- * On a coarse pointer the same entries render as an `ActionSheet` instead: a
- * menu at the pointer lands under the finger and its rows are too small to
- * hit. Desktop keeps the positioned menu.
+ * On a coarse pointer the entries render as an `ActionSheet`; desktop mounts
+ * `MiniContextPointerMenu` lazily on demand.
  */
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Popover } from '@base-ui/react/popover';
-
+import { lazyComponent } from '../lib/lazyComponent';
 import { useCoarsePointer } from '../lib/layoutHooks';
 import { runToastAction } from '../lib/toasts';
-import { floatingSurfaceZIndex, owningModalId, registerOverlay, topModalId } from '../lib/uiBusy';
-import { ActionSheet } from './overlays/ActionSheet';
-import { POPOVER_SURFACE_CLASS } from './SearchableSelect';
-import { unzoomedPoint } from '../lib/uiZoom';
+
+const ActionSheet = lazyComponent(() =>
+  import('./overlays/ActionSheet').then((m) => m.ActionSheet),
+);
+const LazyMiniContextPointerMenu = lazyComponent(() =>
+  import('./ComposerPopovers').then((m) => m.MiniContextPointerMenu),
+);
+
+if (import.meta.env.MODE === 'test') {
+  await Promise.all([ActionSheet.preload(), LazyMiniContextPointerMenu.preload()]);
+}
 
 export type MiniMenuEntry =
   | {
       readonly key: string;
       readonly label: string;
       readonly danger?: boolean;
-      /** Rendered unavailable; activation never fires. */
       readonly disabled?: boolean;
       readonly run: () => void | Promise<void>;
     }
   | { readonly separator: true };
 
-interface MiniContextMenuProps {
+export interface MiniContextMenuProps {
   readonly x: number;
   readonly y: number;
   readonly entries: readonly MiniMenuEntry[];
@@ -40,30 +39,30 @@ interface MiniContextMenuProps {
   readonly ariaLabel: string;
   readonly overlayId: string;
   readonly dataAttribute: string;
-  /** Per-item hook attribute; a surface with its own legacy key contract
-   * (the composer's `data-menu-action`) passes it instead of forking the menu. */
   readonly itemDataAttribute?: string;
   readonly modalOwnerId?: string;
-  /** Focus the first item on open. Off where the opener owns the caret: the
-   * composer's clipboard menu pins a textarea selection that a focus move
-   * would drop, and its actions re-pin before they run. */
   readonly autofocus?: boolean;
 }
 
 export function MiniContextMenu(props: MiniContextMenuProps) {
   const coarse = useCoarsePointer();
-  if (!coarse) return <PointerMenu {...props} />;
+  if (!coarse) return <LazyMiniContextPointerMenu {...props} />;
   const { entries, onClose, ariaLabel, overlayId, dataAttribute, itemDataAttribute = 'data-menu-item', modalOwnerId, autofocus = true } = props;
   return (
-    <ActionSheet ariaLabel={ariaLabel} overlayId={overlayId} onClose={onClose} dataAttribute={dataAttribute}
-      modalOwnerId={modalOwnerId} autofocus={autofocus}>
+    <ActionSheet
+      ariaLabel={ariaLabel}
+      overlayId={overlayId}
+      onClose={onClose}
+      dataAttribute={dataAttribute}
+      modalOwnerId={modalOwnerId}
+      autofocus={autofocus}
+    >
       {menuItems(entries, onClose, itemDataAttribute)}
     </ActionSheet>
   );
 }
 
-/** The entries as menu rows; the action sheet resizes them for touch. */
-function menuItems(entries: readonly MiniMenuEntry[], onClose: () => void, itemDataAttribute: string) {
+export function menuItems(entries: readonly MiniMenuEntry[], onClose: () => void, itemDataAttribute: string) {
   return entries.map((entry, index) =>
     'separator' in entry ? (
       <div key={`sep-${index}`} className="mx-1 my-1 border-t border-hairline" />
@@ -85,172 +84,5 @@ function menuItems(entries: readonly MiniMenuEntry[], onClose: () => void, itemD
         {entry.label}
       </button>
     ),
-  );
-}
-
-function PointerMenu({
-  x,
-  y,
-  entries,
-  onClose,
-  ariaLabel,
-  overlayId,
-  dataAttribute,
-  itemDataAttribute = 'data-menu-item',
-  modalOwnerId,
-  autofocus = true,
-}: MiniContextMenuProps) {
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const focusedForOpenRef = useRef(false);
-  // Whatever held focus when the menu opened — the link/chip/button for a
-  // keyboard trigger, or just where the caret was for a right-click. Escape
-  // and item activation hand focus back to it; an outside pointerdown never
-  // does (the pointer's own target takes focus, and stealing it back reads as
-  // a glitch).
-  const returnFocusRef = useRef<HTMLElement | null>(null);
-  const [inferredModalOwner] = useState(() =>
-    modalOwnerId ?? owningModalId(typeof document !== 'undefined' ? document.activeElement : null) ?? topModalId(),
-  );
-  const effectiveModalOwner = modalOwnerId ?? inferredModalOwner;
-  const point = unzoomedPoint(x, y);
-  const virtualAnchor = useMemo(() => ({
-    getBoundingClientRect: () => ({
-      x: point.x,
-      y: point.y,
-      top: point.y,
-      left: point.x,
-      bottom: point.y,
-      right: point.x,
-      width: 0,
-      height: 0,
-      toJSON: () => ({}),
-    }),
-  }), [point.x, point.y]);
-  useLayoutEffect(() => {
-    returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-  }, []);
-
-  const restoreTriggerFocus = () => {
-    const trigger = returnFocusRef.current;
-    if (trigger === null || trigger === document.body || !trigger.isConnected) return;
-    trigger.focus();
-  };
-
-  // Handlers read the latest onClose through a ref: callers pass inline
-  // closures, and re-subscribing on every parent render opens a detach/attach
-  // gap that can swallow a trusted Escape.
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
-
-  useEffect(() => {
-    const unregister = registerOverlay(overlayId);
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.defaultPrevented) return;
-      event.preventDefault();
-      // Hand focus back only when the menu still owns it; focus that the user
-      // moved elsewhere (a Tab out of this transient layer) is left alone.
-      const owned = menuRef.current?.contains(document.activeElement) === true;
-      closeRef.current();
-      if (owned) restoreTriggerFocus();
-    };
-    const onPointerDown = (event: PointerEvent) => {
-      if (
-        !(event.target instanceof HTMLElement) ||
-        event.target.closest(`[${dataAttribute}]`) === null
-      ) {
-        closeRef.current();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('pointerdown', onPointerDown, true);
-    return () => {
-      unregister();
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('pointerdown', onPointerDown, true);
-    };
-    // dataAttribute/overlayId are per-surface constants; onClose rides the ref.
-  }, [overlayId, dataAttribute]);
-
-  const containerProps = { [dataAttribute]: true } as Record<string, boolean>;
-  // Portal via Base UI Popover Positioner with virtual pointer anchor: escapes
-  // overflow clipping, flips/shifts inside the viewport, and caps height via
-  // `--available-height`.
-  const zIndex = floatingSurfaceZIndex(null);
-  return (
-    <Popover.Root
-      open
-      modal={false}
-      onOpenChange={(nextOpen, eventDetails) => {
-        if (nextOpen) return;
-        if (eventDetails.reason === 'escape-key') {
-          const owned = menuRef.current?.contains(document.activeElement) === true;
-          closeRef.current();
-          if (owned) restoreTriggerFocus();
-          return;
-        }
-        eventDetails.cancel();
-      }}
-    >
-      <Popover.Portal>
-        <Popover.Positioner
-          anchor={virtualAnchor}
-          side="bottom"
-          align="start"
-          sideOffset={0}
-          collisionPadding={8}
-          positionMethod="fixed"
-          style={{ zIndex }}
-        >
-          <Popover.Popup
-            ref={(node) => {
-              menuRef.current = node;
-              if (autofocus && node !== null && !focusedForOpenRef.current && !node.contains(document.activeElement)) {
-                focusedForOpenRef.current = true;
-                node.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus();
-              }
-            }}
-            initialFocus={autofocus}
-            finalFocus={false}
-            style={{ zIndex }}
-            {...containerProps}
-            data-modal-escape={effectiveModalOwner}
-            role="menu"
-            aria-label={ariaLabel}
-            onKeyDown={(event) => {
-              // Menu-keyboard semantics on the items only; Enter/Space stay the
-              // buttons' own activation and Tab keeps its native transient behavior.
-              if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Home' && event.key !== 'End') return;
-              const items = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>('button:not([disabled])') ?? [])];
-              if (items.length === 0) return;
-              event.preventDefault();
-              const index = items.indexOf(document.activeElement as HTMLButtonElement);
-              const next = event.key === 'Home' ? 0
-                : event.key === 'End' ? items.length - 1
-                : event.key === 'ArrowDown' ? (index + 1) % items.length
-                : (index - 1 + items.length) % items.length;
-              items[next]?.focus();
-            }}
-            onClick={(event) => {
-              // Item activation hands focus back to the opener — but only after
-              // the click's commit has landed: an in-place toggle keeps this menu
-              // mounted and keeps its focus, and a dialog/route the action opened
-              // claims focus on its own mount. Checking post-commit restores
-              // exactly when neither happened.
-              if (!(event.target instanceof HTMLElement) || event.target.closest('[role="menuitem"]') === null) return;
-              const menuNode = menuRef.current;
-              queueMicrotask(() => {
-                if (menuNode === null || menuNode.isConnected) return;
-                const active = document.activeElement;
-                if (active !== null && active !== document.body && active instanceof HTMLElement && active.isConnected) return;
-                restoreTriggerFocus();
-              });
-            }}
-            className={`anim-enter max-h-[min(var(--available-height,calc(100dvh-16px)),calc(100dvh-16px))] w-52 overflow-y-auto overscroll-contain p-1 outline-none ${POPOVER_SURFACE_CLASS}`}
-          >
-            {menuItems(entries, onClose, itemDataAttribute)}
-          </Popover.Popup>
-        </Popover.Positioner>
-      </Popover.Portal>
-    </Popover.Root>
   );
 }

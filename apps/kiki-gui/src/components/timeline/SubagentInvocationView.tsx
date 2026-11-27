@@ -1,4 +1,4 @@
-import { createContext, memo, useContext, useEffect, useState, type ReactNode } from 'react';
+import { memo, useContext, useEffect, useState, type ReactNode } from 'react';
 import type { ToolBlock } from '@kiki/session-core';
 import type { SessionViewTranscriptDetail } from '@kiki/klient/session-view';
 import { ContentContinuation, frameContentSource, INPUT_ROOTS, INPUT_TEXT_ROOTS, OUTPUT_ROOTS, TASK_SUMMARY_ROOTS } from '../ContentContinuation';
@@ -10,6 +10,9 @@ import { useI18n } from '../../i18n';
 import { resolveProfileIcon } from '../../lib/profileIcon';
 import { CopyButton } from './ContentCopyButton';
 import { DisclosureChevron, Icon } from '../icons';
+import { InvocationContext } from './subagentShared';
+
+export { InvocationContext } from './subagentShared';
 
 type JsonObject = Record<string, unknown>;
 const isObject = (value: unknown): value is JsonObject => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -36,13 +39,6 @@ export function parseAgentReceipt(output: string): {
     first: isObject(first) ? first : undefined,
   };
 }
-
-export const InvocationContext = createContext<{
-  callerAgentId: string;
-  tools: ReadonlyMap<string, ToolBlock>;
-  hasMore: boolean;
-  loadOlder: () => Promise<boolean>;
-} | null>(null);
 
 const WELL = 'max-h-60 overflow-auto rounded-md bg-panel px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words text-ink select-text';
 /**

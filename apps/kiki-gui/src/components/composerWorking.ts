@@ -23,6 +23,8 @@ function isInFlightAgentBlock(block: Block): boolean {
     case 'assistant':
     case 'thinking':
       return block.streaming === true;
+    case 'message':
+      return block.status === 'sending';
     case 'tool':
       return block.status === 'running';
     case 'shell':
@@ -62,6 +64,13 @@ export function blockActivityTimestamp(block: Block): number | undefined {
     case 'assistant':
     case 'thinking':
       return parseIsoMs(block.createdAt);
+    case 'message': {
+      const toolTs = block.sourceTool !== undefined ? blockActivityTimestamp(block.sourceTool) : undefined;
+      const startedAt = finiteTimestamp(block.startedAt);
+      return toolTs !== undefined && startedAt !== undefined
+        ? Math.max(toolTs, startedAt)
+        : (toolTs ?? startedAt);
+    }
     case 'tool': {
       const startedAt = finiteTimestamp(block.startedAt);
       if (startedAt === undefined) return undefined;
@@ -90,6 +99,7 @@ export function blockActivityTimestamp(block: Block): number | undefined {
 function isAgentBlock(block: Block): boolean {
   return block.kind === 'assistant'
     || block.kind === 'thinking'
+    || block.kind === 'message'
     || block.kind === 'tool'
     || block.kind === 'shell'
     || block.kind === 'subagent'
@@ -161,7 +171,7 @@ export function currentTurnScope(
   } else if (boundaryIndex === -1 && agentBlocks.length > 0) {
     // No user prompt in `blocks` (e.g. a directly spawned child agent): keep
     // only the trailing turnId when present so earlier turns stay isolated.
-    const trailing = agentBlocks[agentBlocks.length - 1]!;
+    const trailing = agentBlocks.at(-1)!;
     const trailingTurnId = 'turnId' in trailing ? trailing.turnId : undefined;
     if (trailingTurnId !== undefined) {
       let start = agentBlocks.length - 1;
@@ -192,6 +202,9 @@ export function agentOutputSignature(blocks: readonly Block[]): string | undefin
       case 'thinking':
         parts.push(`${block.id}:${block.text.length}:${block.streaming ? 1 : 0}`);
         break;
+      case 'message':
+        parts.push(`${block.id}:${block.text.length}:${block.status}:${block.startedAt ?? ''}`);
+        break;
       case 'tool': {
         const outLen = typeof block.output === 'string'
           ? block.output.length
@@ -208,7 +221,7 @@ export function agentOutputSignature(blocks: readonly Block[]): string | undefin
         break;
       case 'subagent':
         parts.push(
-          `${block.id}:${block.status}:${block.toolCallCount}:${block.endedAt ?? ''}:${(block.summary ?? '').length}`,
+          `${block.id}:${block.status}:${block.toolCallCount}:${block.startedAt ?? ''}:${block.endedAt ?? ''}:${(block.summary ?? '').length}`,
         );
         break;
       case 'system':
@@ -238,6 +251,14 @@ export function latestTurnAgentTimestamp(
     if (latest === undefined || ts > latest) latest = ts;
   }
   return latest;
+}
+
+/** Alias for newest agent activity timestamp within a block slice. */
+export function latestAgentTimestamp(
+  blocks: readonly Block[],
+  turnStartedAt?: number,
+): number | undefined {
+  return latestTurnAgentTimestamp(blocks, turnStartedAt);
 }
 
 /** Authoritative start timestamp of the active turn, if derivable from state/blocks. */

@@ -11,7 +11,8 @@ import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 
-import { useLayerHistory } from './layerHistory';
+import { useHostBackBridge, useLayerHistory } from './layerHistory';
+import { registerOverlay } from './uiBusy';
 
 function Layer({ id, open, onClose }: { id: string; open: boolean; onClose: (id: string) => void }) {
   useLayerHistory(id, open, () => { onClose(id); });
@@ -20,6 +21,7 @@ function Layer({ id, open, onClose }: { id: string; open: boolean; onClose: (id:
 
 let setOpen: (next: Record<string, boolean>) => void = () => {};
 function Harness({ order, onClose }: { order: readonly string[]; onClose: (id: string) => void }) {
+  useHostBackBridge();
   const [open, set] = useState<Record<string, boolean>>({});
   setOpen = (next) => { set((previous) => ({ ...previous, ...next })); };
   return <>{order.map((id) => <Layer key={id} id={id} open={open[id] === true} onClose={onClose} />)}</>;
@@ -153,4 +155,42 @@ it('leaves an entry buried under a route push alone', async () => {
   expect(state().key).toBe(base.key);
   expect(state().usr['kikiLayer']).toBe('a');
   expect(onClose).not.toHaveBeenCalled();
+});
+
+it('consumes cancelable kiki:host-back for open layers/overlays and leaves root back untouched', async () => {
+  await render(['drawer']);
+  await update({ drawer: true });
+
+  const layerBack = new CustomEvent('kiki:host-back', { cancelable: true });
+  window.dispatchEvent(layerBack);
+  expect(layerBack.defaultPrevented).toBe(true);
+  expect(onClose).toHaveBeenCalledWith('drawer');
+
+  const pop = popped();
+  await update({ drawer: false });
+  await pop;
+  await settle();
+  expect(state()).toEqual(base);
+
+  // At root with nothing open, host-back is not prevented.
+  const rootBack = new CustomEvent('kiki:host-back', { cancelable: true });
+  window.dispatchEvent(rootBack);
+  expect(rootBack.defaultPrevented).toBe(false);
+
+  // Transient overlay (popover / slash menu) consumes host-back via Escape.
+  let escapeDispatched = false;
+  const onKeyDown = (event: KeyboardEvent) => {
+    if (event.key === 'Escape') escapeDispatched = true;
+  };
+  window.addEventListener('keydown', onKeyDown);
+  const unregister = registerOverlay('slash-menu');
+  try {
+    const overlayBack = new CustomEvent('kiki:host-back', { cancelable: true });
+    window.dispatchEvent(overlayBack);
+    expect(overlayBack.defaultPrevented).toBe(true);
+    expect(escapeDispatched).toBe(true);
+  } finally {
+    unregister();
+    window.removeEventListener('keydown', onKeyDown);
+  }
 });

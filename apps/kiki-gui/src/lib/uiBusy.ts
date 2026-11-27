@@ -18,6 +18,7 @@ const modals: Array<{ id: string; depth: number; panel: HTMLElement }> = [];
 export const MODAL_BASE_Z_INDEX = 50;
 export const MODAL_ID_ATTRIBUTE = 'data-modal-id';
 export const MODAL_DEPTH_ATTRIBUTE = 'data-modal-depth';
+export const MODAL_ESCAPE_ATTRIBUTE = 'data-modal-escape';
 function topModal() {
   return modals.reduce<(typeof modals)[number] | undefined>((top, entry) => !top || entry.depth >= top.depth ? entry : top, undefined);
 }

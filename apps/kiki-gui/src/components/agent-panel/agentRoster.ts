@@ -108,7 +108,7 @@ export interface RosterInput {
   readonly settledCap?: number;
 }
 
-import { isEphemeralBtwNode } from './InspectorBranches';
+import { isEphemeralBtwNode } from './branchModel';
 
 function isConversationBranch(node: AgentTreeNode): boolean {
   return node.isBranch === true || node.branchSealed === true || isEphemeralBtwNode(node);

@@ -130,57 +130,194 @@ export function usePhoneMode(): boolean {
 }
 
 /**
- * Software-keyboard fallback. `interactive-widget=resizes-content` (see
- * index.html) lets Chromium shrink the layout viewport itself; elsewhere
- * (iOS Safari, embedded Android WebView under edge-to-edge WindowInsets) the
- * layout viewport may stay full-screen while `visualViewport` shrinks or shifts,
- * so this mirrors `visualViewport.height` into `--kiki-visual-height` and any
- * positive keyboard inset into `--kiki-ime-offset` on `:root`. CSS opts in per
- * surface with `height: var(--kiki-visual-height, 100%)` — where the API is
- * absent nothing is set and every rule keeps its 100% fallback.
+ * Software-keyboard & native IME seam (`--kiki-ime-height` + `visualViewport`).
+ *
+ * `interactive-widget=resizes-content` lets Chromium shrink the layout viewport
+ * itself; on iOS Safari and edge-to-edge Android WebViews (`WindowInsetsAnimation`)
+ * the layout viewport may remain full-screen while either `visualViewport` shrinks
+ * or the native bridge writes `--kiki-ime-height` on `:root`. This hook unifies
+ * both signals into `--kiki-visual-height`, `--kiki-visual-offset-top`,
+ * `--kiki-ime-offset`, and `:root[data-keyboard]`, pins stray `window.scrollY`
+ * shifts when the keyboard opens, and dismisses the soft keyboard on a >=32px
+ * downward finger drag inside transcript scrollers.
  */
 export function useVisualViewportHeightVar(): void {
   useEffect(() => {
-    const viewport = window.visualViewport;
-    if (viewport === null || viewport === undefined) return;
+    if (typeof window === 'undefined' || typeof document === 'undefined') return;
+    const viewport = window.visualViewport ?? null;
     const root = document.documentElement;
     const coarse = typeof window.matchMedia === 'function' ? window.matchMedia('(pointer: coarse)') : null;
+
+    // 100lvh reference probe so occlusion detection compares against the unshrunk
+    // large viewport even when `resizes-content` shrinks `window.innerHeight`.
+    const lvhProbe = document.createElement('div');
+    lvhProbe.setAttribute('aria-hidden', 'true');
+    lvhProbe.style.cssText =
+      'position:fixed;top:0;left:0;width:0;height:100lvh;visibility:hidden;pointer-events:none;z-index:-1;';
+    document.body?.appendChild(lvhProbe);
+
     let frame = 0;
+    let keyboardSettleTimer: ReturnType<typeof setTimeout> | null = null;
+    let lastObservedImeRaw = root.style.getPropertyValue('--kiki-ime-height').trim();
+
+    const readNativeImePx = (zoom: number): number => {
+      const inlineRaw = root.style.getPropertyValue('--kiki-ime-height').trim();
+      const raw = inlineRaw !== '' ? inlineRaw : getComputedStyle(root).getPropertyValue('--kiki-ime-height').trim();
+      const parsed = Number.parseFloat(raw);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed / zoom : 0;
+    };
+
+    const setKeyboardOpen = (open: boolean) => {
+      if (open) {
+        if (keyboardSettleTimer !== null) {
+          clearTimeout(keyboardSettleTimer);
+          keyboardSettleTimer = null;
+        }
+        if (!root.hasAttribute('data-keyboard')) {
+          root.setAttribute('data-keyboard', '');
+        }
+        return;
+      }
+      if (!root.hasAttribute('data-keyboard') || keyboardSettleTimer !== null) return;
+      // 40ms settle prevents transient hardware-keyboard candidate bar dips from flickering layout.
+      keyboardSettleTimer = setTimeout(() => {
+        keyboardSettleTimer = null;
+        root.removeAttribute('data-keyboard');
+      }, 40);
+    };
+
     const write = () => {
       frame = 0;
-      // A pinch-zoom shrinks the visual viewport exactly like a keyboard does.
-      // It is not one: keep the last unzoomed measurements instead of laying
-      // the whole app out into the zoomed-in window.
-      if (viewport.scale > 1.01) return;
       const zoom = cssZoomFactor();
-      const height = Math.max(0, Math.round(viewport.height / zoom));
-      const offsetTop = Math.max(0, Math.round(viewport.offsetTop / zoom));
-      // On coarse pointers the app's height chain already follows
-      // --kiki-visual-height (index.css), so the keyboard is accounted for
-      // once there. Reporting it again as an inset would lift the composer a
-      // second keyboard-height; the inset is for surfaces whose box still
-      // spans the unshrunk layout viewport.
-      const imeInset = coarse?.matches === true
-        ? 0
-        : Math.max(0, Math.round((window.innerHeight - viewport.height - viewport.offsetTop) / zoom));
+      const imePx = readNativeImePx(zoom);
+
+      // Distinguish two-finger pinch-zoom from desktop Ctrl+ page zoom:
+      // pinch-zoom increases `viewport.scale > 1.01` while `viewport.width`
+      // diverges from `root.clientWidth`.
+      if (
+        viewport !== null &&
+        viewport.scale > 1.01 &&
+        Math.abs(viewport.width - root.clientWidth) >= 2 &&
+        imePx <= 0
+      ) {
+        return;
+      }
+
+      const probeHeight = lvhProbe.clientHeight > 0 ? lvhProbe.clientHeight / zoom : 0;
+      const innerHeight = Math.max(0, window.innerHeight / zoom);
+      const refHeight = Math.max(probeHeight, innerHeight);
+
+      if (viewport === null && imePx <= 0) {
+        setKeyboardOpen(false);
+        return;
+      }
+
+      const vvHeight = viewport !== null ? Math.max(0, Math.round(viewport.height / zoom)) : Math.round(innerHeight);
+      const offsetTop = viewport !== null ? Math.max(0, Math.round(viewport.offsetTop / zoom)) : 0;
+      // When the native Android/iOS host animates `--kiki-ime-height` ahead of or
+      // instead of WebView visualViewport resize, subtract `imePx` from `refHeight`
+      // without double-counting when `visualViewport` has already shrunk.
+      const vvAlreadyShrunk = refHeight - vvHeight > 48;
+      const height =
+        imePx > 0 && !vvAlreadyShrunk
+          ? Math.max(120, Math.round(refHeight - imePx))
+          : vvHeight;
+
+      const occluded = imePx > 60 || refHeight - height > 100;
+      setKeyboardOpen(occluded);
+
+      if (occluded && offsetTop === 0 && window.scrollY !== 0) {
+        window.scrollTo(0, 0);
+      }
+
+      const imeInset =
+        coarse?.matches === true
+          ? 0
+          : Math.max(0, Math.round(innerHeight - height - offsetTop));
+
       root.style.setProperty('--kiki-visual-height', `${height}px`);
       root.style.setProperty('--kiki-visual-offset-top', `${offsetTop}px`);
       root.style.setProperty('--kiki-ime-offset', `${imeInset}px`);
     };
+
     const schedule = () => {
       if (frame === 0) frame = requestAnimationFrame(write);
     };
+
+    const styleObserver = new MutationObserver(() => {
+      const nextRaw = root.style.getPropertyValue('--kiki-ime-height').trim();
+      if (nextRaw !== lastObservedImeRaw) {
+        lastObservedImeRaw = nextRaw;
+        write();
+      }
+    });
+    styleObserver.observe(root, { attributes: true, attributeFilter: ['style'] });
+
+    // 32px downward touch-drag on transcript scroller dismisses focused composer keyboard.
+    let touchDrag: { x: number; y: number; active: boolean } | null = null;
+    const isFocusedComposerField = (el: Element | null): el is HTMLElement =>
+      el instanceof HTMLElement &&
+      (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT' || el.isContentEditable) &&
+      el.closest('[data-composer-root], [data-mobile-composer]') !== null;
+
+    const onTouchStart = (event: TouchEvent) => {
+      if (event.touches.length !== 1 || !isFocusedComposerField(document.activeElement)) {
+        touchDrag = null;
+        return;
+      }
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest('[data-transcript-scroll], [data-mobile-transcript]') === null) {
+        touchDrag = null;
+        return;
+      }
+      const touch = event.touches[0]!;
+      touchDrag = { x: touch.clientX, y: touch.clientY, active: true };
+    };
+
+    const onTouchMove = (event: TouchEvent) => {
+      if (touchDrag === null || !touchDrag.active || event.touches.length !== 1) return;
+      const touch = event.touches[0]!;
+      const dx = touch.clientX - touchDrag.x;
+      const dy = touch.clientY - touchDrag.y;
+      if (dy >= 32 && dy > Math.abs(dx) * 1.2) {
+        const selection = typeof window.getSelection === 'function' ? window.getSelection()?.toString() ?? '' : '';
+        if (selection === '' && isFocusedComposerField(document.activeElement)) {
+          touchDrag.active = false;
+          document.activeElement.blur();
+        }
+      }
+    };
+
+    const onTouchEnd = () => {
+      touchDrag = null;
+    };
+
     write();
-    viewport.addEventListener('resize', schedule);
-    viewport.addEventListener('scroll', schedule);
+    viewport?.addEventListener('resize', schedule);
+    viewport?.addEventListener('scroll', schedule);
+    window.addEventListener('resize', schedule);
     window.addEventListener('orientationchange', schedule);
     window.addEventListener(KIKI_ZOOM_CHANGE_EVENT, schedule);
+    document.addEventListener('touchstart', onTouchStart, { passive: true });
+    document.addEventListener('touchmove', onTouchMove, { passive: true });
+    document.addEventListener('touchend', onTouchEnd, { passive: true });
+    document.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
     return () => {
       if (frame !== 0) cancelAnimationFrame(frame);
-      viewport.removeEventListener('resize', schedule);
-      viewport.removeEventListener('scroll', schedule);
+      if (keyboardSettleTimer !== null) clearTimeout(keyboardSettleTimer);
+      styleObserver.disconnect();
+      lvhProbe.remove();
+      viewport?.removeEventListener('resize', schedule);
+      viewport?.removeEventListener('scroll', schedule);
+      window.removeEventListener('resize', schedule);
       window.removeEventListener('orientationchange', schedule);
       window.removeEventListener(KIKI_ZOOM_CHANGE_EVENT, schedule);
+      document.removeEventListener('touchstart', onTouchStart);
+      document.removeEventListener('touchmove', onTouchMove);
+      document.removeEventListener('touchend', onTouchEnd);
+      document.removeEventListener('touchcancel', onTouchEnd);
+      root.removeAttribute('data-keyboard');
       root.style.removeProperty('--kiki-visual-height');
       root.style.removeProperty('--kiki-visual-offset-top');
       root.style.removeProperty('--kiki-ime-offset');

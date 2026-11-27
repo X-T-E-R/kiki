@@ -10683,6 +10683,7 @@ describe('semantic tool cards', () => {
     detailMatch?: RegExp;
     stateText?: string | null;
     stateDanger?: boolean;
+    statePlain?: boolean;
     count?: string | null;
     outcome?: string;
     running?: boolean;

@@ -4,9 +4,15 @@ import type { I18nKey } from '@kiki/session-core/i18n';
 import type { ExecutorNote, TurnExecutionInfo } from '@kiki/session-core/session';
 import { diffStat, type DiffHunk } from '@kiki/session-core/util';
 import { useI18n } from '../../i18n';
-import { DiffCard } from '../DiffCard';
+import { lazyComponent } from '../../lib/lazyComponent';
 import { Icon } from '../icons';
 import { ActivityRow, ActivityStats, TimelineDivider } from './ActivityRow';
+
+const LazyDiffCard = lazyComponent(() => import('../DiffCard').then((m) => m.DiffCard));
+
+if (import.meta.env.MODE === 'test') {
+  await LazyDiffCard.preload();
+}
 
 const PROTOCOL_SHORT: Record<string, string> = { 'acp-v1': 'ACP', acp: 'ACP', 'codex-app-server': 'app-server' };
 
@@ -132,7 +138,7 @@ function EngineDiff({ diff, turnLabel }: { diff: string; turnLabel: string }) {
       {open ? <div className="space-y-3">
         {files.map((file, index) => <div key={`${file.path}-${index}`} data-engine-diff-file={file.path} className="space-y-1">
           {files.length > 1 ? <p className="font-mono text-[12px] text-ink-soft">{file.path}</p> : null}
-          <DiffCard hunks={file.hunks} />
+          <LazyDiffCard hunks={file.hunks} />
         </div>)}
       </div> : undefined}
     </ActivityRow>

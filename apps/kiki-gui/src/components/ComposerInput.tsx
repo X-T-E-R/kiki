@@ -34,7 +34,9 @@ interface PendingUpgradeFocus {
 }
 
 export function ComposerInput(props: ComposerInputProps) {
-  const isPhone = usePhoneMode() || useMediaQuery('(max-width: 767px)');
+  const phoneMode = usePhoneMode();
+  const isNarrowViewport = useMediaQuery('(max-width: 767px)');
+  const isPhone = phoneMode || isNarrowViewport;
   const [activated, setActivated] = useState(false);
   const [editorReady, setEditorReady] = useState(() => loadedCodeMirror !== null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -153,9 +155,16 @@ export function ComposerInput(props: ComposerInputProps) {
         data-composer-session={props.sessionId}
         data-autofocus={props.autoFocus ? '' : undefined}
         className="w-full resize-none bg-transparent text-ink placeholder:text-ink-faint outline-none py-[2px] min-h-[28px] max-h-[190px] leading-[1.625] overflow-auto block"
-        onPointerDown={() => { triggerUpgrade(false); }}
+        onPointerDown={() => { triggerUpgrade(true); }}
         onFocus={() => {
-          if (!isPhone) triggerUpgrade(true);
+          if (!isPhone || activated) triggerUpgrade(true);
+          else if (textareaRef.current !== null) {
+            pendingFocusRef.current = {
+              start: textareaRef.current.selectionStart ?? props.value.length,
+              end: textareaRef.current.selectionEnd ?? props.value.length,
+              direction: textareaRef.current.selectionDirection ?? 'none',
+            };
+          }
           props.onFocus();
         }}
         onBlur={() => {

@@ -52,40 +52,12 @@ export interface TurnTailSurfaceProps {
   readonly announceNew?: boolean;
 }
 
-export function canFaithfullyRetryUserBlock(
-  block: UserBlock | undefined,
-  allowRegenerate = true,
-): boolean {
-  if (block === undefined) return false;
-  if (allowRegenerate && block.userMessageId !== undefined) return true;
-  if ((block.media?.length ?? 0) > 0) return false;
-  if (block.contentPending === true) return false;
-  if (Array.isArray(block.queuedContent) && block.queuedContent.some((part) => part.type !== 'text')) {
-    return false;
-  }
-  return block.text.trim() !== '';
-}
+import {
+  canFaithfullyRetryUserBlock,
+  hasTurnTailSurfaceContent,
+} from './transcriptDeliveryContext';
 
-export function hasTurnTailSurfaceContent(input: {
-  readonly agentId: string;
-  readonly tail?: TurnTailInfo;
-  readonly interruptedWork?: SessionInterruptedWork;
-  readonly promptQueueHold?: { readonly reason: 'recovery'; readonly count: number };
-  readonly busy?: boolean;
-  readonly footnoteAttachedInline?: boolean;
-}): boolean {
-  if (input.busy === true) return false;
-  const recovery = resolveRecoverableInterruption({
-    agentId: input.agentId,
-    turnTail: input.tail,
-    interruptedWork: input.interruptedWork,
-    promptQueueHold: input.promptQueueHold,
-  });
-  if (recovery.recoverable) return true;
-  if (input.tail === undefined) return false;
-  if (input.tail.state === 'failed' || input.tail.state === 'cancelled') return true;
-  return input.footnoteAttachedInline !== true;
-}
+export { canFaithfullyRetryUserBlock, hasTurnTailSurfaceContent };
 
 export const TurnTailSurface = memo(function TurnTailSurface({
   agentId,

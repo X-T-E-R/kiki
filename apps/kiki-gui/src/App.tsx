@@ -21,6 +21,7 @@
  */
 
 import { startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Drawer } from '@base-ui/react/drawer';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { RemoteConnection, WorkPresetItem, WorkspaceCatalogEntry } from '@kiki/protocol';
@@ -95,7 +96,7 @@ import {
   type SessionPrivateFilter,
 } from '@kiki/session-core/settings';
 import { useLayoutPreferences, useMediaQuery, usePhoneMode, useVisualViewportHeightVar } from './lib/layoutHooks';
-import { useLayerHistory } from './lib/layerHistory';
+import { useHostBackBridge, useLayerHistory } from './lib/layerHistory';
 import { setBackdropDrawerClosed } from './lib/skins/backdrop';
 import { useAppearancePacks } from './lib/skins/useAppearancePacks';
 import { afterPaint } from './lib/afterPaint';
@@ -140,7 +141,7 @@ import { activeSpace, parseActiveSpacePayload } from './lib/spaceStorage';
 import { NavHistoryBridge } from './components/NavBackButton';
 import { useDesktopUpdateScheduler } from './lib/useDesktopUpdateScheduler';
 import { androidBridge, subscribeAndroidHostEvents } from './lib/androidBridge';
-import { MOBILE_ASSISTANT_PATH, mobileChatPath, normalizeDeepLinkRoute, readDesktopOverride, writeDesktopOverride } from './mobile/mobileShellRoute';
+import { normalizeDeepLinkRoute } from './mobile/mobileShellRoute';
 import { SidebarContext } from './components/sidebarContext';
 import { useDeferSecondaryBootQueries } from './lib/bootHydrationGate';
 import { retryRootReadModelDelay, retryRootReadModelQuery } from './lib/readModelRetry';
@@ -379,10 +380,13 @@ function NormalApp() {
     }
   }, [location, navType, scopeId, spaceKey, host.kind, meta.server_home_id, connectionRef, scopeRestore?.transitioningInPlace, needsScopeReload]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarSwiping, setSidebarSwiping] = useState(false);
+  const [drawerHostEl, setDrawerHostEl] = useState<HTMLDivElement | null>(null);
   const closeSidebar = useCallback(() => { setSidebarOpen(false); }, []);
   // Phone keyboard: mirror the visual viewport into the app height chain
   // (index.css consumes --kiki-visual-height on coarse pointers).
   useVisualViewportHeightVar();
+  useHostBackBridge();
   // While the drawer is open on a phone it owns one history entry, so the
   // device back closes it before route navigation (lib/layerHistory).
   const drawerStage = useMediaQuery('(max-width: 767px)');
@@ -1658,7 +1662,7 @@ function NormalApp() {
         isSessionBusy={activeSession?.busy}
         sessionReachable={isSessionReachable}
       >
-      <div className="flex h-full overflow-hidden bg-canvas">
+      <div ref={setDrawerHostEl} className="flex h-full overflow-hidden bg-canvas">
       {dockedSidebarSplit ? (
         <Suspense
           fallback={(
@@ -1675,6 +1679,59 @@ function NormalApp() {
             stage={stageNode}
           />
         </Suspense>
+      ) : drawerStage ? (
+        <Drawer.Provider>
+          <Drawer.Root
+            open={sidebarOpen}
+            modal="trap-focus"
+            onOpenChange={(nextOpen, eventDetails) => {
+              setSidebarSwiping(false);
+              if (
+                !nextOpen &&
+                (eventDetails.reason === 'escape-key' ||
+                  (eventDetails.reason === 'outside-press' && anyOverlayOpen(['app-sidebar'])))
+              ) {
+                // Inner sheets/popovers (e.g. SpaceSwitchSheet) own outside-press and Escape first.
+                eventDetails.cancel();
+                return;
+              }
+              setSidebarOpen(nextOpen);
+            }}
+            swipeDirection="left"
+          >
+            {!sidebarOpen && !quickSwitcherOpen && !shortcutsOpen && workSetup === null ? (
+              <Drawer.SwipeArea
+                swipeDirection="right"
+                data-workbench-swipe-area=""
+                onPointerDown={() => {
+                  setSidebarMounted(true);
+                  setSidebarSwiping(true);
+                }}
+                onPointerUp={() => { setSidebarSwiping(false); }}
+                onPointerCancel={() => { setSidebarSwiping(false); }}
+                className="fixed inset-y-0 left-0 z-30 w-5"
+              />
+            ) : null}
+            {!sidebarOpen && !sidebarSwiping ? sidebarNode : null}
+            <Drawer.Indent className="kiki-drawer-indent">
+              {stageNode}
+            </Drawer.Indent>
+            <Drawer.Portal container={drawerHostEl}>
+              <Drawer.Backdrop
+                data-sidebar-backdrop=""
+                className="kiki-drawer-backdrop"
+              />
+              <Drawer.Viewport className="kiki-drawer-viewport-left">
+                <Drawer.Popup
+                  data-workbench-sidebar-drawer=""
+                  className="kiki-drawer-left pt-[var(--kiki-safe-top-inset)] pb-[var(--kiki-safe-bottom-inset)]"
+                >
+                  {sidebarNode}
+                </Drawer.Popup>
+              </Drawer.Viewport>
+            </Drawer.Portal>
+          </Drawer.Root>
+        </Drawer.Provider>
       ) : (
         <>
           {sidebarNode}
@@ -1685,16 +1742,18 @@ function NormalApp() {
 
       {sidebarOpen ? (
         <>
-          <div
-            role="button"
-            tabIndex={-1}
-            aria-label={t('app.closeSidebar')}
-            className="app-overlay-backdrop md:hidden"
-            onClick={() => { setSidebarOpen(false); }}
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') setSidebarOpen(false);
-            }}
-          />
+          {drawerStage ? null : (
+            <div
+              role="button"
+              tabIndex={-1}
+              aria-label={t('app.closeSidebar')}
+              className="app-overlay-backdrop md:hidden"
+              onClick={() => { setSidebarOpen(false); }}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') setSidebarOpen(false);
+              }}
+            />
+          )}
           {/* md and up: only while an open preview folded the sidebar away
               (index.css hides it otherwise), so a sidebar opened by hand
               over the preview closes on a click outside. */}
@@ -1762,19 +1821,6 @@ function NormalApp() {
         ) : null}
       </Suspense>
         <Toasts />
-        {readDesktopOverride() ? (
-          <button
-            type="button"
-            data-return-mobile-chip
-            onClick={() => {
-              writeDesktopOverride(false);
-              void navigate(activeSessionId !== undefined ? mobileChatPath('local', activeSessionId) : MOBILE_ASSISTANT_PATH);
-            }}
-            className="kiki-mobile-glass-pill fixed right-4 bottom-[calc(16px+var(--kiki-safe-bottom-inset))] z-40 inline-flex h-9 items-center gap-1.5 rounded-full px-3.5 text-[12.5px] font-normal text-ink transition-colors hover:bg-panel"
-          >
-            <span>{t('mobile.desktop.returnMobile')}</span>
-          </button>
-        ) : null}
       </div>
       <ConfirmDialog
         stacked

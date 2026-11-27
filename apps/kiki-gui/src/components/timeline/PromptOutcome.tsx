@@ -2,9 +2,18 @@ import { createContext, useContext, useId, useState } from 'react';
 
 import type { NoticeBlock, PromptOutcome } from '@kiki/session-core/session';
 import { useI18n } from '../../i18n';
+import { lazyComponent } from '../../lib/lazyComponent';
 import { DisclosureChevron } from '../icons';
 import { RelativeTime } from '../RelativeTime';
-import { TimelineErrorCallout, type TimelineErrorAction } from './TimelineErrorCallout';
+import type { TimelineErrorAction } from './TimelineErrorCallout';
+
+const TimelineErrorCallout = lazyComponent(() =>
+  import('./TimelineErrorCallout').then((m) => m.TimelineErrorCallout),
+);
+
+if (import.meta.env.MODE === 'test') {
+  await TimelineErrorCallout.preload();
+}
 
 const LINK =
   'inline-flex min-h-7 min-w-7 cursor-pointer items-center rounded-[6px] px-1.5 font-normal text-ink-soft underline-offset-2 transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink disabled:cursor-default disabled:no-underline disabled:opacity-60 pointer-coarse:min-h-11 pointer-coarse:min-w-11';

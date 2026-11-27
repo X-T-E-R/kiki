@@ -9,7 +9,7 @@
 import { memo, useState } from 'react';
 
 import { useI18n } from '../../i18n';
-import type { BranchLifecycleState } from '../agent-panel/InspectorBranches';
+import type { BranchLifecycleState } from '../agent-panel/branchModel';
 import { Icon } from '../icons';
 import type { TimelineOffshootItem } from './forkLineageModel';
 
