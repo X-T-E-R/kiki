@@ -2692,6 +2692,18 @@ describe('persona model and effort choice sources', () => {
     expect(handoff['permissionMode']).toBe('yolo');
   });
 
+  it('inherits server default_permission_mode on an untouched draft when localStorage has no override', async () => {
+    client.getConfig.mockResolvedValue({ default_permission_mode: 'yolo' });
+    await renderDraft({});
+    const state = await settleDraft((value) => !value.agentProfileCatalogPending && value.permissionMode === 'yolo');
+    expect(state.permissionMode).toBe('yolo');
+    await act(async () => { await state.send('Hello', []); });
+    const body = client.createSession.mock.calls[0]![0] as SessionCreate;
+    expect(body.agent_config).toMatchObject({ profile: 'agent', permission_mode: 'yolo' });
+    const handoff = navigate.mock.calls[0]![1].state as Record<string, unknown>;
+    expect(handoff['permissionMode']).toBe('yolo');
+  });
+
   it('keeps unpinned persona profile defaults inherited and clearing persona restores ordinary profile submission', async () => {
     client.getPersona.mockResolvedValue({ revision: 'revision-1', definition: { id: 'sample', name: 'Sample', description: 'Sample persona' } });
     await renderDraft({ initialPersona: 'sample' });

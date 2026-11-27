@@ -650,6 +650,17 @@ export function useNewSessionDraft({
     staleTime: 60_000,
   });
   const serverDefaultModel = configQuery.data?.default_model || undefined;
+  const rawServerPermissionMode = configQuery.data?.default_permission_mode;
+  const serverDefaultPermissionMode: PermissionMode | undefined =
+    rawServerPermissionMode === 'manual'
+    || rawServerPermissionMode === 'auto'
+    || rawServerPermissionMode === 'review'
+    || rawServerPermissionMode === 'yolo'
+      ? rawServerPermissionMode
+      : undefined;
+  const effectivePermissionMode = permissionTouched.current
+    ? permissionMode
+    : (serverDefaultPermissionMode ?? liveSettings.defaultPermissionMode);
 
   const modelsQuery = useQuery({
     queryKey: ['models'],
@@ -907,7 +918,7 @@ export function useNewSessionDraft({
     effectiveEffort: (!agentProfilesQuery.isSuccess || agentProfileCatalogPending || persona !== undefined) && (effortOverrideFromProfile.current || effortOverrideFromPersona.current) ? undefined : effectiveEffort,
     agentProfile,
     execution,
-    permissionMode,
+    permissionMode: effectivePermissionMode,
     planMode,
     goalObjective,
     worktree,
@@ -925,7 +936,7 @@ export function useNewSessionDraft({
     effectiveEffort: (!agentProfilesQuery.isSuccess || agentProfileCatalogPending || persona !== undefined) && (effortOverrideFromProfile.current || effortOverrideFromPersona.current) ? undefined : effectiveEffort,
     agentProfile,
     execution,
-    permissionMode,
+    permissionMode: effectivePermissionMode,
     planMode,
     goalObjective,
     worktree,
@@ -1580,7 +1591,7 @@ export function useNewSessionDraft({
     error,
     workspaceId,
     cwd,
-    permissionMode,
+    permissionMode: effectivePermissionMode,
     planMode,
     goalObjective,
     modelOverride,

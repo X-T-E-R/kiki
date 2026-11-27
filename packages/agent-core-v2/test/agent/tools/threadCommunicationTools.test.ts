@@ -900,6 +900,17 @@ describe('thread communication tools', () => {
       notify_on_terminal: true,
     });
 
+    const omittedTrusted = createThreadFixture({ callerMode: 'yolo', bridgeCeiling: 'yolo' });
+    await executeThreadCreate(omittedTrusted.tool, {
+      connection_id: 'conn-trusted',
+      prompt: 'Use remote default_permission_mode',
+    });
+    expect(omittedTrusted.createThread).toHaveBeenCalledWith(expect.objectContaining({
+      connectionId: 'conn-trusted',
+      permissionMode: undefined,
+      prompt: 'Use remote default_permission_mode',
+    }));
+
     const restrictedBridge = createThreadFixture({ callerMode: 'yolo', bridgeCeiling: 'auto' });
     expect(await executeThreadCreate(restrictedBridge.tool, {
       connection_id: 'conn-restricted',

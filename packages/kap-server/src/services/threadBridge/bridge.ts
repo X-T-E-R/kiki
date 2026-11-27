@@ -176,8 +176,30 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
       remoteSpaceToolCapability(this.core.accessor.get(IRemoteSpaceToolBridgeService))[REMOTE_SPACE_TOOL_ROUTER](undefined);
     } catch {}
   }
-  status() { return { identity: this.admission.identity, inboundEnabled: this.admission.status().enabled,
-    inbound: this.state.inbound.map((entry) => ({ ...entry.grant })), outbound: this.state.outbound.map(({ connectionGrantId: _connectionGrantId, ...entry }) => ({ ...entry, grant: { ...entry.grant } })) }; }
+  status() {
+    return {
+      identity: this.admission.identity,
+      inboundEnabled: this.admission.status().enabled,
+      inbound: this.state.inbound.map((entry) => ({
+        ...entry.grant,
+        ...(entry.grant.permissionCeiling === undefined && this.resolveInboundEntryCeiling(entry) === 'yolo'
+          ? { permissionCeiling: 'yolo' as const }
+          : {}),
+      })),
+      outbound: this.state.outbound.map((entry) => {
+        const { connectionGrantId: _connectionGrantId, ...rest } = entry;
+        return {
+          ...rest,
+          grant: {
+            ...entry.grant,
+            ...(entry.grant.permissionCeiling === undefined && this.resolveOutboundEntryCeiling(entry) === 'yolo'
+              ? { permissionCeiling: 'yolo' as const }
+              : {}),
+          },
+        };
+      }),
+    };
+  }
   receipts(cursor?: string, limit = 50) {
     const count = Math.max(1, Math.min(100, limit));
     const offset = cursor === undefined ? 0 : this.state.outbox.findIndex((entry) => entry.receipt.id === cursor) + 1;
@@ -208,10 +230,10 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
     const localWorkspaceId = forward.grant.sourceScope.workspaceId;
     const remoteWorkspaceId = forward.grant.targetScope.workspaceId;
     const inheritedOperations = [...forward.grant.operations];
-    const connectionRecord = this.connections.list().find((entry) => entry.id === input.connectionId);
+    const forwardCeiling = this.resolveOutboundEntryCeiling(forward);
     const inheritedPermissionCeiling =
-      connectionRecord?.localTrusted === true
-        ? forward.grant.permissionCeiling
+      this.isTrustedOutboundConnection(input.connectionId)
+        ? forwardCeiling
         : forward.grant.permissionCeiling === undefined
           ? undefined
           : constrainPermissionMode(forward.grant.permissionCeiling, 'auto');
@@ -636,15 +658,49 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
     if (summary.archived) throw new AdmissionError(410, 'thread_archived');
     if (!(await this.threads.isWorkspaceEnabled(target.workspaceId, target))) denied('workspace_disabled');
   }
-  private effectiveInboundCeiling(grant: BridgeGrant): PermissionMode {
-    const declared = grant.permissionCeiling ?? 'auto';
-    const parentId = this.state.inbound.find((entry) => entry.grant.id === grant.id)?.connectionGrantId;
-    if (parentId === undefined) return declared;
-    const peer = this.admission.approvedPeer(parentId);
-    if (peer?.trustTier === 'trusted_personal') {
-      return declared;
+  private isTrustedOutboundConnection(connectionId: string): boolean {
+    const record = this.connections.list().find((entry) => entry.id === connectionId);
+    return record?.localTrusted === true || record?.trustTier === 'trusted_personal';
+  }
+  private resolveInboundEntryCeiling(entry: Inbound): PermissionMode {
+    if (entry.connectionGrantId !== undefined) {
+      const peer = this.admission.approvedPeer(entry.connectionGrantId);
+      if (peer?.trustTier === 'trusted_personal') {
+        return entry.grant.permissionCeiling ?? 'yolo';
+      }
+      return constrainPermissionMode(entry.grant.permissionCeiling ?? 'auto', 'auto');
     }
-    return constrainPermissionMode(declared, 'auto');
+    if (entry.peerConnectionId !== undefined) {
+      if (this.isTrustedOutboundConnection(entry.peerConnectionId)) {
+        return entry.grant.permissionCeiling ?? 'yolo';
+      }
+      return constrainPermissionMode(entry.grant.permissionCeiling ?? 'auto', 'auto');
+    }
+    return entry.grant.permissionCeiling ?? 'auto';
+  }
+  private resolveOutboundEntryCeiling(entry: Outbound): PermissionMode {
+    const record = this.connections.list().find((item) => item.id === entry.connectionId);
+    if (record?.transport?.kind === 'peer_socket' && entry.connectionGrantId !== undefined) {
+      const peer = this.admission.approvedPeer(entry.connectionGrantId);
+      if (peer?.trustTier === 'trusted_personal') {
+        return entry.grant.permissionCeiling ?? 'yolo';
+      }
+      return constrainPermissionMode(entry.grant.permissionCeiling ?? 'auto', 'auto');
+    }
+    if (record?.localTrusted === true || record?.trustTier === 'trusted_personal') {
+      return entry.grant.permissionCeiling ?? 'yolo';
+    }
+    return entry.grant.permissionCeiling ?? 'auto';
+  }
+  private effectiveOutboundCeiling(link: BridgeLink): PermissionMode {
+    const entry = this.state.outbound.find((item) => item.grant.id === link.grant.id);
+    if (entry === undefined) return link.grant.permissionCeiling ?? 'auto';
+    return this.resolveOutboundEntryCeiling(entry);
+  }
+  private effectiveInboundCeiling(grant: BridgeGrant): PermissionMode {
+    const entry = this.state.inbound.find((item) => item.grant.id === grant.id);
+    if (entry === undefined) return grant.permissionCeiling ?? 'auto';
+    return this.resolveInboundEntryCeiling(entry);
   }
   async inboundCreate(grant: BridgeGrant, input: BridgeCreate): Promise<CreateBridgedThreadResult> {
     this.checkInbound(grant, input, 'create');
@@ -992,7 +1048,7 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
   permissionCeiling(input: BridgePermissionCeilingInput): PermissionMode | undefined {
     try {
       const link = this.choose(input, input.caller, undefined, 'create');
-      return link.grant.permissionCeiling ?? 'auto';
+      return this.effectiveOutboundCeiling(link);
     } catch {
       return undefined;
     }
@@ -1014,7 +1070,7 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
   private source(source: { workspaceId: string; sessionId: string } | undefined): ThreadRef { if (source === undefined) denied('bridge_source_required'); return plainRef({ hostId: this.admission.identity.hostId, ...source }); }
   async create(input: CreateBridgedThreadInput): Promise<CreateBridgedThreadResult> {
     const link = this.choose(input, input.caller, undefined, 'create');
-    const ceiling = link.grant.permissionCeiling ?? 'auto';
+    const ceiling = this.effectiveOutboundCeiling(link);
     if (input.permissionMode !== undefined && constrainPermissionMode(input.permissionMode, ceiling) !== input.permissionMode) {
       denied('bridge_permission_ceiling');
     }

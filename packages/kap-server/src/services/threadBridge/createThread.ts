@@ -45,11 +45,12 @@ export async function createBridgedThread(core: Scope, workspace: Workspace, hos
       }
     }
     const permission = main.accessor.get(IAgentPermissionModeService);
-    const defaultMode = constrainPermissionMode('auto', ceiling);
-    const effectiveMode = constrainPermissionMode(input.permissionMode ?? defaultMode, ceiling);
+    const effectiveMode = constrainPermissionMode(input.permissionMode ?? permission.mode, ceiling);
     permission.setModeCeiling(ceiling);
-    permission.setMode(effectiveMode);
-    main.accessor.get(IAgentLifecycleService).broadcastPermissionMode(effectiveMode);
+    if (input.permissionMode !== undefined || permission.mode !== effectiveMode) {
+      permission.setMode(effectiveMode);
+    }
+    main.accessor.get(IAgentLifecycleService).broadcastPermissionMode(permission.mode);
     if (input.planMode !== undefined) {
       const plan = main.accessor.get(IAgentPlanService);
       if (((await plan.status()) !== null) !== input.planMode) {

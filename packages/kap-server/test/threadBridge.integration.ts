@@ -4,7 +4,7 @@ import { createServer, type Server } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createKlient } from '@kiki/klient/http';
 import {
-  ISessionManager, ISessionContext, ensureMainAgent, IThreadCommunicationService, IThreadMailboxStore, IAgentContextMemoryService,
+  IConfigService, ISessionManager, ISessionContext, ensureMainAgent, IThreadCommunicationService, IThreadMailboxStore, IAgentContextMemoryService,
   IAgentLoopService, IAgentPromptService, ISendMessageToThreadTool, IListThreadsTool, IReadThreadTool, IWaitThreadsTool,
   IThreadCreateTool, ISessionMetadata, IAgentPermissionModeService, ISessionIndex, CREATED_BY_SESSION_ID_KEY, CREATED_BY_AGENT_ID_KEY,
   SEND_PEER_THREAD_MESSAGE as importedPeerSend,
@@ -569,11 +569,11 @@ it('supports trusted bidirectional bridge-only yolo ceiling and notify_on_termin
       code: pairCode.code,
       label: 'trusted-peer',
       includeGui: false,
-      trusted: true,
       backgroundSummary: false,
     });
     expect(paired.purposes).toEqual(['bridge']);
-    expect(paired.localTrusted).toBe(true);
+    expect(paired.trustTier).toBe('trusted_personal');
+    expect(paired.localTrusted).toBeUndefined();
 
     await vi.waitFor(async () => {
       const aBridges = await aClient.rest!.threadBridges.status();
@@ -609,6 +609,18 @@ it('supports trusted bidirectional bridge-only yolo ceiling and notify_on_termin
     const createdMain = await ensureMainAgent(createdSession);
     expect(createdMain.accessor.get(IAgentPermissionModeService).modeCeiling).toBe('yolo');
     expect(createdMain.accessor.get(IAgentPermissionModeService).mode).toBe('yolo');
+
+    await f.b.core.accessor.get(IConfigService).set('defaultPermissionMode', 'yolo');
+    const inheritedYolo = await execute<{ id: string }>(createTool, {
+      connection_id: paired.id,
+      workspace_id: f.target.workspaceId,
+      title: 'Inherited Mac yolo default',
+      idempotency_key: 'trusted-omitted-default-yolo-1',
+    });
+    const inheritedSession = f.b.core.accessor.get(ISessionManager).get(inheritedYolo.id)!;
+    const inheritedMain = await ensureMainAgent(inheritedSession);
+    expect(inheritedMain.accessor.get(IAgentPermissionModeService).modeCeiling).toBe('yolo');
+    expect(inheritedMain.accessor.get(IAgentPermissionModeService).mode).toBe('yolo');
 
     const aMailbox = f.a.core.accessor.get(IThreadMailboxStore);
     await vi.waitFor(async () => {

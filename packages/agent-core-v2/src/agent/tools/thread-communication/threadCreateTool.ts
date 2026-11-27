@@ -113,8 +113,8 @@ export class ThreadCreateTool implements IThreadCreateTool {
               workspaceId: input.workspace_id,
             }) ?? 'auto')
           : callerMode;
-        const defaultBridgedMode = constrainPermissionMode(callerMode, constrainPermissionMode('auto', crossSpaceCeiling));
-        const requestedMode = input.permission_mode ?? (bridged ? defaultBridgedMode : callerMode);
+        const effectiveCrossSpaceCeiling = constrainPermissionMode(callerMode, crossSpaceCeiling);
+        const requestedMode = input.permission_mode ?? (bridged ? effectiveCrossSpaceCeiling : callerMode);
         if (bridged && constrainPermissionMode(requestedMode, crossSpaceCeiling) !== requestedMode) {
           return { output: `permission_mode ${requestedMode} exceeds the cross-space ${crossSpaceCeiling} ceiling.`, isError: true };
         }
@@ -122,12 +122,15 @@ export class ThreadCreateTool implements IThreadCreateTool {
           return { output: `permission_mode ${requestedMode} exceeds the caller's effective ${callerMode} mode. Ask the user to change the caller's mode first.`, isError: true };
         }
         if (bridged) {
+          const bridgedPermissionMode = input.permission_mode === undefined && effectiveCrossSpaceCeiling === 'yolo'
+            ? undefined
+            : requestedMode;
           const created = await this.threadCommunication.createThread({
             caller,
             bridgeId: input.bridge_id, connectionId: input.connection_id, workspaceId: input.workspace_id,
             idempotencyKey: input.idempotency_key ?? toolCallId, signal,
             title: input.title, profile: input.profile, persona: input.persona, modelAlias: input.model_alias,
-            effort: input.effort, permissionMode: requestedMode, planMode: input.plan_mode, prompt: input.prompt,
+            effort: input.effort, permissionMode: bridgedPermissionMode, planMode: input.plan_mode, prompt: input.prompt,
             notifyOnTerminal: input.notify_on_terminal,
           });
           const ref = created.ref;
