@@ -97,7 +97,7 @@ class ModesRelayUpdaterContractTest {
               "packageName": "dev.kiki.app",
               "versionName": "0.7.1",
               "versionCode": 7001,
-              "apkUrl": "https://kiki.zjuam.art/api/kiki/updater/stable/kiki-0.7.1.apk",
+              "apkUrl": "https://updates.example.test/kiki/updater/stable/kiki-0.7.1.apk",
               "sha256": "${sha256.lowercase()}",
               "sizeBytes": ${apkBytes.size},
               "signerCertSha256": "$signer",

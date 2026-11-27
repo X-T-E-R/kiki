@@ -166,7 +166,7 @@ internal object ModePickerView {
 
         val footerNote = TextView(context).apply {
             text = if (zh) {
-                "设置过一次即自动记住 · 随时可在「设置」中开启或关闭本机运行"
+                "设置后自动记住 · 随时可在「设置」中开关本机运行"
             } else {
                 "Saved automatically · Toggle local engine anytime in Settings"
             }

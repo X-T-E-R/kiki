@@ -32,15 +32,18 @@ val kikiVersionCode: Int = propOrEnv("kikiVersionCodeOverride", "KIKI_VERSION_CO
 
 val distributionChannel: String = (propOrEnv("kikiDistribution", "KIKI_DISTRIBUTION") ?: "official")
     .lowercase()
-    .let { if (it == "portal") "portal" else "official" }
+    .let { if (it == "portal" || it == "custom") it else "official" }
 
-val defaultUpdaterFeedUrl: String = if (distributionChannel == "portal") {
-    "https://kiki.zjuam.art/api/kiki/updater/stable/android.json"
-} else {
-    "https://github.com/X-T-E-R/kiki/releases/latest/download/android.json"
+val configuredUpdaterFeedUrl: String? = propOrEnv("kikiUpdaterFeedUrl", "KIKI_UPDATER_FEED_URL")
+
+if (distributionChannel != "official" && configuredUpdaterFeedUrl.isNullOrBlank()) {
+    throw GradleException(
+        "KIKI_DISTRIBUTION=$distributionChannel requires an explicit KIKI_UPDATER_FEED_URL (or -PkikiUpdaterFeedUrl=https://...).",
+    )
 }
 
-val updaterFeedUrl: String = propOrEnv("kikiUpdaterFeedUrl", "KIKI_UPDATER_FEED_URL") ?: defaultUpdaterFeedUrl
+val updaterFeedUrl: String = configuredUpdaterFeedUrl
+    ?: "https://github.com/X-T-E-R/kiki/releases/latest/download/android.json"
 
 val releaseKeystorePath: String? = propOrEnv("kikiAndroidKeystorePath", "KIKI_ANDROID_KEYSTORE_PATH")
     ?: propOrEnv("kikiAndroidKeystoreFile", "KIKI_ANDROID_KEYSTORE_FILE")
