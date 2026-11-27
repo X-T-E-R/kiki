@@ -1995,7 +1995,7 @@ describe('Sidebar session menu location & link group', () => {
     const { container } = await mount(listed());
     const menu = await openSessionMenu(container);
     const keys = () => [...menu.querySelectorAll('[role="menuitem"]')].map((element) => element.getAttribute('data-menu-item'));
-    expect(keys()).toEqual(['pin', 'rename', 'private', 'branch', 'fork', 'copy-link', 'join-room', 'copy-path', 'archive', 'more']);
+    expect(keys()).toEqual(['pin', 'toggle-mute', 'rename', 'private', 'branch', 'fork', 'copy-link', 'join-room', 'copy-path', 'archive', 'more']);
 
     const branchBtn = menu.querySelector<HTMLButtonElement>('[data-menu-item="branch"]')!;
     await act(async () => { branchBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); });
@@ -3555,7 +3555,7 @@ describe('sidebar on a phone', () => {
     const sheet = document.querySelector<HTMLElement>('[data-session-menu]');
     expect(sheet?.classList.contains('kiki-action-sheet-layer')).toBe(true);
     expect([...sheet!.querySelectorAll('[role="menuitem"]')].map((element) => element.getAttribute('data-menu-item')))
-      .toEqual(['pin', 'rename', 'private', 'branch', 'fork', 'copy-link', 'add-to-conversation', 'join-room', 'copy-path', 'archive']);
+      .toEqual(['pin', 'toggle-mute', 'rename', 'private', 'branch', 'fork', 'copy-link', 'add-to-conversation', 'join-room', 'copy-path', 'archive']);
     await act(async () => { sheet!.querySelector<HTMLButtonElement>('[data-menu-item="fork"]')!.click(); });
     expect([...sheet!.querySelectorAll('[role="menuitem"]')].map((element) => element.getAttribute('data-menu-item')))
       .toEqual(['seed-back', 'fork-verbatim', 'fork-fresh', 'fork-compact']);
@@ -4900,5 +4900,97 @@ describe('Sidebar automatic session groups & single-demand infinite scroll', () 
     // Manual Load more button still triggers demand when scrolled to end or clicked.
     const list = container.querySelector<HTMLElement>('[data-session-list]')!;
     expect(list.querySelector('[data-session-list-virtualized="true"]')).not.toBeNull();
+  });
+
+  it('toggles per-session notification mute from the context menu, preserves authoritative custom metadata, renders muted-bell badge, and suppresses routine unread dot', async () => {
+    const patrol = {
+      ...session('s_patrol'),
+      title: 'Patrol Cron',
+      last_seq: 15,
+      last_turn_reason: 'completed' as const,
+      updated_at: '2026-10-06T11:30:00Z',
+      metadata: { cwd: 'C:/tmp' } as Session['metadata'],
+    };
+    const mutedPatrol = {
+      ...session('s_patrol_muted'),
+      title: 'Muted Patrol',
+      last_seq: 15,
+      last_turn_reason: 'completed' as const,
+      updated_at: '2026-10-06T11:25:00Z',
+      metadata: { cwd: 'C:/tmp', 'kiki.notifications': 'off' } as Session['metadata'],
+    };
+    // Authoritative server records carry extra custom metadata keys absent from bounded SidebarRow projections.
+    const authoritativePatrol = {
+      ...patrol,
+      metadata: {
+        cwd: 'C:/tmp',
+        local_session: true,
+        plugin_import_job: 'job-42',
+        persona_home_managed: true,
+        custom_plugin_flag: 'keep-me',
+      } as Session['metadata'],
+    };
+    const authoritativeMuted = {
+      ...mutedPatrol,
+      metadata: {
+        cwd: 'C:/tmp',
+        'kiki.notifications': 'off',
+        local_session: true,
+        custom_plugin_flag: 'keep-me-too',
+      } as Session['metadata'],
+    };
+    getSession.mockImplementation(async (id: string) => {
+      if (id === 's_patrol') return authoritativePatrol;
+      if (id === 's_patrol_muted') return authoritativeMuted;
+      throw new Error('Thread not found');
+    });
+
+    const { container } = await mount({
+      sessions: [patrol, mutedPatrol],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [patrol, mutedPatrol] }],
+      nowMs: FIXTURE_NOW_MS,
+    });
+
+    const activeRow = container.querySelector('[data-session-row="s_patrol"]')!;
+    const mutedRow = container.querySelector('[data-session-row="s_patrol_muted"]')!;
+    expect(activeRow.getAttribute('data-session-row-state')).toBe('unread');
+    expect(activeRow.querySelector('[data-session-muted]')).toBeNull();
+    expect(mutedRow.getAttribute('data-session-row-state')).toBe('read');
+    expect(mutedRow.querySelector('[data-session-muted]')).not.toBeNull();
+
+    await act(async () => {
+      activeRow.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+    });
+    const muteItem = container.querySelector<HTMLButtonElement>('[data-menu-action="toggle-mute"]')!;
+    expect(muteItem).not.toBeNull();
+    expect(muteItem.textContent).toBe('Mute notifications');
+    await act(async () => { muteItem.click(); });
+    expect(getSession).toHaveBeenCalledWith('s_patrol');
+    expect(updateSessionProfile).toHaveBeenCalledWith('s_patrol', {
+      metadata: {
+        cwd: 'C:/tmp',
+        local_session: true,
+        plugin_import_job: 'job-42',
+        persona_home_managed: true,
+        custom_plugin_flag: 'keep-me',
+        'kiki.notifications': 'off',
+      },
+    });
+
+    await act(async () => {
+      mutedRow.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+    });
+    const unmuteItem = container.querySelector<HTMLButtonElement>('[data-menu-action="toggle-mute"]')!;
+    expect(unmuteItem).not.toBeNull();
+    expect(unmuteItem.textContent).toBe('Unmute notifications');
+    await act(async () => { unmuteItem.click(); });
+    expect(getSession).toHaveBeenCalledWith('s_patrol_muted');
+    expect(updateSessionProfile).toHaveBeenLastCalledWith('s_patrol_muted', {
+      metadata: {
+        cwd: 'C:/tmp',
+        local_session: true,
+        custom_plugin_flag: 'keep-me-too',
+      },
+    });
   });
 });

@@ -480,23 +480,40 @@ export class NotificationService {
     state.subscriptions.push(activity.onDidChange(() => { this.reconcileSession(state); }));
     state.subscriptions.push(interactions.onDidChangePending(() => { this.reconcileSession(state); }));
     state.subscriptions.push(interactions.onDidResolve(({ id }) => { this.cancelQuestion(state, id); }));
+    try {
+      const metadata = session.accessor.get(ISessionMetadata);
+      if (metadata.onDidChangeMetadata !== undefined) {
+        state.subscriptions.push(metadata.onDidChangeMetadata(() => { this.reconcileSession(state); }));
+      }
+    } catch {}
     this.reconcileSession(state);
+  }
+  private sessionNotificationMode(session: ISessionScopeHandle): 'all' | 'urgent' | 'off' {
+    try {
+      const value = session.accessor.get(ISessionMetadata).snapshot().custom?.['kiki.notifications'];
+      if (value === 'off' || value === false) return 'off';
+      if (value === 'urgent') return 'urgent';
+    } catch {}
+    return 'all';
   }
   private isSilentSession(session: ISessionScopeHandle): boolean {
     if (session.accessor.get(ISessionContext).ephemeral === true) return true;
     try {
       if (session.accessor.get(ISessionMetadata).snapshot().private === true) return true;
     } catch {}
-    return false;
+    return this.sessionNotificationMode(session) === 'off';
+  }
+  private suppressesWorkComplete(session: ISessionScopeHandle): boolean {
+    return this.isSilentSession(session) || this.sessionNotificationMode(session) === 'urgent';
   }
   private completeReady(state: Watched): boolean {
-    if (this.isSilentSession(state.session)) return false;
+    if (this.suppressesWorkComplete(state.session)) return false;
     const activity = state.activity.state();
     return !activity.busy && !activity.mainTurnActive && activity.pendingInteraction === 'none' &&
       activity.lastTurnReason === 'completed';
   }
   listCompletions(): readonly { session_id: string; episode_id: string; completed_at: number }[] {
-    return [...this.watched.values()].flatMap((state) => !this.isSilentSession(state.session) && state.completed !== undefined &&
+    return [...this.watched.values()].flatMap((state) => !this.suppressesWorkComplete(state.session) && state.completed !== undefined &&
       Date.now() - state.completed.completed_at < 600_000 && this.completeReady(state) ? [state.completed] : []);
   }
   private unwatch(id: string): void {
@@ -538,7 +555,7 @@ export class NotificationService {
     }
     if (!this.completeReady(state)) {
       if (state.completion) { clearTimeout(state.completion); state.completion = undefined; }
-      if (!activity.mainTurnActive && (activity.pendingInteraction !== 'none' ||
+      if (!activity.mainTurnActive && (this.suppressesWorkComplete(state.session) || activity.pendingInteraction !== 'none' ||
         activity.lastTurnReason === 'failed' || activity.lastTurnReason === 'cancelled')) {
         state.startedAt = undefined;
         state.completed = undefined;
@@ -577,7 +594,7 @@ export class NotificationService {
     return from === to ? false : from < to ? now >= from && now < to : now >= from || now < to;
   }
   private dispatch(state: Watched, scene: Scene, key: string, valid: () => boolean, deliveries?: string[]): void {
-    if (this.stopped || this.pausing || !this.settings.global.enabled || !this.watched.has(state.session.id) || this.isSilentSession(state.session) || !valid()) return;
+    if (this.stopped || this.pausing || !this.settings.global.enabled || !this.watched.has(state.session.id) || this.isSilentSession(state.session) || (scene === 'work_complete' && this.suppressesWorkComplete(state.session)) || !valid()) return;
     if (this.inQuietHours()) {
       const timer = setTimeout(() => {
         this.quietTimers.delete(timer);

@@ -23,6 +23,8 @@ import { errorText } from '@kiki/session-core/i18n';
 import {
   isPinnedSession,
   pinMetadataPatch,
+  sessionNotificationMode,
+  toggleMutedNotificationMode,
   togglePinned,
   type SessionListData,
 } from '@kiki/session-core/sessions';
@@ -34,6 +36,7 @@ import { useLayerHistory } from '../lib/layerHistory';
 import { useCoarsePointer, usePhoneMode } from '../lib/layoutHooks';
 import { clampOverlayPosition } from '../lib/overlayPosition';
 import { invalidatePersonaSessionLists } from '../lib/personaFreshness';
+import { updateSessionNotificationMode } from '../lib/sessionNotificationMutation';
 import { sessionRelationOf } from '../lib/sessionThreads';
 import { readTopLevelThreads } from '../lib/threadDisplayMemory';
 import { pushToast, runToastAction } from '../lib/toasts';
@@ -80,6 +83,7 @@ export interface SessionMenuProps {
   readonly onClose: () => void;
   readonly onRename: () => void;
   readonly onTogglePin: () => void;
+  readonly onToggleMute?: () => void;
   readonly onTogglePrivate: () => void;
   readonly onCreateBranch: (seed: SessionSeedMode) => void;
   readonly onForkSession: (seed: SessionSeedMode) => void;
@@ -206,6 +210,7 @@ function SessionMenuEntries({
   onClose,
   onRename,
   onTogglePin,
+  onToggleMute,
   onTogglePrivate,
   onCreateBranch,
   onForkSession,
@@ -318,6 +323,19 @@ function SessionMenuEntries({
           >
             {isPinnedSession(session) ? t('menu.unpin') : t('menu.pin')}
           </button>
+          {onToggleMute !== undefined ? (
+            <button
+              type="button"
+              role="menuitem"
+              data-menu-item="toggle-mute"
+              data-menu-action="toggle-mute"
+              disabled={archiving}
+              className={`${SESSION_ROW_MENU_ITEM} ${SESSION_ROW_MENU_DISABLED}`}
+              onClick={onToggleMute}
+            >
+              {sessionNotificationMode(session) === 'all' ? t('menu.muteNotifications') : t('menu.unmuteNotifications')}
+            </button>
+          ) : null}
           <button type="button" role="menuitem" data-menu-item="rename" className={SESSION_ROW_MENU_ITEM} onClick={onRename}>
             {t('menu.rename')}
           </button>
@@ -890,6 +908,23 @@ export function useSessionContextMenu(options: {
       });
   };
 
+  const handleToggleMute = (session: Session) => {
+    setMenu(null);
+    if (client === undefined || typeof client.updateSessionProfile !== 'function') return;
+    const nextMode = toggleMutedNotificationMode(sessionNotificationMode(session));
+    void updateSessionNotificationMode({
+      client,
+      queryClient,
+      session,
+      mode: nextMode,
+    })
+      .then(() => { refreshAll(); })
+      .catch((error: unknown) => {
+        refreshAll();
+        pushToast({ tone: 'error', text: errorText(locale, error) });
+      });
+  };
+
   const handleTogglePrivate = (session: Session) => {
     setMenu(null);
     if (client === undefined || typeof client.updateSession !== 'function' || privateBusyId === session.id) return;
@@ -1054,6 +1089,7 @@ export function useSessionContextMenu(options: {
             setMenu(null);
           }}
           onTogglePin={() => { handleTogglePin(menu.session); }}
+          onToggleMute={() => { handleToggleMute(menu.session); }}
           onTogglePrivate={() => { handleTogglePrivate(menu.session); }}
           onCreateBranch={(seed) => { handleCreateBranch(menu.session, seed); }}
           onForkSession={(seed) => { handleForkSession(menu.session, seed); }}

@@ -65,6 +65,7 @@ import { ActivityFeed, CapabilitiesBlock, NeedsYouList, ProfileHead, SessionEnvi
 import { RailTodos } from './DefaultRail';
 import { RailLiveTopology } from './RailLiveTopology';
 import { RunCronSection, SessionCronSection, useSessionCronTasks } from './SessionCronSection';
+import { SessionNotificationControl } from './SessionNotificationControl';
 import { SessionChannelsRail } from '../im/SessionChannelsRail';
 import { PersonaSettingsUpdate } from '../persona/PersonaSettingsUpdate';
 
@@ -1107,6 +1108,9 @@ export const Rail = memo(function Rail({
                     data-rail-section="session-integrations"
                     className={`${SECTION} space-y-0.5 empty:hidden [&:not(:has(>:not(:empty)))]:hidden`}
                   >
+                    {session !== undefined ? (
+                      <SessionNotificationControl session={session} />
+                    ) : null}
                     {session !== undefined ? (
                       <div className="empty:hidden">
                         <SessionChannelsRail

@@ -182,6 +182,7 @@ export const sidebarEn = {
   'sidebar.mode.inbox': 'Inbox',
   'sidebar.mode.sessions': 'Sessions',
   'sidebar.moreTools': 'More tools',
+  'sidebar.mutedBadge': 'Notifications muted',
   'sidebar.navAria': 'Session navigation',
   'sidebar.needsMeCount.one': '{count} needs you',
   'sidebar.needsMeCount.other': '{count} need you',

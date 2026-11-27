@@ -5,7 +5,7 @@ import {
   preserveReservedSessionGroupKeys,
   type ISessionScopeHandle,
 } from '@kiki/agent-core-v2';
-import { PROMOTED_FROM_KEY } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
+import { FORKED_FROM_KEY, PROMOTED_FROM_KEY } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
 import type { UpdateSessionProfileRequest } from '@kiki/agent-core-v2/app/sessionLegacy/sessionProtocol';
 import type { SessionWireFields } from './sessions';
 
@@ -14,7 +14,7 @@ function replaceCustomMetadata(
   patch: Record<string, unknown>,
 ): Record<string, unknown> {
   const custom = preserveReservedSessionGroupKeys(existing, patch);
-  for (const key of [PROMOTED_FROM_KEY, 'goal']) {
+  for (const key of [PROMOTED_FROM_KEY, FORKED_FROM_KEY, 'goal']) {
     if (!Object.hasOwn(custom, key) && existing !== undefined && Object.hasOwn(existing, key)) {
       custom[key] = existing[key];
     }

@@ -519,3 +519,194 @@ describe('notification route failures', () => {
     }
   });
 });
+
+describe('per-session notification policy', () => {
+  let home: string;
+  let server: RunningServer | undefined;
+  afterEach(async () => {
+    vi.useRealTimers();
+    if (server) {
+      await server.close();
+      server = undefined;
+    }
+    if (home) await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  });
+
+  it('enforces off and urgent session metadata in NotificationService and reacts to live metadata changes', async () => {
+    home = await mkdtemp(join(tmpdir(), 'kiki-session-notify-mode-'));
+    const work = emitter<void>();
+    const pendingChanged = emitter<void>();
+    const metaChanged = emitter<{ readonly changed: readonly string[] }>();
+    const noEvent = emitter<never>();
+    let activity = { busy: false, mainTurnActive: false, pendingInteraction: 'none' as 'none' | 'question', lastTurnReason: 'completed' as const };
+    let questions: { id: string }[] = [];
+    let custom: Record<string, unknown> = { 'kiki.notifications': 'off' };
+    const session = {
+      id: 'patrol-1',
+      accessor: {
+        get: (key: unknown) => {
+          if (key === IInstantiationService) return { onWillDispose: noEvent.on };
+          if (key === ISessionActivityView) return { state: () => activity, onDidChange: work.on };
+          if (key === ISessionContext) return { ephemeral: false };
+          if (key === ISessionMetadata) {
+            return {
+              snapshot: () => ({ private: false, custom }),
+              onDidChangeMetadata: metaChanged.on,
+            };
+          }
+          if (key === ISessionInteractionService) {
+            return { listPending: () => questions, onDidChangePending: pendingChanged.on, onDidResolve: noEvent.on };
+          }
+          throw new Error('unexpected_session_service');
+        },
+      },
+    };
+    const settings = {
+      ...structuredClone(DEFAULT_NOTIFICATIONS_CONFIG),
+      global: { ...DEFAULT_NOTIFICATIONS_CONFIG.global, enabled: true, min_work_ms: 0, work_stable_ms: 500, question_delay_ms: 500 },
+      provider_instances: { hook: { provider_id: 'http', enabled: true, revision: 'v1', options: { endpoint: 'https://example.test/', format: 'json' } } },
+      channels: { ops: { provider_instance_id: 'hook', enabled: true, revision: 'v1', target: {}, directions: ['send'] as ['send'], scenes: { work_complete: true, question_pending: true } } },
+    };
+    const core = {
+      accessor: {
+        get: (key: unknown) => {
+          if (key === IConfigService) return { ready: Promise.resolve(), get: () => settings };
+          if (key === ISessionManager) return { list: () => [session] };
+          throw new Error('unexpected_app_service');
+        },
+      },
+    } as unknown as Scope;
+    const service = new NotificationService(core, home, () => false, () => { throw new Error('notification_error'); });
+    try {
+      await service.start();
+      vi.useFakeTimers();
+
+      activity = { busy: true, mainTurnActive: true, pendingInteraction: 'none', lastTurnReason: 'completed' };
+      work.fire();
+      activity = { busy: false, mainTurnActive: false, pendingInteraction: 'none', lastTurnReason: 'completed' };
+      work.fire();
+      questions = [{ id: 'q-off' }];
+      pendingChanged.fire();
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(service.listCompletions()).toEqual([]);
+      expect(service.listDeliveries()).toEqual([]);
+
+      questions = [];
+      pendingChanged.fire();
+      custom = { 'kiki.notifications': 'urgent' };
+      metaChanged.fire({ changed: ['custom'] });
+      activity = { busy: true, mainTurnActive: true, pendingInteraction: 'none', lastTurnReason: 'completed' };
+      work.fire();
+      activity = { busy: false, mainTurnActive: false, pendingInteraction: 'none', lastTurnReason: 'completed' };
+      work.fire();
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(service.listCompletions()).toEqual([]);
+      expect(service.listDeliveries()).toEqual([]);
+
+      questions = [{ id: 'q-urgent' }];
+      pendingChanged.fire();
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(service.listDeliveries()).toHaveLength(1);
+      expect(service.listDeliveries()[0]?.channel_id).toBe('ops');
+
+      questions = [];
+      pendingChanged.fire();
+      custom = {};
+      metaChanged.fire({ changed: ['custom'] });
+      activity = { busy: true, mainTurnActive: true, pendingInteraction: 'none', lastTurnReason: 'completed' };
+      work.fire();
+      activity = { busy: false, mainTurnActive: false, pendingInteraction: 'none', lastTurnReason: 'completed' };
+      work.fire();
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(service.listCompletions()).toHaveLength(1);
+
+      custom = { 'kiki.notifications': 'off' };
+      metaChanged.fire({ changed: ['custom'] });
+      expect(service.listCompletions()).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      await service.close();
+    }
+  });
+
+  it('persists kiki.notifications on cold sessions, projects onto sidebar rows, and publishes SessionMetaUpdated', async () => {
+    home = await mkdtemp(join(tmpdir(), 'kiki-session-notify-route-'));
+    const workDir = await mkdtemp(join(tmpdir(), 'kiki-session-notify-cwd-'));
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'info' });
+    const base = `http://127.0.0.1:${server.port}`;
+    const call = async <T>(path: string, method = 'GET', body?: unknown) => {
+      const response = await authedFetch(server!, base, `/api${path}`, {
+        method,
+        headers: { 'content-type': 'application/json' },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      expect(response.status).toBe(200);
+      return await response.json() as Envelope<T>;
+    };
+    try {
+      const created = await call<{ id: string; metadata: Record<string, unknown> }>('/sessions', 'POST', {
+        title: 'Patrol Thread',
+        metadata: { cwd: workDir, local_session: true, plugin_import_job: 'job-cold-1' },
+      });
+      const sessionId = created.data.id;
+      const manager = server.core.accessor.get(ISessionManager);
+      await manager.close(sessionId);
+      expect(manager.get(sessionId)).toBeUndefined();
+
+      const { IEventService } = await import('@kiki/agent-core-v2');
+      const events: string[] = [];
+      const sub = server.core.accessor.get(IEventService).subscribe((event) => {
+        if (event.type === 'session.meta.updated') {
+          const payload = (event as { readonly payload?: { readonly sessionId?: string } }).payload;
+          if (typeof payload?.sessionId === 'string') events.push(payload.sessionId);
+        }
+      });
+      try {
+        const fetched = await call<{ id: string; metadata: Record<string, unknown> }>(`/sessions/${sessionId}`);
+        expect(fetched.data.metadata).toMatchObject({ cwd: workDir, local_session: true, plugin_import_job: 'job-cold-1' });
+        expect(manager.get(sessionId)).toBeUndefined();
+
+        const muted = await call<{ id: string; metadata: Record<string, unknown> }>(
+          `/sessions/${sessionId}/profile`,
+          'POST',
+          { metadata: { ...fetched.data.metadata, 'kiki.notifications': 'off' } },
+        );
+        expect(muted.code).toBe(0);
+        expect(muted.data.metadata).toMatchObject({
+          cwd: workDir,
+          local_session: true,
+          plugin_import_job: 'job-cold-1',
+          'kiki.notifications': 'off',
+        });
+        expect(manager.get(sessionId)).toBeUndefined();
+        expect(events).toContain(sessionId);
+
+        const sidebar = await call<{ units: Array<{ kind: string; row?: { id: string; notifications?: string } }> }>('/sidebar/sessions');
+        const unit = sidebar.data.units.find((entry) => entry.kind === 'session' && entry.row?.id === sessionId);
+        expect(unit?.row?.notifications).toBe('off');
+
+        const { 'kiki.notifications': _dropped, ...restoredMeta } = muted.data.metadata;
+        const restored = await call<{ id: string; metadata: Record<string, unknown> }>(
+          `/sessions/${sessionId}/profile`,
+          'POST',
+          { metadata: restoredMeta },
+        );
+        expect(restored.code).toBe(0);
+        expect(restored.data.metadata['kiki.notifications']).toBeUndefined();
+        expect(restored.data.metadata).toMatchObject({
+          cwd: workDir,
+          local_session: true,
+          plugin_import_job: 'job-cold-1',
+        });
+
+        const sidebarAfter = await call<{ units: Array<{ kind: string; row?: { id: string; notifications?: string } }> }>('/sidebar/sessions');
+        const unitAfter = sidebarAfter.data.units.find((entry) => entry.kind === 'session' && entry.row?.id === sessionId);
+        expect(unitAfter?.row?.notifications).toBeUndefined();
+      } finally {
+        sub.dispose();
+      }
+    } finally {
+      await rm(workDir, { recursive: true, force: true });
+    }
+  });
+});

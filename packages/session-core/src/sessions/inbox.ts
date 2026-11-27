@@ -34,7 +34,7 @@ import {
 } from '../settings/sessionTriage';
 
 import { pendingKindOf } from './activity';
-import { sessionIsExecuting } from './sessionList';
+import { sessionIsExecuting, sessionNotificationMode, type SessionNotificationMode } from './sessionList';
 
 export type InboxSource = Pick<
   Session,
@@ -175,6 +175,15 @@ function finishedReason(session: InboxSource): InboxReason | undefined {
   }
 }
 
+function suppressesUnreadReason(
+  mode: SessionNotificationMode,
+  reason: InboxReason | undefined,
+): boolean {
+  if (mode === 'off') return true;
+  if (mode === 'urgent') return reason !== 'failed';
+  return false;
+}
+
 function extractPersonaIdentity(session: InboxSource): {
   readonly personaId?: string;
   readonly personaName?: string;
@@ -249,6 +258,7 @@ export function buildInboxModel(
       turnCount,
     };
 
+    const mode = sessionNotificationMode(session);
     const pending = pendingKindOf(session);
     if (pending !== 'none') {
       needsYou.push({ ...base, reason: pending });
@@ -258,7 +268,7 @@ export function buildInboxModel(
       needsYou.push({ ...base, reason: session.needsYouReason });
       continue;
     }
-    if (!session.busy && session.interrupted_work !== undefined) {
+    if (mode !== 'off' && !session.busy && session.interrupted_work !== undefined) {
       needsYou.push({ ...base, reason: 'interrupted', interruptedWork: session.interrupted_work });
       continue;
     }
@@ -269,7 +279,7 @@ export function buildInboxModel(
     if (session.busy) continue;
     if (!isSessionUnread(session, seen)) continue;
     const reason = finishedReason(session);
-    if (reason === undefined) continue;
+    if (reason === undefined || suppressesUnreadReason(mode, reason)) continue;
     unread.push({ ...base, reason });
   }
 
@@ -363,7 +373,8 @@ export function sessionRowState(session: InboxSource, seen: SessionSeenMap): Ses
   if (pendingKindOf(session) !== 'none') return 'needs-me';
   if (session.cleanup_pending === true) return 'cleanup-pending';
   if (sessionIsExecuting(session) === true) return 'running';
-  return isSessionUnread(session, seen) ? 'unread' : 'read';
+  if (!isSessionUnread(session, seen)) return 'read';
+  return suppressesUnreadReason(sessionNotificationMode(session), finishedReason(session)) ? 'read' : 'unread';
 }
 
 // ---- unified multi-space inbox with triage ----
@@ -566,17 +577,22 @@ export function buildUnifiedInbox(
       if (seenKeys.has(encodedKey)) continue;
       seenKeys.add(encodedKey);
 
+      const mode = sessionNotificationMode(session);
       const attentionCursor = sessionAttentionCursor(session);
       const semantic = hasSemanticAttentionCursor(session);
       const pending = pendingKindOf(session);
       const needsYouReason: InboxReason | undefined =
         pending !== 'none'
           ? pending
-          : session.needsYouReason ?? (!session.busy && session.interrupted_work !== undefined ? 'interrupted' : undefined);
+          : session.needsYouReason ?? (mode !== 'off' && !session.busy && session.interrupted_work !== undefined ? 'interrupted' : undefined);
       const needsYou = needsYouReason !== undefined;
       const activelyRunning = !needsYou && isActivelyRunning(session);
-      const unread = !session.busy && isConversationUnread(attentionCursor, seenMap[encodedKey], semantic);
-      const reason: InboxReason = needsYouReason ?? (activelyRunning ? 'running' : (finishedReason(session) ?? 'completed'));
+      const finished = finishedReason(session);
+      const unread =
+        !session.busy
+        && isConversationUnread(attentionCursor, seenMap[encodedKey], semantic)
+        && !suppressesUnreadReason(mode, finished);
+      const reason: InboxReason = needsYouReason ?? (activelyRunning ? 'running' : (finished ?? 'completed'));
 
       const record = triageMap[encodedKey];
       const triageClass = classifyConversationTriage(

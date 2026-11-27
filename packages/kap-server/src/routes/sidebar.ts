@@ -45,6 +45,7 @@ import { withReplyCloseSignal } from '../procedures/requestSignal';
 const DEFAULT_SIDEBAR_PAGE_SIZE = 50;
 const DEFAULT_SIDEBAR_MEMBER_LIMIT = 50;
 const SESSION_PIN_METADATA_KEY = 'kiki.pinned';
+const SESSION_NOTIFICATION_METADATA_KEY = 'kiki.notifications';
 
 const detailsSchema = z.array(z.object({ path: z.string(), message: z.string() }));
 
@@ -122,6 +123,15 @@ function decodeBase64UrlJson(token: string): unknown {
 function stringField(record: Readonly<Record<string, unknown>> | undefined, key: string): string | undefined {
   const value = record?.[key];
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function extractNotificationMode(
+  custom: Readonly<Record<string, unknown>> | undefined,
+): 'urgent' | 'off' | undefined {
+  const value = custom?.[SESSION_NOTIFICATION_METADATA_KEY];
+  if (value === 'off' || value === false) return 'off';
+  if (value === 'urgent') return 'urgent';
+  return undefined;
 }
 
 function extractExternalClient(custom: Readonly<Record<string, unknown>> | undefined): SidebarExternalClientMark | undefined {
@@ -402,6 +412,7 @@ async function projectSidebarRow(
   const createdByAgentId = stringField(summary.custom, 'created_by_agent_id');
   const childSessionKind = stringField(summary.custom, 'child_session_kind');
   const externalClient = extractExternalClient(summary.custom);
+  const notifications = extractNotificationMode(summary.custom);
   return {
     id: summary.id,
     workspace_id: summary.workspaceId,
@@ -414,6 +425,7 @@ async function projectSidebarRow(
     ...(summary.archivedAt !== undefined ? { archived_at: new Date(summary.archivedAt).toISOString() } : {}),
     ...(summary.private === true ? { private: true } : {}),
     ...(summary.custom?.[SESSION_PIN_METADATA_KEY] === true ? { pinned: true } : {}),
+    ...(notifications !== undefined ? { notifications } : {}),
     busy: facts.busy,
     ...(facts.executing !== undefined ? { executing: facts.executing } : {}),
     ...(facts.cleanupPending !== undefined ? { cleanup_pending: facts.cleanupPending } : {}),

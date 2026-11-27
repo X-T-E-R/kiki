@@ -466,4 +466,28 @@ describe('conversation completion and read confirmation', () => {
       roomContainer.remove();
     }
   });
+
+  it('keeps OS notifications silent and unread badge at 0 for muted sessions completing while away', async () => {
+    const mutedRows = [
+      { ...sessions[0]!, metadata: { cwd: '/w' } },
+      { ...sessions[1]!, last_seq: 10, metadata: { cwd: '/w', 'kiki.notifications': 'off' } },
+    ] as Session[];
+    await mount('/s/a');
+    await act(async () => { replaceSessions(mutedRows); });
+    await flush();
+    expect(badge).toHaveBeenLastCalledWith(0, 'home-example', 'local', []);
+
+    focused = false;
+    notify.mockClear();
+    completions = [{ session_id: 'b', episode_id: 'episode-muted-patrol', completed_at: Date.now() }];
+    await act(async () => {
+      replaceSessions([
+        mutedRows[0]!,
+        { ...mutedRows[1]!, last_seq: 14, message_count: 4, last_turn_reason: 'completed' },
+      ]);
+    });
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(notify).not.toHaveBeenCalled();
+    expect(badge).toHaveBeenLastCalledWith(0, 'home-example', 'local', []);
+  });
 });

@@ -97,6 +97,53 @@ describe('detectAttentionEvents', () => {
     const archived = detectAttentionEvents(narrow.baseline, [session({ id: 'b', archived: true, last_turn_reason: 'completed' })], START);
     expect(archived.events).toEqual([]);
   });
+
+  it('silences off sessions while advancing baseline so unmuting never replays stale history', () => {
+    const mutedBusy = session({ id: 'patrol', busy: true, metadata: { cwd: '/w', 'kiki.notifications': 'off' } });
+    const base = baselineOf([mutedBusy]);
+
+    const finishedMuted = detectAttentionEvents(base, [
+      session({ id: 'patrol', busy: false, last_turn_reason: 'completed', message_count: 4, metadata: { cwd: '/w', 'kiki.notifications': 'off' } }),
+    ], START);
+    expect(finishedMuted.events).toEqual([]);
+    expect(finishedMuted.baseline.get('patrol')?.messageCount).toBe(4);
+    expect(finishedMuted.baseline.get('patrol')?.busy).toBe(false);
+
+    const askedMuted = detectAttentionEvents(finishedMuted.baseline, [
+      session({ id: 'patrol', busy: true, pending_interaction: 'question', message_count: 4, metadata: { cwd: '/w', 'kiki.notifications': false } }),
+    ], START);
+    expect(askedMuted.events).toEqual([]);
+
+    const unmutedLater = detectAttentionEvents(finishedMuted.baseline, [
+      session({ id: 'patrol', busy: false, last_turn_reason: 'completed', message_count: 4, metadata: { cwd: '/w' } }),
+    ], START);
+    expect(unmutedLater.events).toEqual([]);
+  });
+
+  it('allows urgent sessions to emit approval, question, and failed while skipping completed', () => {
+    const urgentBusy = session({ id: 'u', busy: true, metadata: { cwd: '/w', 'kiki.notifications': 'urgent' } });
+    const base = baselineOf([urgentBusy]);
+
+    const completed = detectAttentionEvents(base, [
+      session({ id: 'u', busy: false, last_turn_reason: 'completed', message_count: 3, metadata: { cwd: '/w', 'kiki.notifications': 'urgent' } }),
+    ], START);
+    expect(completed.events).toEqual([]);
+
+    const failed = detectAttentionEvents(completed.baseline, [
+      session({ id: 'u', busy: false, last_turn_reason: 'failed', message_count: 4, metadata: { cwd: '/w', 'kiki.notifications': 'urgent' } }),
+    ], START);
+    expect(failed.events.map((event) => event.kind)).toEqual(['failed']);
+
+    const approval = detectAttentionEvents(failed.baseline, [
+      session({ id: 'u', busy: true, pending_interaction: 'approval', message_count: 4, metadata: { cwd: '/w', 'kiki.notifications': 'urgent' } }),
+    ], START);
+    expect(approval.events.map((event) => event.kind)).toEqual(['approval']);
+
+    const question = detectAttentionEvents(approval.baseline, [
+      session({ id: 'u', busy: true, pending_interaction: 'question', message_count: 4, metadata: { cwd: '/w', 'kiki.notifications': 'urgent' } }),
+    ], START);
+    expect(question.events.map((event) => event.kind)).toEqual(['question']);
+  });
 });
 
 describe('CompletionObserver', () => {
@@ -112,6 +159,25 @@ describe('CompletionObserver', () => {
     const reopened = new CompletionObserver(observer.checkpoint());
     expect(reopened.observe(completion('offline'), rows)).toEqual([]);
     expect(reopened.observe(completion('later'), rows)).toHaveLength(1);
+  });
+
+  it('advances episode cursor without emitting completions for off and urgent sessions', () => {
+    const observer = new CompletionObserver([]);
+    const muted = session({ id: 'm', metadata: { cwd: '/w', 'kiki.notifications': 'off' } });
+    const urgent = session({ id: 'u', metadata: { cwd: '/w', 'kiki.notifications': 'urgent' } });
+    expect(observer.observe([
+      { session_id: 'm', episode_id: 'ep-m1', completed_at: START },
+      { session_id: 'u', episode_id: 'ep-u1', completed_at: START },
+    ], [muted, urgent])).toEqual([]);
+
+    expect(observer.observe([
+      { session_id: 'm', episode_id: 'ep-m1', completed_at: START },
+      { session_id: 'u', episode_id: 'ep-u1', completed_at: START },
+    ], [session({ id: 'm' }), session({ id: 'u' })])).toEqual([]);
+
+    expect(observer.observe([
+      { session_id: 'm', episode_id: 'ep-m2', completed_at: START + 1000 },
+    ], [session({ id: 'm' })])).toHaveLength(1);
   });
 });
 

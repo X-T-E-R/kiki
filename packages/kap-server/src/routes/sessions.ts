@@ -1246,7 +1246,8 @@ export function registerSessionsRoutes(
         const { agent_config, delivery, ...profileBody } = req.body;
         const publishMetaUpdated = (fields: { readonly title?: string; readonly private?: boolean }) => {
           const hasCustomTitle = typeof req.body.title === 'string' && req.body.title.trim().length > 0;
-          if (!hasCustomTitle && req.body.private === undefined) return;
+          const hasMetadata = req.body.metadata !== undefined;
+          if (!hasCustomTitle && req.body.private === undefined && !hasMetadata) return;
           core.accessor.get(IEventService).publish(
             new SessionMetaUpdated({
               payload: {

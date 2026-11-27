@@ -182,6 +182,7 @@ export const sidebarZh = {
   'sidebar.mode.inbox': '待办',
   'sidebar.mode.sessions': '会话',
   'sidebar.moreTools': '更多工具',
+  'sidebar.mutedBadge': '已静音通知',
   'sidebar.navAria': '会话导航',
   'sidebar.needsMeCount.one': '{count} 个等你处理',
   'sidebar.needsMeCount.other': '{count} 个等你处理',

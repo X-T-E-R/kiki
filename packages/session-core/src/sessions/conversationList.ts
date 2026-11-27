@@ -7,7 +7,7 @@ import {
 } from '../settings/sessionReadState';
 import { buildInboxModel, type InboxSource, type UnifiedInboxEntry } from './inbox';
 import { roomRefLink } from './conversationLinks';
-import { filterSessions, groupSessionsByTime, groupSessionsByWorkspace, isPinnedSession, SESSION_PIN_META_KEY, sortSessionItems, type SessionFilterInput, type SessionGroup, type SessionListEntry, type SessionSortOrder, type TimeGroupLabels } from './sessionList';
+import { filterSessions, groupSessionsByTime, groupSessionsByWorkspace, isPinnedSession, SESSION_PIN_META_KEY, sessionNotificationMode, sortSessionItems, type SessionFilterInput, type SessionGroup, type SessionListEntry, type SessionSortOrder, type TimeGroupLabels } from './sessionList';
 
 type ConversationFields = SessionListEntry & {
   readonly key: string;
@@ -52,12 +52,16 @@ function workspacePathKey(root: string): string {
 
 /** Merge only loaded thread pages with room summaries; preserve the session cursor separately. */
 export function mergeConversationItems(sessions: readonly Session[], rooms: readonly RoomListItem[], seen: SessionSeenMap, order: SessionSortOrder = 'updated-desc', workspaces: readonly ConversationWorkspace[] = []): ConversationListItem[] {
-  const threads: ConversationListItem[] = sessions.map((session) => ({
-    ...session, updated_at: session.own_updated_at ?? session.updated_at, kind: 'session', session, key: `session:${session.id}`, href: `/s/${session.id}`,
-    unread_count: Math.max(0, (session.attention_cursor?.seq ?? session.last_seq) - (seen[session.id] ?? 0)),
-    needs_you: session.pending_interaction === 'approval' || session.pending_interaction === 'question',
-    failed: session.last_turn_reason === 'failed', pinned: isPinnedSession(session),
-  }));
+  const threads: ConversationListItem[] = sessions.map((session) => {
+    const mode = sessionNotificationMode(session);
+    const suppressUnread = mode === 'off' || (mode === 'urgent' && session.last_turn_reason !== 'failed');
+    return {
+      ...session, updated_at: session.own_updated_at ?? session.updated_at, kind: 'session', session, key: `session:${session.id}`, href: `/s/${session.id}`,
+      unread_count: suppressUnread ? 0 : Math.max(0, (session.attention_cursor?.seq ?? session.last_seq) - (seen[session.id] ?? 0)),
+      needs_you: session.pending_interaction === 'approval' || session.pending_interaction === 'question',
+      failed: session.last_turn_reason === 'failed', pinned: isPinnedSession(session),
+    };
+  });
   const roomItems: ConversationListItem[] = rooms.map((room) => ({
     kind: 'room', room, id: room.id, key: roomSeenKey(room.id), href: roomRefLink(room.id),
     title: room.title, workspace_id: roomWorkspaceId(room.workspace, workspaces), created_at: room.createdAt, updated_at: room.updatedAt,
@@ -172,6 +176,8 @@ export function mergeMultiSpaceConversationItems(
       seenKeys.add(itemKey);
       const refKey = encodeConversationRef({ spaceKey: space.spaceKey, kind: 'session', id: session.id });
       const seenSeq = seenV2[refKey]?.seq ?? (isLocalDefault ? (fallbackLocalSeen[session.id] ?? 0) : 0);
+      const mode = sessionNotificationMode(session);
+      const suppressUnread = mode === 'off' || (mode === 'urgent' && session.last_turn_reason !== 'failed');
       out.push({
         ...session,
         updated_at: session.own_updated_at ?? session.updated_at,
@@ -179,7 +185,7 @@ export function mergeMultiSpaceConversationItems(
         session,
         key: itemKey,
         href: `${prefix}/s/${encodeURIComponent(session.id)}`,
-        unread_count: Math.max(0, (session.attention_cursor?.seq ?? session.last_seq) - seenSeq),
+        unread_count: suppressUnread ? 0 : Math.max(0, (session.attention_cursor?.seq ?? session.last_seq) - seenSeq),
         needs_you: session.pending_interaction === 'approval' || session.pending_interaction === 'question',
         failed: session.last_turn_reason === 'failed',
         pinned: isPinnedSession(session),

@@ -21,6 +21,7 @@
 import type { Session } from '@kiki/protocol';
 
 import { pendingKindOf } from './activity';
+import { sessionNotificationMode } from './sessionList';
 
 export type AttentionKind = 'completed' | 'failed' | 'question' | 'approval';
 
@@ -81,6 +82,8 @@ export function detectAttentionEvents(
     const before = previous.get(session.id);
     baseline.set(session.id, next);
     if (session.archived === true) continue;
+    const mode = sessionNotificationMode(session);
+    if (mode === 'off') continue;
     const fresh = before === undefined && Date.parse(session.created_at) >= sinceMs;
     if (before === undefined && !fresh) continue;
     const event = (kind: AttentionKind) => {
@@ -99,7 +102,7 @@ export function detectAttentionEvents(
       : before.busy || next.messageCount > before.messageCount;
     if (!ran) continue;
     const kind = finishedKind(session);
-    if (kind !== undefined) event(kind);
+    if (kind !== undefined && (mode === 'all' || kind !== 'completed')) event(kind);
   }
   return { events, baseline };
 }
@@ -133,6 +136,7 @@ export class CompletionObserver {
       if (baseline || previous?.episode_id === completion.episode_id) continue;
       const session = sessions.find((item) => item.id === completion.session_id);
       if (session?.archived) continue;
+      if (session !== undefined && sessionNotificationMode(session) !== 'all') continue;
       events.push({ sessionId: completion.session_id, kind: 'completed', title: session?.title ?? '', episodeId: completion.episode_id });
     }
     const watermark = completions.reduce((max, item) => Math.max(max, item.completed_at), 0);

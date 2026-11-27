@@ -460,4 +460,88 @@ describe('buildUnifiedInbox', () => {
     expect(unified.needsYouCount).toBe(1);
     expect(unified.working.map((item) => item.sessionId)).toEqual(['s-running']);
   });
+
+  it('suppresses routine unread noise for off and urgent sessions across flat, unified, and row-state models', () => {
+    const interruptedWork = {
+      interrupted_at: '2026-01-01T02:00:00.000Z',
+      main_interrupted: true,
+    };
+    const mutedDone = session({
+      id: 'muted-done',
+      last_seq: 12,
+      last_turn_reason: 'completed',
+      metadata: { cwd: '/w', 'kiki.notifications': 'off' },
+    });
+    const mutedFailed = session({
+      id: 'muted-failed',
+      last_seq: 12,
+      last_turn_reason: 'failed',
+      metadata: { cwd: '/w', 'kiki.notifications': 'off' },
+    });
+    const mutedInterrupted = session({
+      id: 'muted-interrupted',
+      last_seq: 12,
+      interrupted_work: interruptedWork,
+      metadata: { cwd: '/w', 'kiki.notifications': 'off' },
+    });
+    const mutedApproval = session({
+      id: 'muted-approval',
+      last_seq: 12,
+      pending_interaction: 'approval',
+      metadata: { cwd: '/w', 'kiki.notifications': 'off' },
+    });
+    const urgentDone = session({
+      id: 'urgent-done',
+      last_seq: 12,
+      last_turn_reason: 'completed',
+      metadata: { cwd: '/w', 'kiki.notifications': 'urgent' },
+    });
+    const urgentFailed = session({
+      id: 'urgent-failed',
+      last_seq: 12,
+      last_turn_reason: 'failed',
+      metadata: { cwd: '/w', 'kiki.notifications': 'urgent' },
+    });
+    const urgentInterrupted = session({
+      id: 'urgent-interrupted',
+      last_seq: 12,
+      interrupted_work: interruptedWork,
+      metadata: { cwd: '/w', 'kiki.notifications': 'urgent' },
+    });
+
+    const all = [
+      mutedDone,
+      mutedFailed,
+      mutedInterrupted,
+      mutedApproval,
+      urgentDone,
+      urgentFailed,
+      urgentInterrupted,
+    ];
+    const flat = buildInboxModel(all, {});
+    expect(flat.unread.map((item) => item.sessionId)).toEqual(['urgent-failed']);
+    expect(flat.needsYou.map((item) => item.sessionId).sort()).toEqual(['muted-approval', 'urgent-interrupted']);
+    expect(flat.total).toBe(3);
+
+    const unified = buildUnifiedInbox(
+      all.map((item) => ({ kind: 'session' as const, spaceKey: 'main', spaceName: 'Main', isRemote: false, session: item })),
+      {},
+      {},
+      Date.parse('2026-01-01T04:00:00.000Z'),
+    );
+    expect(unified.active.map((item) => item.sessionId).sort()).toEqual([
+      'muted-approval',
+      'urgent-failed',
+      'urgent-interrupted',
+    ]);
+    expect(unified.needsYouCount).toBe(2);
+    expect(unified.unreadCount).toBe(1);
+    expect(unified.total).toBe(3);
+
+    expect(sessionRowState(mutedDone, {})).toBe('read');
+    expect(sessionRowState(mutedFailed, {})).toBe('read');
+    expect(sessionRowState(mutedApproval, {})).toBe('needs-me');
+    expect(sessionRowState(urgentDone, {})).toBe('read');
+    expect(sessionRowState(urgentFailed, {})).toBe('unread');
+  });
 });

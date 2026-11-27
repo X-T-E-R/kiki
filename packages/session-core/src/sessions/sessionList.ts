@@ -18,6 +18,11 @@ export interface SessionListData {
  * to a local-only session-scoped highlight. */
 export const SESSION_PIN_META_KEY = 'kiki.pinned';
 
+/** Custom-metadata key carrying the per-session notification policy (`'all'` | `'urgent'` | `'off'`). */
+export const SESSION_NOTIFICATION_MODE_META_KEY = 'kiki.notifications';
+
+export type SessionNotificationMode = 'all' | 'urgent' | 'off';
+
 export type SessionListEntry = Pick<Session, 'id' | 'title' | 'metadata' | 'updated_at' | 'created_at' | 'workspace_id' | 'archived' | 'private' | 'busy' | 'executing' | 'cleanup_pending' | 'main_turn_active' | 'pending_interaction'>;
 
 export type SessionWorkChangedPatch = Pick<SessionWorkChangedEvent, 'busy' | 'executing' | 'cleanup_pending' | 'main_turn_active' | 'pending_interaction' | 'last_turn_reason' | 'attention_cursor'> & {
@@ -34,12 +39,30 @@ export function isPinnedSession(session: Pick<Session, 'metadata'>): boolean {
   return session.metadata[SESSION_PIN_META_KEY] === true;
 }
 
+/** Resolve the effective per-session notification policy from `session.metadata['kiki.notifications']`. */
+export function sessionNotificationMode(
+  session: { readonly metadata?: Record<string, unknown> },
+): SessionNotificationMode {
+  const value = session.metadata?.[SESSION_NOTIFICATION_MODE_META_KEY];
+  if (value === 'off' || value === false) return 'off';
+  if (value === 'urgent') return 'urgent';
+  return 'all';
+}
+
 const RESERVED_SESSION_GROUP_META_KEYS: readonly string[] = [
   'kiki.group_id',
   'kiki.group_detached',
   'kiki.group_gen',
   'kiki.group_origin',
 ];
+
+function cloneEditableSessionMetadata(session: Session): Record<string, unknown> {
+  const base: Record<string, unknown> = { ...session.metadata };
+  for (const key of RESERVED_SESSION_GROUP_META_KEYS) {
+    delete base[key];
+  }
+  return base;
+}
 
 /**
  * Build the `metadata` to send with a pin/unpin patch. It round-trips the
@@ -48,18 +71,34 @@ const RESERVED_SESSION_GROUP_META_KEYS: readonly string[] = [
  * never overwrite concurrent group state.
  */
 export function pinMetadataPatch(session: Session, pinned: boolean): Record<string, unknown> {
-  const base: Record<string, unknown> = { ...session.metadata };
-  for (const key of RESERVED_SESSION_GROUP_META_KEYS) {
-    delete base[key];
-  }
+  const base = cloneEditableSessionMetadata(session);
   if (pinned) base[SESSION_PIN_META_KEY] = true;
   else delete base[SESSION_PIN_META_KEY];
+  return base;
+}
+
+/**
+ * Build the `metadata` to send with a notification-mode update. Strips reserved
+ * session-group keys and removes `kiki.notifications` when returning to `'all'`.
+ */
+export function notificationMetadataPatch(
+  session: Session,
+  mode: SessionNotificationMode,
+): Record<string, unknown> {
+  const base = cloneEditableSessionMetadata(session);
+  if (mode === 'all') delete base[SESSION_NOTIFICATION_MODE_META_KEY];
+  else base[SESSION_NOTIFICATION_MODE_META_KEY] = mode;
   return base;
 }
 
 /** Flip the pin state: pinned → unpinned, unpinned → pinned. */
 export function togglePinned(current: boolean): boolean {
   return !current;
+}
+
+/** Quick sidebar toggle: `'all'` → `'off'`; `'urgent'` or `'off'` → `'all'`. */
+export function toggleMutedNotificationMode(current: SessionNotificationMode): SessionNotificationMode {
+  return current === 'all' ? 'off' : 'all';
 }
 
 /**

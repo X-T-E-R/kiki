@@ -109,6 +109,7 @@ export const sidebarRowSchema = /* @__PURE__ */ z.object({
   archived_at: isoDateTimeSchema.optional(),
   private: z.boolean().optional(),
   pinned: z.boolean().optional(),
+  notifications: z.enum(['all', 'urgent', 'off']).optional(),
   busy: z.boolean(),
   executing: z.boolean().optional(),
   cleanup_pending: z.boolean().optional(),

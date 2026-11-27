@@ -560,4 +560,37 @@ describe('sidebarUnits cache & structural sharing', () => {
       sessionRef: 'ref-1',
     });
   });
+
+  it('round-trips notifications mode on SidebarRow and suppresses unread_count for quiet rows', () => {
+    const mutedRow = makeRow('patrol_muted', { notifications: 'off', last_seq: 12, last_turn_reason: 'completed' });
+    const urgentDoneRow = makeRow('patrol_urgent_done', { notifications: 'urgent', last_seq: 12, last_turn_reason: 'completed' });
+    const urgentFailRow = makeRow('patrol_urgent_fail', { notifications: 'urgent', last_seq: 12, last_turn_reason: 'failed' });
+
+    expect(sidebarRowToSession(mutedRow).metadata['kiki.notifications']).toBe('off');
+    expect(sidebarRowToSession(urgentDoneRow).metadata['kiki.notifications']).toBe('urgent');
+
+    const buckets = projectSidebarUnitGroups(
+      [{
+        spaceKey: 'main',
+        spaceName: 'Main',
+        isRemote: false,
+        units: [
+          { kind: 'session', id: mutedRow.id, sort_at: 3000, row: mutedRow },
+          { kind: 'session', id: urgentDoneRow.id, sort_at: 2000, row: urgentDoneRow },
+          { kind: 'session', id: urgentFailRow.id, sort_at: 1000, row: urgentFailRow },
+        ],
+      }],
+      {
+        groupBy: 'none',
+        workspaces: [],
+        filters: { status: [], workspaces: [], archived: 'hide' },
+        nowMs: Date.now(),
+      },
+    );
+    const items = buckets[0]!.items;
+    const byId = new Map(items.map((item) => [item.kind === 'session' ? item.id : item.key, item]));
+    expect((byId.get('patrol_muted') as { unread_count: number }).unread_count).toBe(0);
+    expect((byId.get('patrol_urgent_done') as { unread_count: number }).unread_count).toBe(0);
+    expect((byId.get('patrol_urgent_fail') as { unread_count: number }).unread_count).toBe(12);
+  });
 });

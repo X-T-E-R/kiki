@@ -519,6 +519,9 @@ export function useSidebarUnitsQuery({
           }),
           events.on('session.metaUpdated', (event) => {
             scheduleResolve(event.sessionId);
+            if (queryClient.getQueryData(['session', event.sessionId]) !== undefined) {
+              void queryClient.invalidateQueries({ queryKey: ['session', event.sessionId] });
+            }
           }),
           events.on('personas.changed', () => {
             void runHeadRefresh();

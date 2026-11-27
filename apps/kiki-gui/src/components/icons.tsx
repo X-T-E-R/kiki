@@ -24,6 +24,7 @@ import {
   ArrowUpRight,
   BarChart3,
   Bell,
+  BellOff,
   Check,
   ChevronRight,
   CircleHelp,
@@ -150,6 +151,7 @@ export type IconName =
   | 'board'
   | 'usage'
   | 'bell'
+  | 'bellOff'
   | 'notes'
   | 'persona'
   | 'branch'
@@ -263,6 +265,7 @@ const LUCIDE_ICONS: Record<LucideIconName, LucideEntry> = {
   star: { component: Star },
   starFilled: { component: Star, fill: 'currentColor' },
   bell: { component: Bell },
+  bellOff: { component: BellOff },
   branch: { component: GitBranch },
   eye: { component: Eye },
   eyeOff: { component: EyeOff },

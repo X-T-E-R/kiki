@@ -51,6 +51,7 @@ import {
   pinMetadataPatch,
   projectAttachedConversationGroups,
   roomRefLink,
+  sessionNotificationMode,
   sessionRowState,
   sidebarUnitRows,
   type ConversationListItem,
@@ -67,6 +68,7 @@ import {
   WORKSPACE_UNGROUPED_KEY,
   shortCwd,
   splitByRanges,
+  toggleMutedNotificationMode,
   togglePinned,
   type ActivityEntry,
   type MatchRange,
@@ -107,6 +109,7 @@ import { clampOverlayPosition } from '../lib/overlayPosition';
 import { parsePlaceConnectionId, placeHrefForSpaceKey, stripPlacePrefix } from '../lib/placeRoutes';
 import { unzoomedPoint, unzoomedRect, unzoomedViewport } from '../lib/uiZoom';
 import { readExternalClientMark } from '../lib/externalClients';
+import { updateSessionNotificationMode } from '../lib/sessionNotificationMutation';
 import { ROOM_ITEMS_QUERY_KEY } from '../lib/useConversationList';
 import { useInboxTriageState, type InboxTriageController } from '../lib/useInboxTriageState';
 import { ALL_SPACE_SCOPE, matchesSpaceScope, type MultiSpaceHealth } from '../lib/useMultiSpaceSessions';
@@ -1680,6 +1683,26 @@ export function Sidebar({
       })
       .catch((error: unknown) => {
         patchSessionLists((entry) => ({ ...entry, metadata: previousMetadata }), previousPinned);
+        setActionError(error instanceof Error ? error.message : String(error));
+      });
+  };
+
+  const toggleMute = (session: Session, itemSpaceKey?: string) => {
+    setMenu(null);
+    setActionError(null);
+    const remoteConnId = remoteConnIdOf(itemSpaceKey);
+    const targetClient = clientForSpace(itemSpaceKey);
+    const nextMode = toggleMutedNotificationMode(sessionNotificationMode(session));
+    void updateSessionNotificationMode({
+      client: targetClient,
+      queryClient: remoteConnId !== undefined ? undefined : queryClient,
+      session,
+      mode: nextMode,
+    })
+      .then(() => {
+        if (remoteConnId !== undefined) void onRefreshRemoteSpace?.(remoteConnId);
+      })
+      .catch((error: unknown) => {
         setActionError(error instanceof Error ? error.message : String(error));
       });
   };
@@ -3845,6 +3868,7 @@ export function Sidebar({
             setMenu(null);
           }}
           onTogglePin={() => { togglePin(menuItem.session, menuItem.spaceKey); }}
+          onToggleMute={() => { toggleMute(menuItem.session, menuItem.spaceKey); }}
           onTogglePrivate={() => { togglePrivate(menuItem.session, menuItem.spaceKey); }}
           onCreateBranch={(seed) => { runCreateBranch(menuItem.session, seed); }}
           onForkSession={(seed) => { runForkSession(menuItem.session, seed); }}
@@ -4265,6 +4289,16 @@ const SessionRow = memo(function SessionRow({
             {/* Pinned is said by the Pinned group; only a list with no groups
               * needs the glyph. */}
             {pinned && showPin ? <PinIcon className="text-ink-faint" /> : null}
+            {sessionNotificationMode(session) === 'off' ? (
+              <span
+                data-session-muted
+                aria-label={t('sidebar.mutedBadge')}
+                title={t('sidebar.mutedBadge')}
+                className="shrink-0 text-ink-faint"
+              >
+                <Icon name="bellOff" size={12} />
+              </span>
+            ) : null}
             {session.private === true ? (
               <span data-session-private aria-label={t('private.badge')} title={t('private.badge')} className="shrink-0 text-ink-faint">
                 <Icon name="lock" size={12} />

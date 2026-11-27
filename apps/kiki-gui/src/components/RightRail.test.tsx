@@ -2011,4 +2011,125 @@ describe('RightRail plugin preview routing and branch-owned rail', () => {
     expect(agents.querySelector('[data-roster-done-group]')?.textContent).toContain('539');
     expect(agents.querySelector('[data-roster-summary]')).toBeNull();
   });
+
+  it('renders per-session notification mode controls in Config tab, patches caches optimistically, and rolls back on failure', async () => {
+    const baseSession = {
+      id: 'sess-1',
+      workspace_id: 'ws-1',
+      title: 'Patrol Thread',
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+      busy: false,
+      metadata: { cwd: '/tmp/patrol', 'kiki.pinned': true, 'kiki.group_id': 'grp_ignore' },
+      agent_config: { model: 'example-model' },
+      usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, total_tokens: 0, turn_count: 0 },
+      permission_rules: [],
+      message_count: 2,
+      last_seq: 10,
+    } as unknown as import('@kiki/protocol').Session;
+
+    let storedMetadata: Record<string, unknown> = {
+      cwd: '/tmp/patrol',
+      'kiki.pinned': true,
+      'kiki.group_id': 'grp_ignore',
+      plugin_import_job: 'job-99',
+    };
+    const getSession = vi.fn(async () => ({
+      ...baseSession,
+      metadata: { ...storedMetadata },
+    }));
+    const updateSessionProfile = vi.fn(async (_id: string, body: { metadata?: Record<string, unknown> }) => {
+      storedMetadata = { ...(body.metadata ?? {}), cwd: '/tmp/patrol' };
+      return {
+        ...baseSession,
+        metadata: { ...storedMetadata },
+      };
+    });
+    connectionHolder.current = {
+      scopeId: 'local',
+      spaceKey: 'main',
+      connectionSource: 'local',
+      client: { getSession, updateSessionProfile, sessions: {} },
+    };
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(['session', 'sess-1'], baseSession);
+    queryClient.setQueryData(['sessions', 'sidebar-units'], {
+      pages: [{
+        revision: 1,
+        has_more: false,
+        units: [{
+          kind: 'session',
+          id: 'sess-1',
+          sort_at: 1000,
+          row: {
+            id: 'sess-1',
+            workspace_id: 'ws-1',
+            cwd: '/tmp/patrol',
+            title: 'Patrol Thread',
+            created_at: '2026-01-01T00:00:00.000Z',
+            updated_at: '2026-01-01T00:00:00.000Z',
+            own_updated_at: '2026-01-01T00:00:00.000Z',
+            busy: false,
+            last_seq: 10,
+          },
+        }],
+      }],
+      pageParams: [undefined],
+    });
+
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mounts.push({ container, root });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <I18nProvider>
+              <RightRail
+                state={{ ...createViewState('sess-1'), session: baseSession }}
+                forest={buildAgentForest([], [{ agentId: 'main', name: 'Main' }])}
+                onCancelTask={() => {}}
+                onStopAgentTask={async () => {}}
+                onOpenSubagent={() => {}}
+              />
+            </I18nProvider>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-rail-tab="config"]')!.click();
+    });
+
+    const control = container.querySelector('[data-rail-session-notifications]')!;
+    expect(control).not.toBeNull();
+    expect(control.getAttribute('data-notification-mode')).toBe('all');
+
+    const offBtn = control.querySelector<HTMLButtonElement>('[data-notification-option="off"]')!;
+    await act(async () => { offBtn.click(); });
+    expect(updateSessionProfile).toHaveBeenCalledWith('sess-1', {
+      metadata: { cwd: '/tmp/patrol', 'kiki.pinned': true, plugin_import_job: 'job-99', 'kiki.notifications': 'off' },
+    });
+    expect(control.getAttribute('data-notification-mode')).toBe('off');
+    expect((queryClient.getQueryData(['session', 'sess-1']) as { metadata: Record<string, unknown> }).metadata['kiki.notifications']).toBe('off');
+    const unitPages = queryClient.getQueryData<{ pages: Array<{ units: Array<{ row?: { notifications?: string } }> }> }>(['sessions', 'sidebar-units']);
+    expect(unitPages?.pages[0]?.units[0]?.row?.notifications).toBe('off');
+
+    updateSessionProfile.mockRejectedValueOnce(new Error('network error'));
+    const allBtn = control.querySelector<HTMLButtonElement>('[data-notification-option="all"]')!;
+    await act(async () => { allBtn.click(); });
+    expect(control.getAttribute('data-notification-mode')).toBe('off');
+    expect((queryClient.getQueryData(['session', 'sess-1']) as { metadata: Record<string, unknown> }).metadata['kiki.notifications']).toBe('off');
+
+    await act(async () => { allBtn.click(); });
+    expect(updateSessionProfile).toHaveBeenLastCalledWith('sess-1', {
+      metadata: { cwd: '/tmp/patrol', 'kiki.pinned': true, plugin_import_job: 'job-99' },
+    });
+    expect(control.getAttribute('data-notification-mode')).toBe('all');
+    expect((queryClient.getQueryData(['session', 'sess-1']) as { metadata: Record<string, unknown> }).metadata['kiki.notifications']).toBeUndefined();
+  });
 });

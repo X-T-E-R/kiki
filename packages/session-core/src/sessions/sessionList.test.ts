@@ -16,11 +16,15 @@ import {
   mergeSessionFirstPage,
   mergeSessionActivity,
   mergeSessionWorkChanged,
+  notificationMetadataPatch,
   patchSessionWorkChanged,
   pinMetadataPatch,
   readAllSessionPages,
+  SESSION_NOTIFICATION_MODE_META_KEY,
   SESSION_PIN_META_KEY,
+  sessionNotificationMode,
   sortSessionItems,
+  toggleMutedNotificationMode,
   withPinnedSessions,
   WORKSPACE_UNGROUPED_KEY,
   type SessionListData,
@@ -649,5 +653,52 @@ describe('adjacentRunningSession', () => {
     expect(adjacentRunningSession(changed, 'a', 1)).toBe('waiting');
     expect(adjacentRunningSession(changed, 'waiting', -1)).toBe('waiting');
     expect(adjacentRunningSession(entries.map((entry) => ({ ...entry, busy: false, executing: false })), 'a', -1)).toBeUndefined();
+  });
+});
+
+describe('session notification policy metadata', () => {
+  it('resolves all / urgent / off (including legacy boolean false) and defaults to all', () => {
+    expect(sessionNotificationMode({ metadata: { cwd: '/w' } })).toBe('all');
+    expect(sessionNotificationMode({ metadata: { cwd: '/w', [SESSION_NOTIFICATION_MODE_META_KEY]: 'all' } })).toBe('all');
+    expect(sessionNotificationMode({ metadata: { cwd: '/w', [SESSION_NOTIFICATION_MODE_META_KEY]: 'urgent' } })).toBe('urgent');
+    expect(sessionNotificationMode({ metadata: { cwd: '/w', [SESSION_NOTIFICATION_MODE_META_KEY]: 'off' } })).toBe('off');
+    expect(sessionNotificationMode({ metadata: { cwd: '/w', [SESSION_NOTIFICATION_MODE_META_KEY]: false } })).toBe('off');
+    expect(sessionNotificationMode({ metadata: { cwd: '/w', [SESSION_NOTIFICATION_MODE_META_KEY]: 'unknown' } })).toBe('all');
+    expect(toggleMutedNotificationMode('all')).toBe('off');
+    expect(toggleMutedNotificationMode('urgent')).toBe('all');
+    expect(toggleMutedNotificationMode('off')).toBe('all');
+  });
+
+  it('builds notification metadata patches while preserving user keys and stripping reserved group keys', () => {
+    const base = session('patrol', '2026-10-06T00:00:00.000Z', {
+      metadata: {
+        cwd: '/w/patrol',
+        [SESSION_PIN_META_KEY]: true,
+        'kiki.group_id': 'grp_1',
+        'kiki.group_detached': true,
+        'kiki.group_gen': 3,
+        'kiki.group_origin': { home_id: 'h1', host_id: 'host1' },
+      },
+    });
+    const muted = notificationMetadataPatch(base, 'off');
+    expect(muted).toEqual({
+      cwd: '/w/patrol',
+      [SESSION_PIN_META_KEY]: true,
+      [SESSION_NOTIFICATION_MODE_META_KEY]: 'off',
+    });
+
+    const urgent = notificationMetadataPatch({ ...base, metadata: muted as Session['metadata'] }, 'urgent');
+    expect(urgent).toEqual({
+      cwd: '/w/patrol',
+      [SESSION_PIN_META_KEY]: true,
+      [SESSION_NOTIFICATION_MODE_META_KEY]: 'urgent',
+    });
+
+    const restored = notificationMetadataPatch({ ...base, metadata: urgent as Session['metadata'] }, 'all');
+    expect(restored).toEqual({
+      cwd: '/w/patrol',
+      [SESSION_PIN_META_KEY]: true,
+    });
+    expect(Object.hasOwn(restored, SESSION_NOTIFICATION_MODE_META_KEY)).toBe(false);
   });
 });

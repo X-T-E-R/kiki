@@ -113,6 +113,9 @@ export function useConversationList(
         }
         startTransition(() => {
           queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) => mergeSessionActivity(old, fresh));
+          if (queryClient.getQueryData(['session', fresh.id]) !== undefined) {
+            queryClient.setQueryData<Session>(['session', fresh.id], fresh);
+          }
         });
         // A session pinned elsewhere may sit outside every loaded page; the
         // pinned read is the only list that can bring it in.

@@ -23,7 +23,9 @@ import {
 } from './conversationList';
 import {
   filterSessions,
+  SESSION_NOTIFICATION_MODE_META_KEY,
   SESSION_PIN_META_KEY,
+  sessionNotificationMode,
   sessionStatusOf,
   type SessionFilterInput,
   type SessionSortOrder,
@@ -50,6 +52,9 @@ export function sidebarRowToSession(row: SidebarRow): Session {
     cwd: row.cwd ?? '',
   };
   if (row.pinned === true) metadata[SESSION_PIN_META_KEY] = true;
+  if (row.notifications === 'off' || row.notifications === 'urgent') {
+    metadata[SESSION_NOTIFICATION_MODE_META_KEY] = row.notifications;
+  }
   if (row.bot_persona_id !== undefined) metadata['bot_persona_id'] = row.bot_persona_id;
   if (row.room_persona_id !== undefined) metadata['room_persona_id'] = row.room_persona_id;
   if (row.room_member_of !== undefined) metadata['room_member_of'] = row.room_member_of;
@@ -296,6 +301,8 @@ function makeSidebarSessionItem(
   const itemKey = source.isRemote ? `${source.spaceKey}:session:${row.id}` : `session:${row.id}`;
   const refKey = encodeConversationRef({ spaceKey: source.spaceKey, kind: 'session', id: row.id });
   const seenSeq = seenV2[refKey]?.seq ?? (isLocalDefault ? (fallbackLocalSeen[row.id] ?? 0) : 0);
+  const mode = sessionNotificationMode(session);
+  const suppressUnread = mode === 'off' || (mode === 'urgent' && row.last_turn_reason !== 'failed');
   return {
     ...session,
     updated_at: row.own_updated_at ?? row.updated_at,
@@ -303,7 +310,7 @@ function makeSidebarSessionItem(
     session,
     key: itemKey,
     href: `${prefix}/s/${encodeURIComponent(row.id)}`,
-    unread_count: Math.max(0, (row.attention_cursor?.seq ?? row.last_seq) - seenSeq),
+    unread_count: suppressUnread ? 0 : Math.max(0, (row.attention_cursor?.seq ?? row.last_seq) - seenSeq),
     needs_you: row.pending_interaction === 'approval' || row.pending_interaction === 'question',
     failed: row.last_turn_reason === 'failed',
     pinned: row.pinned === true,
