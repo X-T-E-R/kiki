@@ -61,13 +61,13 @@ export function SidebarModeSwitch({
 
   return (
     <div className="@container px-2.5" data-sidebar-mode-wrap>
-      <div className="flex h-8 items-center justify-between gap-1 border-b border-hairline/70 pr-0.5 pl-2 pointer-coarse:h-10">
+      <div className="flex h-8 items-center justify-between gap-1 border-b border-hairline/70 pr-0.5 pl-2 pointer-coarse:min-h-11">
         <div
           role="tablist"
           aria-label={t('sidebar.mode.aria')}
           data-sidebar-mode-switch
           onKeyDown={onTabKeyDown}
-          className="flex h-full shrink-0 items-stretch gap-3"
+          className="flex h-full shrink-0 items-stretch gap-3 pointer-coarse:min-h-11"
         >
           <button
             ref={inboxTabRef}
@@ -77,7 +77,7 @@ export function SidebarModeSwitch({
             tabIndex={mode === 'inbox' ? 0 : -1}
             data-sidebar-mode="inbox"
             onClick={() => { onChange('inbox'); }}
-            className={`relative flex h-full shrink-0 items-center gap-1 whitespace-nowrap text-[13px] leading-5 font-normal transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
+            className={`relative flex h-full shrink-0 items-center gap-1 whitespace-nowrap text-[13px] leading-5 font-normal transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:min-w-11 pointer-coarse:px-1 ${
               mode === 'inbox'
                 ? 'text-ink after:pointer-events-none after:absolute after:inset-x-0 after:-bottom-px after:h-[1.5px] after:rounded-full after:bg-ink'
                 : 'text-ink-faint hover:text-ink-soft'
@@ -112,7 +112,7 @@ export function SidebarModeSwitch({
             tabIndex={mode === 'sessions' ? 0 : -1}
             data-sidebar-mode="sessions"
             onClick={() => { onChange('sessions'); }}
-            className={`relative flex h-full shrink-0 items-center whitespace-nowrap text-[13px] leading-5 font-normal transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
+            className={`relative flex h-full shrink-0 items-center whitespace-nowrap text-[13px] leading-5 font-normal transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:min-w-11 pointer-coarse:px-1 ${
               mode === 'sessions'
                 ? 'text-ink after:pointer-events-none after:absolute after:inset-x-0 after:-bottom-px after:h-[1.5px] after:rounded-full after:bg-ink'
                 : 'text-ink-faint hover:text-ink-soft'
@@ -122,7 +122,7 @@ export function SidebarModeSwitch({
           </button>
         </div>
         {actions !== undefined && actions !== null ? (
-          <div className="flex shrink-0 items-center gap-0.5" data-sidebar-mode-actions>
+          <div className="flex shrink-0 items-center gap-0.5 pointer-coarse:gap-1" data-sidebar-mode-actions>
             {actions}
           </div>
         ) : null}

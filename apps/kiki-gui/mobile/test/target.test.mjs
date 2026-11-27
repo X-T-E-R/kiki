@@ -3818,6 +3818,39 @@ await test('launcher Connect screen defaults to a centered scan-first hierarchy 
       assert.deepEqual(chromiumWildcardResult.classifyStar, { layer: 'invalid', protocol: 'http', host: '' });
       assert.deepEqual(chromiumWildcardResult.shortIpv4, { ok: false, reason: 'invalid' });
       assert.deepEqual(chromiumWildcardResult.lanPc, { ok: true, origin: 'http://my-pc:5494', entry: 'http://my-pc:5494/' });
+
+      // Boundary 5: #unreachable is consumed via history.replaceState (never left in location.hash),
+      // and browser Back / popstate never overwrites a user-edited server URL or re-triggers auto-probe:
+      await unreachablePairedPage.evaluate(() => {
+        window.__probeCalls.length = 0;
+        window.__openedPairedEntries.length = 0;
+        window.__holdProbe = false;
+        window.__networkDown = true;
+        localStorage.setItem('kiki.shell.origin', 'http://192.168.1.59:5494');
+        history.pushState({ step: 'before-unreachable' }, '', window.location.pathname);
+        window.location.hash = '#unreachable';
+      });
+      await unreachablePairedPage.waitForFunction(() => document.querySelector('#problem').hidden === false);
+      assert.equal(
+        await unreachablePairedPage.evaluate(() => window.location.hash),
+        '',
+        '#unreachable transient action hash must be stripped via history.replaceState immediately',
+      );
+      await unreachablePairedPage.fill('#server', '192.168.1.88:19438');
+      await unreachablePairedPage.evaluate(() => {
+        window.__probeCalls.length = 0;
+        history.back();
+      });
+      await unreachablePairedPage.waitForTimeout(300);
+      const afterBackState = await unreachablePairedPage.evaluate(() => ({
+        hash: window.location.hash,
+        serverValue: document.querySelector('#server').value,
+        probeCount: window.__probeCalls.length,
+      }));
+      assert.equal(afterBackState.hash, '');
+      assert.equal(afterBackState.serverValue, '192.168.1.88:19438');
+      assert.equal(afterBackState.probeCount, 0);
+
       await unreachablePairedPage.close();
     } finally {
       await darkCtx.close();

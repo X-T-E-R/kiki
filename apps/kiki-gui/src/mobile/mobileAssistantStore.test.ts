@@ -1,7 +1,11 @@
 // @vitest-environment jsdom
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { translate } from '@kiki/session-core/i18n';
 
+import { classifyDiagnosticCategory } from '../components/agent-panel/failureText';
+import { isUnconfiguredModelError, pushActionableModelOrErrorToast } from '../lib/modelConfigError';
+import { clearToasts, getToasts } from '../lib/toasts';
 import {
   assistantScopeTarget,
   clearMobileAssistant,
@@ -13,6 +17,7 @@ import {
 describe('mobileAssistantStore', () => {
   afterEach(() => {
     localStorage.clear();
+    clearToasts();
   });
 
   it('keeps one binding per space and tracks the most recent one', () => {
@@ -57,5 +62,26 @@ describe('mobileAssistantStore', () => {
     }
     writeMobileAssistant({ spaceKey: 'local', personaId: 'nia', sessionId: 's-persisted' });
     expect(readMobileAssistant('local')?.sessionId).toBe('s-persisted');
+  });
+
+  it('turns raw 50001 model-unconfigured backend errors into localized guidance with a Configure model action', () => {
+    const raw50001 = new Error(
+      'model and thinking effort are required to bind profile "agent" (no default model configured). Provide both model and thinking, or configure a model with a resolvable default effort. (code 50001)',
+    );
+    expect(isUnconfiguredModelError(raw50001)).toBe(true);
+    expect(classifyDiagnosticCategory({ message: raw50001.message, code: '50001' })).toBe('auth');
+
+    const openSettings = vi.fn();
+    pushActionableModelOrErrorToast(raw50001, (key) => translate('zh', key), openSettings);
+    const toasts = getToasts();
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0]?.text).toBe('请先在设置中配置模型服务后再开始对话。');
+    expect(toasts[0]?.action?.label).toBe('配置模型');
+    toasts[0]?.action?.run();
+    expect(openSettings).toHaveBeenCalledTimes(1);
+
+    expect(translate('zh', 'mobile.assistant.computerLabel')).toBe('当前空间');
+    expect(translate('zh', 'mobile.assistant.modelDefault')).toBe('跟随默认');
+    expect(translate('zh', 'mobile.space.localPhone')).toBe('本机');
   });
 });

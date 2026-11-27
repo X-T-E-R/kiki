@@ -12,6 +12,7 @@ import {
   DESKTOP_EXE,
   RECEIPT_FILE_NAME,
 } from '../../kiki-gui/scripts/desktop-receipt-contract.mjs';
+import { assertWebBundleIntegrity } from '../../kiki-gui/scripts/web-bundle-integrity.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const APP_DIR = resolve(SCRIPT_DIR, '..');
@@ -19,6 +20,7 @@ const REPO_ROOT = resolve(APP_DIR, '..', '..');
 
 const UNPACKED_SERVER_ENTRY_REL = 'resources/app.asar.unpacked/dist/server/server-entry.mjs';
 const UNPACKED_NATIVE_ADDONS_REL = 'resources/app.asar.unpacked/dist/server/native-addons.json';
+const UNPACKED_WEB_DIR_REL = 'resources/app.asar.unpacked/dist/server/web';
 const UNPACKED_APP_ASAR_REL = 'resources/app.asar';
 const VALID_DISTRIBUTIONS = new Set(['github', 'local', 'custom']);
 
@@ -128,6 +130,7 @@ export async function writeElectronBuildReceipt(options = {}) {
   const appAsarInfo = await sha256File(resolve(candidateDir, UNPACKED_APP_ASAR_REL));
   const serverEntryInfo = await sha256File(resolve(candidateDir, UNPACKED_SERVER_ENTRY_REL));
   const nativeAddonsInfo = await sha256File(resolve(candidateDir, UNPACKED_NATIVE_ADDONS_REL));
+  await assertWebBundleIntegrity(resolve(candidateDir, UNPACKED_WEB_DIR_REL));
 
   const receipt = {
     schemaVersion: 2,

@@ -80,9 +80,9 @@ function rawThreadTitle(session: Session, untitled: string): string {
   return untitled;
 }
 
-const GROUP_HEAD = 'flex h-7 items-center gap-0.5 pr-0.5 pl-1';
+const GROUP_HEAD = 'flex h-7 items-center gap-0.5 pr-0.5 pl-1 pointer-coarse:min-h-11 pointer-coarse:gap-1';
 const HEAD_BUTTON =
-  'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
+  'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-11 pointer-coarse:w-11';
 const HOVER_ICON_BUTTON =
   'flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.07] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:h-11 pointer-coarse:w-11';
 
@@ -797,7 +797,7 @@ export function SidebarPersonaSection({
             aria-expanded={!collapsed}
             aria-label={collapsed ? t('persona.expandSection') : t('persona.collapseSection')}
             onClick={() => { setSidebarPersonaSectionCollapsed(!collapsed); }}
-            className="row-interactive flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 text-left text-[12px] leading-4 font-bold text-section-ink transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink"
+            className="row-interactive flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 text-left text-[12px] leading-4 font-bold text-section-ink transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink pointer-coarse:h-11"
           >
             <DisclosureChevron open={!collapsed} size={12} className="shrink-0 text-ink-faint" />
             <span className="min-w-0 truncate">{t('persona.groupTitle')}</span>

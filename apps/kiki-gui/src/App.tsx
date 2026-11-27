@@ -1709,7 +1709,7 @@ function NormalApp() {
                 }}
                 onPointerUp={() => { setSidebarSwiping(false); }}
                 onPointerCancel={() => { setSidebarSwiping(false); }}
-                className="fixed inset-y-0 left-0 z-30 w-5"
+                className="fixed top-[calc(3rem+var(--kiki-safe-top-inset,0px))] bottom-[calc(5.5rem+var(--kiki-safe-bottom-inset,0px))] left-0 z-30 w-9"
               />
             ) : null}
             {!sidebarOpen && !sidebarSwiping ? sidebarNode : null}
@@ -1724,7 +1724,7 @@ function NormalApp() {
               <Drawer.Viewport className="kiki-drawer-viewport-left">
                 <Drawer.Popup
                   data-workbench-sidebar-drawer=""
-                  className="kiki-drawer-left pt-[var(--kiki-safe-top-inset)] pb-[var(--kiki-safe-bottom-inset)]"
+                  className="kiki-drawer-left pt-[var(--kiki-safe-top-inset)] pb-[max(0.5rem,var(--kiki-safe-bottom-inset))]"
                 >
                   {sidebarNode}
                 </Drawer.Popup>

@@ -11,8 +11,10 @@ import type {
 import { SessionController, createViewState, type SessionViewState } from '@kiki/session-core/session';
 import { sessionAttentionCursor } from '@kiki/session-core/sessions';
 
+import { useI18n } from '../../i18n';
 import type { KikiClient } from '../../lib/client';
 import { commitPendingConversationOpen } from '../../lib/conversationOpen';
+import { pushActionableModelOrErrorToast } from '../../lib/modelConfigError';
 import { pushToast } from '../../lib/toasts';
 import { useControllerRegistry } from '../../state/connection';
 
@@ -48,7 +50,9 @@ export function useMobileSessionStream(
   client: KikiClient,
   spaceKey: string,
   sessionId: string,
+  onOpenProviderSettings?: () => void,
 ): MobileSessionStreamResult {
+  const { t } = useI18n();
   const registry = useControllerRegistry();
   const [loadingOlder, setLoadingOlder] = useState(false);
 
@@ -132,11 +136,11 @@ export function useMobileSessionStream(
         });
         return true;
       } catch (error) {
-        pushToast({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+        pushActionableModelOrErrorToast(error, t, onOpenProviderSettings);
         return false;
       }
     },
-    [controller],
+    [controller, onOpenProviderSettings, t],
   );
 
   const abort = useCallback(async () => {
@@ -210,10 +214,10 @@ export function useMobileSessionStream(
       try {
         await controller.regenerateMessage(userMessageId);
       } catch (error) {
-        pushToast({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+        pushActionableModelOrErrorToast(error, t, onOpenProviderSettings);
       }
     },
-    [controller],
+    [controller, onOpenProviderSettings, t],
   );
 
   const resync = useCallback(async () => {

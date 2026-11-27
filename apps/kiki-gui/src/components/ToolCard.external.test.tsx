@@ -4,12 +4,13 @@ import { act } from 'react';
 const reactActEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
 reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
 import { createRoot, type Root } from 'react-dom/client';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { projectExternalToolDisplay } from '@kiki/protocol';
 import type { ToolBlock } from '@kiki/session-core/session/transcript';
 import { groupBlocks } from '@kiki/session-core/session/grouping';
 
 import { I18nProvider } from '../i18n';
+import { MediaPreviewContext, type MediaPreviewApi } from './mediaPreviewContext';
 import { ToolCard, toolIcon } from './ToolCard';
 
 function tool(overrides: Partial<ToolBlock> & Pick<ToolBlock, 'toolCallId' | 'name'>): ToolBlock {
@@ -316,6 +317,102 @@ describe('large tool output and diff virtualization on expand', () => {
     } finally {
       await act(async () => smallShown.root.unmount());
       smallShown.container.remove();
+    }
+  });
+
+  it('on phone viewports, tapping a collapsed Edit row expands unified mobile DiffCard while Read still links file preview', async () => {
+    const originalMatchMedia = window.matchMedia;
+    const originalInnerWidth = window.innerWidth;
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: (query: string) => ({
+        matches: query.includes('(pointer: coarse)') || query.includes('(max-width: 639px)'),
+        media: query,
+        onchange: null,
+        addListener: () => {},
+        removeListener: () => {},
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        dispatchEvent: () => false,
+      }),
+    });
+    window.innerWidth = 390;
+
+    const editBlock = tool({
+      toolCallId: 'mobile-edit-diff',
+      name: 'Edit',
+      display: { kind: 'diff', path: 'src/wave4-demo.md', before: 'old marker\n', after: 'new marker\n' },
+    });
+    const readBlock = tool({
+      toolCallId: 'mobile-read-file',
+      name: 'Read',
+      display: { kind: 'file_io', operation: 'read', path: 'src/wave4-demo.md' },
+    });
+
+    const openFile = vi.fn();
+    const previewApi: MediaPreviewApi = {
+      sessionId: 'sess-mobile',
+      cwd: '/work',
+      openImage: () => {},
+      openFile,
+      openAgentPanel: () => {},
+      openBuiltinSkill: () => {},
+      openAttachment: () => {},
+      previewTabCount: 0,
+      previewPanelOpen: false,
+      togglePreviewPanel: () => {},
+      activeAgentPanelId: undefined,
+    };
+
+    const editContainer = document.createElement('div');
+    const readContainer = document.createElement('div');
+    document.body.append(editContainer, readContainer);
+    const editRoot = createRoot(editContainer);
+    const readRoot = createRoot(readContainer);
+    await act(async () => {
+      editRoot.render(
+        <I18nProvider>
+          <MediaPreviewContext.Provider value={previewApi}>
+            <ToolCard block={editBlock} />
+          </MediaPreviewContext.Provider>
+        </I18nProvider>,
+      );
+      readRoot.render(
+        <I18nProvider>
+          <MediaPreviewContext.Provider value={previewApi}>
+            <ToolCard block={readBlock} />
+          </MediaPreviewContext.Provider>
+        </I18nProvider>,
+      );
+    });
+    try {
+      const collapsedEditToggle = editContainer.querySelector<HTMLButtonElement>('[data-activity-toggle]')!;
+      expect(collapsedEditToggle.querySelector('[role="link"]')).toBeNull();
+      await act(async () => { collapsedEditToggle.click(); });
+      expect(openFile).not.toHaveBeenCalled();
+      const mobileDiff = editContainer.querySelector('[data-diff-card][data-diff-mobile]');
+      expect(mobileDiff).not.toBeNull();
+      expect(mobileDiff?.textContent).toContain('old marker');
+      expect(mobileDiff?.textContent).toContain('new marker');
+      const expandedEditLink = editContainer.querySelector<HTMLElement>('[role="link"]');
+      expect(expandedEditLink).not.toBeNull();
+
+      const collapsedReadLink = readContainer.querySelector<HTMLElement>('[data-activity-toggle] [role="link"]')!;
+      expect(collapsedReadLink).not.toBeNull();
+      await act(async () => { collapsedReadLink.click(); });
+      expect(openFile).toHaveBeenCalledWith('/work/src/wave4-demo.md');
+    } finally {
+      await act(async () => {
+        editRoot.unmount();
+        readRoot.unmount();
+      });
+      editContainer.remove();
+      readContainer.remove();
+      Object.defineProperty(window, 'matchMedia', {
+        configurable: true,
+        value: originalMatchMedia,
+      });
+      window.innerWidth = originalInnerWidth;
     }
   });
 });

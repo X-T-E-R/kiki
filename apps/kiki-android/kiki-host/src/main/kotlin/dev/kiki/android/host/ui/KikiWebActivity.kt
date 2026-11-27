@@ -8,6 +8,7 @@ import android.content.ContentValues
 import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Color
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
@@ -500,6 +501,7 @@ class KikiWebActivity : ComponentActivity() {
             }
         }
 
+        setupLeftEdgeGestureExclusion(wv)
         rootFrame.addView(wv, 0)
         webView = wv
         bridgeHandler = AndroidBridgeHandler(
@@ -515,6 +517,28 @@ class KikiWebActivity : ComponentActivity() {
             onSaveDownload = ::saveDownloadToDevice,
         )
         return wv
+    }
+
+    private fun setupLeftEdgeGestureExclusion(wv: WebView) {
+        val applyExclusion = { view: View, viewHeight: Int ->
+            if (viewHeight > 0) {
+                val density = resources.displayMetrics.density.coerceAtLeast(1f)
+                val bandPx = (196f * density + 0.5f).toInt().coerceAtMost(viewHeight)
+                val widthPx = (44f * density + 0.5f).toInt()
+                val topY = ((viewHeight - bandPx) / 2).coerceAtLeast(0)
+                val bottomY = (topY + bandPx).coerceAtMost(viewHeight)
+                ViewCompat.setSystemGestureExclusionRects(
+                    view,
+                    if (bottomY > topY && widthPx > 0) listOf(Rect(0, topY, widthPx, bottomY)) else emptyList(),
+                )
+            }
+        }
+        wv.addOnLayoutChangeListener { view, _, top, _, bottom, _, _, _, _ ->
+            applyExclusion(view, bottom - top)
+        }
+        if (wv.height > 0) {
+            applyExclusion(wv, wv.height)
+        }
     }
 
     private fun createCameraCaptureIntent(): Intent? {

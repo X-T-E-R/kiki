@@ -952,6 +952,7 @@ if (Test-Path -LiteralPath (Join-Path $activeDir 'kiki-server.exe')) {
     [IO.Directory]::CreateDirectory((Join-Path $v2UnpackedCandidate 'locales')) | Out-Null
     [IO.Directory]::CreateDirectory((Join-Path $v2UnpackedCandidate 'resources\icons')) | Out-Null
     [IO.Directory]::CreateDirectory((Join-Path $v2UnpackedCandidate 'resources\app.asar.unpacked\dist\server\native\node_modules\node-pty\build\Release')) | Out-Null
+    [IO.Directory]::CreateDirectory((Join-Path $v2UnpackedCandidate 'resources\app.asar.unpacked\dist\server\web\assets')) | Out-Null
     [IO.File]::WriteAllText((Join-Path $v2UnpackedCandidate 'kiki-desktop.exe'), 'electron-44-unpacked-binary')
     [IO.File]::WriteAllText((Join-Path $v2UnpackedCandidate 'ffmpeg.dll'), 'ffmpeg-dll-payload')
     [IO.File]::WriteAllText((Join-Path $v2UnpackedCandidate 'icudtl.dat'), 'icu-data-payload')
@@ -962,6 +963,8 @@ if (Test-Path -LiteralPath (Join-Path $activeDir 'kiki-server.exe')) {
     [IO.File]::WriteAllText((Join-Path $v2UnpackedCandidate 'resources\app.asar.unpacked\dist\server\native-addons.json'), '{"format":1,"packages":["node-pty"]}')
     [IO.File]::WriteAllText((Join-Path $v2UnpackedCandidate 'resources\app.asar.unpacked\dist\server\sqlite-indexer.mjs'), 'export const indexer = true;')
     [IO.File]::WriteAllText((Join-Path $v2UnpackedCandidate 'resources\app.asar.unpacked\dist\server\native\node_modules\node-pty\build\Release\pty.node'), 'pty-abi-149')
+    [IO.File]::WriteAllText((Join-Path $v2UnpackedCandidate 'resources\app.asar.unpacked\dist\server\web\index.html'), '<!doctype html><script type="module" src="/assets/index-v2.js"></script>')
+    [IO.File]::WriteAllText((Join-Path $v2UnpackedCandidate 'resources\app.asar.unpacked\dist\server\web\assets\index-v2.js'), 'export const ui = true;')
 
     $receiptWriter = Join-Path $repoRoot 'apps\kiki-desktop\scripts\write-build-receipt.mjs'
     $nodeOut = & node $receiptWriter --candidate-dir $v2UnpackedCandidate --source-commit $expectedCommit 2>&1 | Out-String
@@ -1287,13 +1290,15 @@ public static class Program {
 
     $canaryV2Candidate = Join-Path $testRoot 'canary-v2-candidate'
     $canaryV2UnpackedEntryDir = Join-Path $canaryV2Candidate 'resources\app.asar.unpacked\dist\server'
-    [IO.Directory]::CreateDirectory($canaryV2UnpackedEntryDir) | Out-Null
+    [IO.Directory]::CreateDirectory((Join-Path $canaryV2UnpackedEntryDir 'web\assets')) | Out-Null
     [IO.Directory]::CreateDirectory((Join-Path $canaryV2Candidate 'resources')) | Out-Null
     Copy-Item -LiteralPath $canaryMockExe -Destination (Join-Path $canaryV2Candidate 'kiki-desktop.exe') -Force
     [IO.File]::WriteAllText((Join-Path $canaryV2Candidate 'resources\app.asar'), 'asar-canary', (New-Object Text.UTF8Encoding($false)))
     $canaryEntryPath = Join-Path $canaryV2UnpackedEntryDir 'server-entry.mjs'
     [IO.File]::WriteAllText($canaryEntryPath, 'export {};', (New-Object Text.UTF8Encoding($false)))
     [IO.File]::WriteAllText((Join-Path $canaryV2UnpackedEntryDir 'native-addons.json'), '{"format":1,"packages":[]}', (New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText((Join-Path $canaryV2UnpackedEntryDir 'web\index.html'), '<!doctype html><script type="module" src="/assets/index-canary.js"></script>', (New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText((Join-Path $canaryV2UnpackedEntryDir 'web\assets\index-canary.js'), 'export {};', (New-Object Text.UTF8Encoding($false)))
     $canaryCommit = 'c' * 40
     $canaryReceiptOut = & node $receiptWriter --candidate-dir $canaryV2Candidate --source-commit $canaryCommit 2>&1 | Out-String
     if ($LASTEXITCODE -ne 0) {

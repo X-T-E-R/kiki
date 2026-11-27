@@ -7,7 +7,7 @@ import { Icon } from '../../components/icons';
 import { ActionSheet } from '../../components/overlays/ActionSheet';
 import { useI18n } from '../../i18n';
 import type { KikiClient } from '../../lib/client';
-import { pushToast } from '../../lib/toasts';
+import { pushActionableModelOrErrorToast } from '../../lib/modelConfigError';
 
 interface QuickCaptureSheetProps {
   readonly open: boolean;
@@ -19,6 +19,7 @@ interface QuickCaptureSheetProps {
   readonly onOpenSpacePicker: () => void;
   readonly onOpenVoice: () => void;
   readonly onCreatedSession: (spaceKey: string, sessionId: string) => void;
+  readonly onOpenProviderSettings?: () => void;
 }
 
 export function QuickCaptureSheet({
@@ -31,6 +32,7 @@ export function QuickCaptureSheet({
   onOpenSpacePicker,
   onOpenVoice,
   onCreatedSession,
+  onOpenProviderSettings,
 }: QuickCaptureSheetProps) {
   const { t } = useI18n();
   const [text, setText] = useState(initialText);
@@ -66,7 +68,7 @@ export function QuickCaptureSheet({
       onClose();
       onCreatedSession(targetSpaceKey, created.id);
     } catch (error) {
-      pushToast({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+      pushActionableModelOrErrorToast(error, t, onOpenProviderSettings);
     } finally {
       setSending(false);
     }

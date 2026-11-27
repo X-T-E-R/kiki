@@ -17,6 +17,7 @@ import { findToolCardRendererSlot, resolvePluginLocalizedText } from '@kiki/sess
 import { isMemoryToolName, type ToolBlock } from '@kiki/session-core/session';
 import { describeError, extractEditSource, diffStat } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
+import { usePhoneMode } from '../lib/layoutHooks';
 import { lazyComponent } from '../lib/lazyComponent';
 import { toolDisplayName } from '../lib/pluginCatalog';
 import { ContentContinuation, DISPLAY_ROOTS, EDIT_ROOTS, frameContentSource, OUTPUT_ROOTS } from './ContentContinuation';
@@ -553,6 +554,7 @@ export const ToolCard = memo(function ToolCard({
   calmedErrorSummary?: string;
 }) {
   const { t, tp, time, locale } = useI18n();
+  const phoneMode = usePhoneMode();
   const transcriptTarget = useTranscriptTarget();
   const { slots: pluginGuiSlots } = usePluginGuiSlots({
     sessionId: transcriptTarget?.sessionId,
@@ -613,6 +615,7 @@ ${engineError}`;
     });
   }, [block.display]);
   const statSources = recoveredDiffs.length > 1 ? recoveredDiffs : editSource === undefined ? [] : [editSource];
+  const hasInlineDiff = editSource !== undefined || recoveredDiffs.length > 0;
   const stat = statSources.length === 0 ? undefined : statSources
     .map((source) => diffStat(source.hunks))
     .reduce((acc, next) => ({ insertions: acc.insertions + next.insertions, deletions: acc.deletions + next.deletions }), { insertions: 0, deletions: 0 });
@@ -674,8 +677,15 @@ ${engineError}`;
   ) : displayPath !== undefined ? (
     // The label already names the action (Read / Edit / Glob); the display's
     // operation word would say it a second time, so the path stands alone.
+    // On phone viewports, Edit rows with inline diff hunks let the whole row
+    // toggle the unified mobile DiffCard first instead of hijacking taps into
+    // post-edit full-file preview (the expanded header still links the file).
     <span className="font-mono">
-      <FilePathLink path={displayPath} className="inline-flex max-w-full min-w-0 align-bottom"><PathText path={displayPath} /></FilePathLink>
+      {phoneMode && hasInlineDiff ? (
+        <PathText path={displayPath} />
+      ) : (
+        <FilePathLink path={displayPath} className="inline-flex max-w-full min-w-0 align-bottom"><PathText path={displayPath} /></FilePathLink>
+      )}
     </span>
   ) : block.progressText !== undefined && block.status === 'running' && (!external || summary === '') ? (
     <span className="text-ink-faint">{block.progressText}</span>

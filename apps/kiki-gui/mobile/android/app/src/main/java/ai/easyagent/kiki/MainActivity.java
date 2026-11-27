@@ -5,6 +5,8 @@ import android.app.Activity;
 import android.content.ClipData;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
+import android.graphics.Rect;
 import android.net.Uri;
 import android.net.http.SslError;
 import android.os.Bundle;
@@ -30,11 +32,15 @@ import com.getcapacitor.BridgeWebViewClient;
 import com.getcapacitor.PluginHandle;
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 
 public class MainActivity extends BridgeActivity {
+
+    private static final String REMOTE_CAPACITOR_EVENT_SHIM =
+        "(function(){if(typeof window!=='undefined'&&!window.Capacitor){window.Capacitor={triggerEvent:function(){return false;}};}})();";
 
     private ValueCallback<Uri[]> pendingFileChooserCallback;
     private Uri pendingCameraOutputUri;
@@ -123,14 +129,22 @@ public class MainActivity extends BridgeActivity {
                         }
 
                         @Override
+                        public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                            super.onPageStarted(view, url, favicon);
+                            ensureRemoteCapacitorEventShim(view, url);
+                        }
+
+                        @Override
                         public void onPageCommitVisible(WebView view, String url) {
                             super.onPageCommitVisible(view, url);
+                            ensureRemoteCapacitorEventShim(view, url);
                             applyLatestImeCss(view);
                         }
 
                         @Override
                         public void onPageFinished(WebView view, String url) {
                             super.onPageFinished(view, url);
+                            ensureRemoteCapacitorEventShim(view, url);
                             applyLatestImeCss(view);
                         }
                     }
@@ -138,6 +152,7 @@ public class MainActivity extends BridgeActivity {
             WebView webView = getBridge().getWebView();
             if (webView != null) {
                 setupImeInsetsBridge(webView);
+                setupLeftEdgeGestureExclusion(webView);
                 webView.setWebChromeClient(
                     new BridgeWebChromeClient(getBridge()) {
                         @Override
@@ -160,9 +175,63 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override
+    public void onPause() {
+        WebView webView = getBridge() == null ? null : getBridge().getWebView();
+        if (webView != null) {
+            ensureRemoteCapacitorEventShim(webView, webView.getUrl());
+        }
+        super.onPause();
+    }
+
+    @Override
+    public void onResume() {
+        WebView webView = getBridge() == null ? null : getBridge().getWebView();
+        if (webView != null) {
+            ensureRemoteCapacitorEventShim(webView, webView.getUrl());
+        }
+        super.onResume();
+    }
+
+    @Override
     public void onDestroy() {
         clearPendingFileChooser(true);
         super.onDestroy();
+    }
+
+    private boolean isRemoteServerUrl(String url) {
+        if (url == null || url.isEmpty()) return false;
+        if (!url.startsWith("http://") && !url.startsWith("https://")) return false;
+        String localUrl = getBridge() == null ? null : getBridge().getLocalUrl();
+        return localUrl == null || localUrl.isEmpty() || !url.startsWith(localUrl);
+    }
+
+    private void ensureRemoteCapacitorEventShim(WebView view, String url) {
+        if (view != null && isRemoteServerUrl(url)) {
+            view.evaluateJavascript(REMOTE_CAPACITOR_EVENT_SHIM, null);
+        }
+    }
+
+    private void setupLeftEdgeGestureExclusion(WebView webView) {
+        View.OnLayoutChangeListener applyExclusion = (view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
+            int viewHeight = bottom - top;
+            if (viewHeight > 0) {
+                float density = Math.max(1f, getResources().getDisplayMetrics().density);
+                int bandPx = Math.min(viewHeight, (int) (196f * density + 0.5f));
+                int widthPx = (int) (44f * density + 0.5f);
+                int topY = Math.max(0, (viewHeight - bandPx) / 2);
+                int bottomY = Math.min(viewHeight, topY + bandPx);
+                ViewCompat.setSystemGestureExclusionRects(
+                    view,
+                    (bottomY > topY && widthPx > 0)
+                        ? Collections.singletonList(new Rect(0, topY, widthPx, bottomY))
+                        : Collections.emptyList()
+                );
+            }
+        };
+        webView.addOnLayoutChangeListener(applyExclusion);
+        if (webView.getHeight() > 0) {
+            applyExclusion.onLayoutChange(webView, 0, 0, webView.getWidth(), webView.getHeight(), 0, 0, 0, 0);
+        }
     }
 
     private void setupImeInsetsBridge(WebView webView) {

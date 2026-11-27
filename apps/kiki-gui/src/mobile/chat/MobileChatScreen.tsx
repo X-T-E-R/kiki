@@ -72,7 +72,7 @@ export function MobileChatScreen({
   personaNameHint,
 }: MobileChatScreenProps) {
   const { t, locale } = useI18n();
-  const stream = useMobileSessionStream(client, spaceKey, sessionId);
+  const stream = useMobileSessionStream(client, spaceKey, sessionId, onOpenProviderSettings);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [selectedModel, setSelectedModel] = useState<string | undefined>(undefined);

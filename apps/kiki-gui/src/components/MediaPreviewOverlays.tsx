@@ -190,6 +190,11 @@ export function MediaPreviewOverlays({
     </PreviewLoadBoundary>
   ) : null;
 
+  const portalContainer =
+    drawerHostEl !== null && drawerHostEl.closest('.kiki-drawer-indent') === null
+      ? drawerHostEl
+      : undefined;
+
   return (
     <>
       <div ref={setDrawerHostEl} className="contents" />
@@ -207,13 +212,13 @@ export function MediaPreviewOverlays({
           snapPoints={[0.92]}
           swipeDirection="down"
         >
-          <Drawer.Portal container={drawerHostEl}>
+          <Drawer.Portal container={portalContainer}>
             <Drawer.Backdrop className="kiki-drawer-backdrop" />
             <Drawer.Viewport className="kiki-drawer-viewport-bottom">
               <Drawer.Popup
                 data-mobile-preview-sheet=""
                 aria-label={t('preview.title')}
-                className="kiki-drawer-bottom h-[94dvh] max-w-none"
+                className="kiki-drawer-bottom h-[94dvh] w-full max-w-full"
               >
                 <div className="kiki-mobile-sheet-grabber" aria-hidden />
                 <div className="min-h-0 flex-1 overflow-hidden">

@@ -7,6 +7,17 @@ val gitHash: String = runCatching {
     providers.exec { commandLine("git", "rev-parse", "--short=7", "HEAD") }.standardOutput.asText.get().trim()
 }.getOrNull()?.takeIf { it.isNotEmpty() } ?: "dev"
 
+val kikiVersionName: String = runCatching {
+    val pkgText = rootProject.file("../kiki-gui/package.json").readText()
+    Regex("\"version\"\\s*:\\s*\"([^\"]+)\"").find(pkgText)?.groupValues?.getOrNull(1)
+}.getOrNull()?.takeIf { it.isNotBlank() } ?: "0.7.0"
+
+val kikiVersionCode: Int = runCatching {
+    val core = kikiVersionName.substringBefore('-')
+    val parts = core.split('.').map { it.toInt() }
+    if (parts.size == 3) parts[0] * 1_000_000 + parts[1] * 1_000 + parts[2] else 7000
+}.getOrDefault(7000)
+
 val generatedNoticesDir = layout.buildDirectory.dir("generated/noticesAssets")
 
 val stageThirdPartyNotices by tasks.registering(Copy::class) {
@@ -23,8 +34,8 @@ android {
         applicationId = "dev.kiki.app"
         minSdk = 30
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.5.1"
+        versionCode = kikiVersionCode
+        versionName = kikiVersionName
         buildConfigField("String", "GIT_HASH", "\"$gitHash\"")
     }
 

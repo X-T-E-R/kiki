@@ -38,6 +38,7 @@ import { rescueWindowBounds } from '#/main/windowState';
 import { IPC_CHANNELS, IPC_EVENTS } from '#/shared/ipcChannels';
 import { verifyFuseConfig } from '../scripts/verify-fuses.mjs';
 import { writeElectronBuildReceipt } from '../scripts/write-build-receipt.mjs';
+import { assertWebBundleIntegrity, stageWebBundle } from '../../kiki-gui/scripts/web-bundle-integrity.mjs';
 
 const tempDirs: string[] = [];
 
@@ -655,11 +656,19 @@ describe('save sink, notifications, prefs, updates, IPC Zod validation, and Elec
       'dist',
       'server',
     );
-    await import('node:fs/promises').then((fs) => fs.mkdir(unpackedServerDir, { recursive: true }));
+    await import('node:fs/promises').then((fs) =>
+      fs.mkdir(join(unpackedServerDir, 'web', 'assets'), { recursive: true }),
+    );
     writeFileSync(join(candidateDir, 'kiki-desktop.exe'), 'electron-bin');
     writeFileSync(join(candidateDir, 'resources', 'app.asar'), 'asar-payload');
     writeFileSync(join(unpackedServerDir, 'server-entry.mjs'), 'export {};\n');
     writeFileSync(join(unpackedServerDir, 'native-addons.json'), '{"version":1}\n');
+    writeFileSync(
+      join(unpackedServerDir, 'web', 'index.html'),
+      '<!doctype html><html><head><link rel="stylesheet" href="/assets/index-test.css"><script type="module" src="/assets/index-test.js"></script></head><body></body></html>\n',
+    );
+    writeFileSync(join(unpackedServerDir, 'web', 'assets', 'index-test.css'), 'body{}\n');
+    writeFileSync(join(unpackedServerDir, 'web', 'assets', 'index-test.js'), 'export {};\n');
 
     const commit = 'a'.repeat(40);
     await expect(
@@ -788,5 +797,65 @@ describe('save sink, notifications, prefs, updates, IPC Zod validation, and Elec
     await expect(invalidCustomSvc.checkUpdate('stable')).rejects.toThrow(
       /Desktop updater is not available/,
     );
+  });
+
+  it('rejects missing or truncated web/assets entrypoints in writeElectronBuildReceipt and stageWebBundle', async () => {
+    const candidateDir = makeTempDir();
+    const unpackedServerDir = join(
+      candidateDir,
+      'resources',
+      'app.asar.unpacked',
+      'dist',
+      'server',
+    );
+    const webAssetsDir = join(unpackedServerDir, 'web', 'assets');
+    await import('node:fs/promises').then((fs) => fs.mkdir(webAssetsDir, { recursive: true }));
+    writeFileSync(join(candidateDir, 'kiki-desktop.exe'), 'electron-bin');
+    writeFileSync(join(candidateDir, 'resources', 'app.asar'), 'asar-payload');
+    writeFileSync(join(unpackedServerDir, 'server-entry.mjs'), 'export {};\n');
+    writeFileSync(join(unpackedServerDir, 'native-addons.json'), '{"version":1}\n');
+    writeFileSync(
+      join(unpackedServerDir, 'web', 'index.html'),
+      '<!doctype html><html><head><link rel="stylesheet" href="/assets/index-main.css"><link rel="modulepreload" href="/assets/vendor-react-abc.js"><script type="module" src="/assets/index-main.js"></script></head><body></body></html>\n',
+    );
+    writeFileSync(join(webAssetsDir, 'index-main.css'), 'body { margin: 0; }\n');
+
+    const commit = 'b'.repeat(40);
+    await expect(
+      writeElectronBuildReceipt({ candidateDir, sourceCommit: commit }),
+    ).rejects.toThrow(/missing or empty entrypoint asset\(s\):.*vendor-react-abc\.js.*index-main\.js/);
+
+    writeFileSync(join(webAssetsDir, 'vendor-react-abc.js'), '');
+    writeFileSync(join(webAssetsDir, 'index-main.js'), 'console.log("ok");\n');
+    await expect(
+      writeElectronBuildReceipt({ candidateDir, sourceCommit: commit }),
+    ).rejects.toThrow(/vendor-react-abc\.js \(empty\)/);
+
+    writeFileSync(join(webAssetsDir, 'vendor-react-abc.js'), 'export const react = 1;\n');
+    const valid = await writeElectronBuildReceipt({ candidateDir, sourceCommit: commit });
+    expect(valid.receipt.schemaVersion).toBe(2);
+
+    const sourceDist = makeTempDir();
+    const stagedWeb = join(makeTempDir(), 'web');
+    await import('node:fs/promises').then((fs) => fs.mkdir(join(sourceDist, 'assets'), { recursive: true }));
+    writeFileSync(
+      join(sourceDist, 'index.html'),
+      '<!doctype html><script type="module" src="/assets/app.js"></script>',
+    );
+    writeFileSync(join(sourceDist, 'assets', 'app.js'), 'export default 1;\n');
+    writeFileSync(join(sourceDist, 'assets', 'chunk-extra.js'), 'export const x = 2;\n');
+    await import('node:fs/promises').then((fs) => fs.mkdir(stagedWeb, { recursive: true }));
+    writeFileSync(join(stagedWeb, 'stale.js'), 'stale');
+    const staged = await stageWebBundle({
+      sourceDistDir: sourceDist,
+      targetWebDir: stagedWeb,
+      minFileCount: 3,
+    });
+    expect(staged.fileCount).toBe(3);
+
+    rmSync(join(stagedWeb, 'assets', 'chunk-extra.js'));
+    await expect(
+      assertWebBundleIntegrity(stagedWeb, { sourceDistDir: sourceDist, minFileCount: 2 }),
+    ).rejects.toThrow(/Web bundle copy mismatch: source .* has 3 files, staged .* has 2 files/);
   });
 });

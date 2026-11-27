@@ -648,7 +648,7 @@ function NewSessionPageContent({
           true centre (styles/new-session.css). The dot arrives once and nods
           back while you type. The brand block carries its own transition name
           so it can fade out on its own when the first send hands off. */}
-      <div data-hero-chrome className="mx-auto w-full max-w-[var(--kiki-chat-content-width,760px)] px-4 pb-5 text-left sm:px-6">
+      <div data-hero-chrome data-connect-first={connectFirst ? '' : undefined} className="mx-auto w-full max-w-[var(--kiki-chat-content-width,760px)] px-4 pb-5 text-left sm:px-6">
         <div className="flex min-w-0 flex-col">
           <div data-hero-brand className="flex min-w-0 flex-col">
             {dailyIdentity ? (

@@ -18,6 +18,7 @@ import {
 } from '../../../scripts/external-harness/production-manifest.mjs';
 import { BUILT_IN_CATALOG_DEFINE, builtInCatalogDefine } from '../../kimi-code/scripts/built-in-catalog.mjs';
 import { stageWindowsToolchain } from '../../kiki-gui/scripts/stage-windows-toolchain.mjs';
+import { stageWebBundle } from '../../kiki-gui/scripts/web-bundle-integrity.mjs';
 import { copyKikiDocs } from '../../kimi-code/scripts/local-docs.mjs';
 import { resolvePnpmInvocation } from '../../kimi-code/scripts/native/01-bundle.mjs';
 import { collectAuthNativePackage } from '../../kimi-code/scripts/native/assets.mjs';
@@ -404,7 +405,14 @@ export async function stageDesktopServer({ skipGuiBuild = false, env = process.e
   }
 
   console.log('[stage-server] Copying web bundle, product docs, pricing catalog, hostRunner, builtin & external-harness...');
-  await cp(resolve(guiRoot, 'dist'), join(serverOutDir, 'web'), { recursive: true });
+  const webIntegrity = await stageWebBundle({
+    sourceDistDir: resolve(guiRoot, 'dist'),
+    targetWebDir: join(serverOutDir, 'web'),
+    minFileCount: 100,
+  });
+  console.log(
+    `[stage-server] Verified staged web bundle (${webIntegrity.fileCount} files, ${webIntegrity.referencedAssets.length} entry assets) -> ${webIntegrity.webDir}`,
+  );
   await copyKikiDocs({ sourceDir: resolve(repoRoot, 'docs'), targetDir: join(serverOutDir, 'docs') });
   await cp(
     resolve(repoRoot, 'packages/agent-core-v2/src/app/plugin/hostRunner.mjs'),

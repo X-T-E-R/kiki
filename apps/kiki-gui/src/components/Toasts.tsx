@@ -94,7 +94,7 @@ function ToastCard({
           ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          {toast.tone === 'error' ? (
+          {toast.tone === 'error' && toast.action === undefined ? (
             <button
               type="button"
               onClick={handleCopy}
@@ -113,7 +113,7 @@ function ToastCard({
                 dismissToast(toast.id);
                 void toast.action?.run();
               }}
-              className="rounded-md px-2 py-0.5 text-[12px] font-normal text-selected-ink transition-colors hover:bg-selected-ink/10 focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:py-2"
+              className="rounded-md px-2 py-0.5 text-[12px] font-normal text-selected-ink transition-colors hover:bg-selected-ink/10 focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-9 pointer-coarse:px-2.5 pointer-coarse:py-1.5"
             >
               {toast.action.label}
             </button>

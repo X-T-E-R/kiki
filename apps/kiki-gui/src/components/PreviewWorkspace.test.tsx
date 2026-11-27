@@ -3360,6 +3360,26 @@ describe('PreviewWorkspace attachment actions & copy marking (#29)', () => {
       expect(document.body.querySelector('[data-preview-tab-sheet]')).toBeNull();
       expect(picker.textContent).toContain('b.ts');
       expect(picker.textContent).toContain('▾ · 4');
+
+      // 3. When MediaPreviewProvider is nested inside .kiki-drawer-indent (MobileAppShell / App),
+      // the mobile preview sheet portals to document.body outside the transformed indent wrapper
+      // so it stays full-width (x = 0..viewportWidth) instead of shifting right.
+      const indentProbe = makeRoot();
+      await renderSettled(
+        indentProbe.root,
+        <div className="kiki-drawer-indent">
+          <MediaPreviewProvider cwd="/work" sessionId="sess-36-indent">
+            <OpenButton path="/work/notes.md" />
+          </MediaPreviewProvider>
+        </div>,
+      );
+      await openFile(indentProbe.container, '/work/notes.md');
+      await settle();
+      const portaledSheet = document.body.querySelector<HTMLElement>('[data-mobile-preview-sheet]');
+      expect(portaledSheet).not.toBeNull();
+      expect(portaledSheet?.closest('.kiki-drawer-indent')).toBeNull();
+      expect(portaledSheet?.className).toContain('w-full');
+      expect(portaledSheet?.className).toContain('max-w-full');
     } finally {
       HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
       Object.defineProperty(window, 'matchMedia', {

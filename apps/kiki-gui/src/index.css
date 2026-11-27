@@ -1871,6 +1871,12 @@ input[data-add-search]:focus-visible {
   scrollbar-gutter: stable;
 }
 
+@media (pointer: coarse) {
+  .conversation-shell[data-phase='hero'] .conversation-middle {
+    scrollbar-gutter: auto;
+  }
+}
+
 .conversation-shell[data-phase='hero'] .conversation-body {
   flex: none;
 }
@@ -1878,6 +1884,51 @@ input[data-add-search]:focus-visible {
 .conversation-shell[data-phase='hero'] .conversation-seat {
   /* Foot inside the centered box floats the stack a bit above true center. */
   padding-bottom: max(32px, var(--kiki-safe-bottom-inset), var(--kiki-ime-offset, 0px));
+}
+
+/* Portrait phone with soft keyboard open: collapse the decorative hero wordmark,
+ * starters, and glow so the workspace target strip + composer dock cleanly above
+ * the IME without clipping behind the h-12 header or starving the / slash menu. */
+@media (pointer: coarse) and (max-width: 767px) {
+  :root[data-keyboard] .conversation-shell[data-phase='hero']:has([data-hero-chrome]:not([data-connect-first])) .conversation-middle {
+    justify-content: flex-end;
+    padding-top: 8px;
+  }
+  :root[data-keyboard] .conversation-shell[data-phase='hero'] [data-hero-chrome]:not([data-connect-first]) {
+    padding-bottom: 8px;
+  }
+  :root[data-keyboard] .conversation-shell[data-phase='hero'] [data-hero-chrome]:not([data-connect-first]) [data-hero-brand],
+  :root[data-keyboard] .conversation-shell[data-phase='hero']:has([data-hero-chrome]:not([data-connect-first])) .conversation-herofooter-slot,
+  :root[data-keyboard] .conversation-shell[data-phase='hero']:has([data-hero-chrome]:not([data-connect-first])) .hero-glow {
+    display: none;
+  }
+  :root[data-keyboard] .conversation-shell[data-phase='hero'] [data-hero-chrome]:not([data-connect-first]) [data-hero-target] {
+    margin-top: 0;
+  }
+  :root[data-keyboard] .conversation-shell[data-phase='hero']:has([data-hero-chrome]:not([data-connect-first])) .conversation-seat {
+    padding-bottom: max(10px, var(--kiki-safe-bottom-inset), var(--kiki-ime-offset, 0px));
+  }
+}
+
+@media (pointer: coarse) and (max-width: 639px) and (max-height: 600px) {
+  .conversation-shell[data-phase='hero']:has([data-hero-chrome]:not([data-connect-first])) .conversation-middle {
+    justify-content: flex-end;
+    padding-top: 8px;
+  }
+  .conversation-shell[data-phase='hero'] [data-hero-chrome]:not([data-connect-first]) {
+    padding-bottom: 8px;
+  }
+  .conversation-shell[data-phase='hero'] [data-hero-chrome]:not([data-connect-first]) [data-hero-brand],
+  .conversation-shell[data-phase='hero']:has([data-hero-chrome]:not([data-connect-first])) .conversation-herofooter-slot,
+  .conversation-shell[data-phase='hero']:has([data-hero-chrome]:not([data-connect-first])) .hero-glow {
+    display: none;
+  }
+  .conversation-shell[data-phase='hero'] [data-hero-chrome]:not([data-connect-first]) [data-hero-target] {
+    margin-top: 0;
+  }
+  .conversation-shell[data-phase='hero']:has([data-hero-chrome]:not([data-connect-first])) .conversation-seat {
+    padding-bottom: max(10px, var(--kiki-safe-bottom-inset), var(--kiki-ime-offset, 0px));
+  }
 }
 
 /* Warm glow centered on the hero input card: the card's resting center sits
@@ -2480,6 +2531,12 @@ input[data-add-search]:focus-visible {
   input,
   textarea,
   [contenteditable='true'],
+  .conversation-middle,
+  .conversation-middle *,
+  [data-transcript-scroll],
+  [data-mobile-screen],
+  [data-mobile-screen] *,
+  [data-settings-scroll],
   [data-composer-root],
   [data-composer-root] *,
   [data-mobile-composer],
@@ -2492,7 +2549,9 @@ input[data-add-search]:focus-visible {
   .kiki-drawer-bottom *,
   .kiki-action-sheet,
   .kiki-action-sheet *,
+  .app-sidebar,
   .app-sidebar *,
+  .app-rail,
   .app-rail * {
     scrollbar-width: none;
     -ms-overflow-style: none;
@@ -2500,6 +2559,12 @@ input[data-add-search]:focus-visible {
   input::-webkit-scrollbar,
   textarea::-webkit-scrollbar,
   [contenteditable='true']::-webkit-scrollbar,
+  .conversation-middle::-webkit-scrollbar,
+  .conversation-middle *::-webkit-scrollbar,
+  [data-transcript-scroll]::-webkit-scrollbar,
+  [data-mobile-screen]::-webkit-scrollbar,
+  [data-mobile-screen] *::-webkit-scrollbar,
+  [data-settings-scroll]::-webkit-scrollbar,
   [data-composer-root]::-webkit-scrollbar,
   [data-composer-root] *::-webkit-scrollbar,
   [data-mobile-composer]::-webkit-scrollbar,
@@ -2512,7 +2577,9 @@ input[data-add-search]:focus-visible {
   .kiki-drawer-bottom *::-webkit-scrollbar,
   .kiki-action-sheet::-webkit-scrollbar,
   .kiki-action-sheet *::-webkit-scrollbar,
+  .app-sidebar::-webkit-scrollbar,
   .app-sidebar *::-webkit-scrollbar,
+  .app-rail::-webkit-scrollbar,
   .app-rail *::-webkit-scrollbar {
     display: none;
     width: 0;
@@ -2604,6 +2671,7 @@ input[data-add-search]:focus-visible {
   top: var(--kiki-visual-offset-top, 0px);
   right: 0;
   left: 0;
+  width: 100%;
   height: calc(var(--kiki-visual-height, 100dvh) - var(--drawer-keyboard-inset, 0px));
   z-index: 52;
   display: flex;
@@ -2616,6 +2684,8 @@ input[data-add-search]:focus-visible {
 .kiki-drawer-bottom {
   pointer-events: auto;
   position: relative;
+  left: 0;
+  right: 0;
   box-sizing: border-box;
   width: 100%;
   max-width: 34rem;
@@ -2633,6 +2703,11 @@ input[data-add-search]:focus-visible {
   will-change: transform;
   outline: none;
 }
+@media (max-width: 639px) {
+  .kiki-drawer-bottom {
+    max-width: 100%;
+  }
+}
 .kiki-drawer-bottom[data-starting-style],
 .kiki-drawer-bottom[data-ending-style],
 .kiki-drawer-bottom:not([data-open]):not([data-swiping]):not([data-ending-style]) {
@@ -2644,21 +2719,25 @@ input[data-add-search]:focus-visible {
   transition: none;
 }
 
-/* Explicit push-aside indent when the left navigation drawer opens (R4). */
+/* Explicit push-aside indent when the left navigation drawer opens, and centered recede for bottom sheets (R4). */
 .kiki-drawer-indent {
   display: flex;
   min-width: 0;
   min-height: 0;
   flex: 1 1 0%;
   transition: transform 260ms cubic-bezier(0.32, 0.72, 0, 1), border-radius 260ms cubic-bezier(0.32, 0.72, 0, 1);
-  transform-origin: right center;
+  transform-origin: center top;
 }
 @media (max-width: 767px) {
   .kiki-drawer-indent[data-active] {
-    transform: translate3d(calc((1 - var(--drawer-swipe-progress, 0)) * 16px), 0, 0)
-      scale(calc(1 - (1 - var(--drawer-swipe-progress, 0)) * 0.025));
+    transform: scale(calc(1 - (1 - var(--drawer-swipe-progress, 0)) * 0.02));
     border-radius: 14px;
     overflow: hidden;
+  }
+  :root:has(.kiki-drawer-left[data-open], .kiki-drawer-left[data-swiping]) .kiki-drawer-indent[data-active] {
+    transform-origin: right center;
+    transform: translate3d(calc((1 - var(--drawer-swipe-progress, 0)) * 16px), 0, 0)
+      scale(calc(1 - (1 - var(--drawer-swipe-progress, 0)) * 0.025));
   }
 }
 

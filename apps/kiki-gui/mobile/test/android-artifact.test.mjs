@@ -270,6 +270,15 @@ await test('workflows keep unsigned CI, protected manual signing and immutable t
   assert.match(gradle, /storeType 'PKCS12'/);
   assert.match(gradle, /keyAlias releaseSigning.KIKI_ANDROID_KEY_ALIAS/);
   assert.match(gradle, /signingConfig signingConfigs.release/);
+  const guiPkg = JSON.parse(readFileSync(join(root, 'apps/kiki-gui/package.json'), 'utf8'));
+  const expectedLocalHostVersion = androidVersion(guiPkg.version);
+  assert.deepEqual(androidVersion('0.7.0'), { versionName: '0.7.0', versionCode: 7000 });
+  const localHostGradle = readFileSync(join(root, 'apps/kiki-android/kiki-app/build.gradle.kts'), 'utf8');
+  assert.doesNotMatch(localHostGradle, /versionName\s*=\s*"0\.5\.1"/);
+  assert.match(localHostGradle, /versionName\s*=\s*kikiVersionName/);
+  assert.match(localHostGradle, /versionCode\s*=\s*kikiVersionCode/);
+  assert.equal(expectedLocalHostVersion.versionName, '0.7.0');
+  assert.equal(expectedLocalHostVersion.versionCode, 7000);
   const mobilePkg = JSON.parse(readFileSync(join(root, 'apps/kiki-gui/mobile/package.json'), 'utf8'));
   const mobileLock = JSON.parse(readFileSync(join(root, 'apps/kiki-gui/mobile/package-lock.json'), 'utf8'));
   assert.equal(mobilePkg.version, undefined);

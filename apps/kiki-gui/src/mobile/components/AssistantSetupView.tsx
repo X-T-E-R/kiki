@@ -8,7 +8,7 @@ import { ActionSheet } from '../../components/overlays/ActionSheet';
 import { PersonaAvatar, personaAvatarOf } from '../../components/persona/PersonaAvatar';
 import { useI18n } from '../../i18n';
 import type { KikiClient } from '../../lib/client';
-import { pushToast } from '../../lib/toasts';
+import { pushActionableModelOrErrorToast } from '../../lib/modelConfigError';
 import type { MobileAssistantBinding } from '../mobileAssistantStore';
 
 export const DEFAULT_ASSISTANT_ID = 'kiki';
@@ -36,6 +36,7 @@ interface AssistantSetupViewProps {
   readonly variant: 'page' | 'sheet';
   readonly onStarted: (binding: MobileAssistantBinding) => void;
   readonly onPairComputer: () => void;
+  readonly onOpenProviderSettings?: (spaceKey: string) => void;
 }
 
 /** Personas this computer can open as an assistant (archived ones stay out of the picker). */
@@ -52,6 +53,7 @@ export function AssistantSetupView({
   variant,
   onStarted,
   onPairComputer,
+  onOpenProviderSettings,
 }: AssistantSetupViewProps) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
@@ -141,7 +143,11 @@ export function AssistantSetupView({
       void queryClient.invalidateQueries({ queryKey: ['mobile-personas'] });
       onStarted({ spaceKey: targetKey, personaId, sessionId: home.homeSessionId });
     } catch (error) {
-      pushToast({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+      pushActionableModelOrErrorToast(
+        error,
+        t,
+        onOpenProviderSettings === undefined ? undefined : () => { onOpenProviderSettings(targetKey); },
+      );
     } finally {
       setStarting(false);
     }

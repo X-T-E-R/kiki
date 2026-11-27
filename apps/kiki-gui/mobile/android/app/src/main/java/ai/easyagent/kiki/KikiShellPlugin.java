@@ -302,12 +302,15 @@ public class KikiShellPlugin extends Plugin {
     /** The entry just below a server's first page is the launcher: leaving it is not "back". */
     private boolean backLeavesServer(WebView webView) {
         WebBackForwardList list = webView.copyBackForwardList();
+        String local = getBridge().getLocalUrl();
+        String current = list.getCurrentItem() == null ? null : list.getCurrentItem().getUrl();
+        if (current != null && local != null && current.startsWith(local)) {
+            return true;
+        }
         int previous = list.getCurrentIndex() - 1;
         if (previous < 0) return true;
         String url = list.getItemAtIndex(previous).getUrl();
-        String current = list.getCurrentItem() == null ? null : list.getCurrentItem().getUrl();
-        String local = getBridge().getLocalUrl();
-        return url != null && url.startsWith(local) && current != null && !current.startsWith(local);
+        return url != null && local != null && url.startsWith(local) && current != null && !current.startsWith(local);
     }
 
     boolean handleWebPermissionRequest(PermissionRequest request) {

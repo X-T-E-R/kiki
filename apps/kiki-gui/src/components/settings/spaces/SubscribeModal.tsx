@@ -1193,7 +1193,7 @@ export function SubscribeModal({
                                 {hasExecutablePlugins ? (
                                   <span
                                     data-portable-executable-scope-badge={summary.scope}
-                                    className="shrink-0 rounded-sm bg-attention/12 px-1.5 py-0.5 text-[11px] leading-3.5 font-medium text-amber-ink"
+                                    className="shrink-0 rounded-sm bg-attention/12 px-1.5 py-0.5 text-[11px] leading-3.5 font-normal text-amber-ink"
                                   >
                                     {t('st.portable.center.executablePluginTag')}
                                   </span>
@@ -1259,7 +1259,7 @@ export function SubscribeModal({
                                             {item.domain === 'plugins' ? (
                                               <span
                                                 data-portable-executable-plugin-tag={item.id}
-                                                className="shrink-0 rounded-sm bg-attention/12 px-1.5 py-0.5 text-[11px] leading-3.5 font-medium text-amber-ink"
+                                                className="shrink-0 rounded-sm bg-attention/12 px-1.5 py-0.5 text-[11px] leading-3.5 font-normal text-amber-ink"
                                               >
                                                 {t('st.portable.center.executablePluginTag')}
                                               </span>

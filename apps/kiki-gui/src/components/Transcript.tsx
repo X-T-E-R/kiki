@@ -3630,7 +3630,7 @@ function JumpToBottom({
       aria-label={hasNew ? t('transcript.jumpToLatestNew') : undefined}
       onClick={onJump}
       style={{ transform: 'translate(-50%, calc(-1 * max(20px, var(--kiki-seat-height, 148px) + 12px)))' }}
-      className="absolute bottom-0 left-1/2 z-10 flex min-h-8 items-center gap-1.5 rounded-full bg-panel px-3 text-[12px] font-normal text-ink-soft shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/.18)] transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink"
+      className="absolute bottom-0 left-1/2 z-10 flex min-h-8 pointer-coarse:min-h-11 items-center gap-1.5 rounded-full bg-panel px-3 text-[12px] font-normal text-ink-soft shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/.18)] transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink"
     >
       {showFailedCue ? (
         <>

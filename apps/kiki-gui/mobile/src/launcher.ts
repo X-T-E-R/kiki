@@ -218,6 +218,7 @@ function bootstrapLauncherUi(): void {
   let scanStarting = false;
   let scanGeneration = 0;
   let scannerHistoryEntry = false;
+  let manualAddressDirty = false;
   let managingServerId: string | null = null;
   let unreachablePairedRecovery: RecoveryBinding | null = null;
   let computersTabRecovery = false;
@@ -742,7 +743,7 @@ function bootstrapLauncherUi(): void {
       return;
     }
     setTab('connect');
-    if (input.value.trim() === '' || isVerifiedPaired) {
+    if (input.value.trim() === '' || (isVerifiedPaired && !manualAddressDirty)) {
       input.value = editableOrigin(origin);
     }
     updateInputAffordances();
@@ -1112,6 +1113,7 @@ function bootstrapLauncherUi(): void {
       return;
     }
     showScanFeedback('');
+    manualAddressDirty = false;
     input.value = editableOrigin(parsed.origin);
     pendingManualFingerprint =
       parsed.kind === 'pair' && parsed.fingerprint
@@ -1852,6 +1854,14 @@ function bootstrapLauncherUi(): void {
     if (scannerHistoryEntry) stopCameraScanner({ fromHistory: true });
   });
 
+  window.addEventListener('kiki:host-back', (event) => {
+    if (activeStream || !scannerPanel.hidden) {
+      event.preventDefault();
+      stopCameraScanner();
+      focusManualConnectInput();
+    }
+  });
+
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && activeStream) {
       stopCameraScanner();
@@ -1860,6 +1870,7 @@ function bootstrapLauncherUi(): void {
   });
 
   input.addEventListener('input', () => {
+    manualAddressDirty = true;
     stopAutoReconnect(true);
     if (!problem.hidden) showProblem('');
     if (!scanFeedback.hidden) showScanFeedback('');
@@ -1971,6 +1982,7 @@ function bootstrapLauncherUi(): void {
 
   form.addEventListener('submit', (event) => {
     event.preventDefault();
+    manualAddressDirty = false;
     if (unreachablePairedRecovery && codeInput.value.trim() === '') {
       const parsedTarget = readTarget(input.value);
       if (parsedTarget.ok && parsedTarget.origin === unreachablePairedRecovery.origin) {
@@ -2116,20 +2128,46 @@ function bootstrapLauncherUi(): void {
     void consumePendingPairIfAny();
   });
 
+  const TRANSIENT_ACTION_HASHES = new Set([
+    'unreachable',
+    'unverified_handshake_proof',
+    'pairing_revoked',
+    'pairing_required',
+    'identity_mismatch',
+    'pair',
+    'change',
+  ]);
+
+  function consumeTransientActionHash(): string {
+    const raw = window.location.hash.replace(/^#/, '');
+    if (TRANSIENT_ACTION_HASHES.has(raw)) {
+      try {
+        window.history.replaceState(
+          window.history.state,
+          '',
+          `${window.location.pathname}${window.location.search}`,
+        );
+      } catch {
+      }
+    }
+    return raw;
+  }
+
   window.addEventListener('hashchange', () => {
-    if (window.location.hash === '#unreachable') {
+    const hashAction = consumeTransientActionHash();
+    if (hashAction === 'unreachable') {
       showUnreachable('unreachable');
-    } else if (window.location.hash === '#unverified_handshake_proof') {
+    } else if (hashAction === 'unverified_handshake_proof') {
       showUnreachable('unverified_handshake_proof');
-    } else if (window.location.hash === '#pairing_revoked') {
+    } else if (hashAction === 'pairing_revoked') {
       showPairingRecovery('pairing_revoked');
-    } else if (window.location.hash === '#pairing_required') {
+    } else if (hashAction === 'pairing_required') {
       showPairingRecovery('pairing_required');
-    } else if (window.location.hash === '#identity_mismatch') {
+    } else if (hashAction === 'identity_mismatch') {
       showPairingRecovery('identity_mismatch');
-    } else if (window.location.hash === '#pair') {
+    } else if (hashAction === 'pair') {
       void consumePendingPairIfAny();
-    } else if (window.location.hash === '#change') {
+    } else if (hashAction === 'change') {
       setTab(landingTab());
     }
   });
@@ -2149,7 +2187,7 @@ function bootstrapLauncherUi(): void {
   } catch {
   }
 
-  const reason = window.location.hash.replace(/^#/, '');
+  const reason = consumeTransientActionHash();
   const primaryServer = readSavedServers(window.localStorage)[0] ?? null;
 
   void (async () => {

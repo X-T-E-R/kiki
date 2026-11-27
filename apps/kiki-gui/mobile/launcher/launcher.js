@@ -13340,6 +13340,7 @@
 		let scanStarting = false;
 		let scanGeneration = 0;
 		let scannerHistoryEntry = false;
+		let manualAddressDirty = false;
 		let managingServerId = null;
 		let unreachablePairedRecovery = null;
 		let computersTabRecovery = false;
@@ -13722,7 +13723,7 @@
 				return;
 			}
 			setTab("connect");
-			if (input.value.trim() === "" || isVerifiedPaired) input.value = editableOrigin(origin);
+			if (input.value.trim() === "" || isVerifiedPaired && !manualAddressDirty) input.value = editableOrigin(origin);
 			updateInputAffordances();
 			showProblem(message);
 			renderSavedServers();
@@ -13965,6 +13966,7 @@
 				return;
 			}
 			showScanFeedback("");
+			manualAddressDirty = false;
 			input.value = editableOrigin(parsed.origin);
 			pendingManualFingerprint = parsed.kind === "pair" && parsed.fingerprint ? {
 				origin: parsed.origin,
@@ -14573,6 +14575,13 @@
 		window.addEventListener("popstate", () => {
 			if (scannerHistoryEntry) stopCameraScanner({ fromHistory: true });
 		});
+		window.addEventListener("kiki:host-back", (event) => {
+			if (activeStream || !scannerPanel.hidden) {
+				event.preventDefault();
+				stopCameraScanner();
+				focusManualConnectInput();
+			}
+		});
 		document.addEventListener("keydown", (event) => {
 			if (event.key === "Escape" && activeStream) {
 				stopCameraScanner();
@@ -14580,6 +14589,7 @@
 			}
 		});
 		input.addEventListener("input", () => {
+			manualAddressDirty = true;
 			stopAutoReconnect(true);
 			if (!problem.hidden) showProblem("");
 			if (!scanFeedback.hidden) showScanFeedback("");
@@ -14657,6 +14667,7 @@
 		});
 		form.addEventListener("submit", (event) => {
 			event.preventDefault();
+			manualAddressDirty = false;
 			if (unreachablePairedRecovery && codeInput.value.trim() === "") {
 				const parsedTarget = readTarget(input.value);
 				if (parsedTarget.ok && parsedTarget.origin === unreachablePairedRecovery.origin) {
@@ -14762,14 +14773,31 @@
 		window.addEventListener("kiki:pair-deeplink", () => {
 			consumePendingPairIfAny();
 		});
+		const TRANSIENT_ACTION_HASHES = new Set([
+			"unreachable",
+			"unverified_handshake_proof",
+			"pairing_revoked",
+			"pairing_required",
+			"identity_mismatch",
+			"pair",
+			"change"
+		]);
+		function consumeTransientActionHash() {
+			const raw = window.location.hash.replace(/^#/, "");
+			if (TRANSIENT_ACTION_HASHES.has(raw)) try {
+				window.history.replaceState(window.history.state, "", `${window.location.pathname}${window.location.search}`);
+			} catch {}
+			return raw;
+		}
 		window.addEventListener("hashchange", () => {
-			if (window.location.hash === "#unreachable") showUnreachable("unreachable");
-			else if (window.location.hash === "#unverified_handshake_proof") showUnreachable("unverified_handshake_proof");
-			else if (window.location.hash === "#pairing_revoked") showPairingRecovery("pairing_revoked");
-			else if (window.location.hash === "#pairing_required") showPairingRecovery("pairing_required");
-			else if (window.location.hash === "#identity_mismatch") showPairingRecovery("identity_mismatch");
-			else if (window.location.hash === "#pair") consumePendingPairIfAny();
-			else if (window.location.hash === "#change") setTab(landingTab());
+			const hashAction = consumeTransientActionHash();
+			if (hashAction === "unreachable") showUnreachable("unreachable");
+			else if (hashAction === "unverified_handshake_proof") showUnreachable("unverified_handshake_proof");
+			else if (hashAction === "pairing_revoked") showPairingRecovery("pairing_revoked");
+			else if (hashAction === "pairing_required") showPairingRecovery("pairing_required");
+			else if (hashAction === "identity_mismatch") showPairingRecovery("identity_mismatch");
+			else if (hashAction === "pair") consumePendingPairIfAny();
+			else if (hashAction === "change") setTab(landingTab());
 		});
 		if (win.__kikiLauncher) win.__kikiLauncher.openServer = openServer;
 		renderSavedServers();
@@ -14780,7 +14808,7 @@
 			firstVisit = sessionStorage.getItem(STARTED_KEY) === null;
 			sessionStorage.setItem(STARTED_KEY, "1");
 		} catch {}
-		const reason = window.location.hash.replace(/^#/, "");
+		const reason = consumeTransientActionHash();
 		const primaryServer = readSavedServers(window.localStorage)[0] ?? null;
 		(async () => {
 			if (!await consumePendingPairIfAny()) {

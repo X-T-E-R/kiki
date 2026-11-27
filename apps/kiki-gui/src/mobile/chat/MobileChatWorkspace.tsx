@@ -1,6 +1,6 @@
 import { Drawer } from '@base-ui/react/drawer';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { MemoryRouter, useInRouterContext } from 'react-router-dom';
 
 import type { DeferredAppendTiming, PermissionMode, PromptSkillActivation } from '@kiki/protocol';
@@ -429,7 +429,10 @@ function MobileChatWorkspaceBody({
             stream.controller?.loadTranscriptEntities(MAIN_AGENT_ID, kind) ?? Promise.resolve(false)}
         >
           <MessageViewContext.Provider value={messageViewContext}>
-            <div className="flex min-h-0 flex-1 flex-col">
+            <div
+              className="flex min-h-0 flex-1 flex-col"
+              style={{ '--kiki-seat-height': '0px' } as CSSProperties}
+            >
               {showGreeting ? (
                 <div
                   data-mobile-transcript=""

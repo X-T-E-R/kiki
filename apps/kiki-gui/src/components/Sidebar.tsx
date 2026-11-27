@@ -178,7 +178,7 @@ const EMPTY_SESSIONS: readonly Session[] = [];
 const ICON = 'h-4 w-4 shrink-0';
 /** Quiet square control for the wordmark row (search, activity). */
 const HEADER_ICON =
-  'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors pointer-coarse:h-10 pointer-coarse:w-10 hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink aria-[current=page]:bg-ink/[0.06] aria-[current=page]:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
+  'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors pointer-coarse:h-11 pointer-coarse:w-11 hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink aria-[current=page]:bg-ink/[0.06] aria-[current=page]:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
 /** The collapsed rail's one button: the header's quiet square a step larger,
  * so the 56px column stays a comfortable target. Flat — never a pill. */
 const RAIL_ICON =
@@ -3038,7 +3038,7 @@ export function Sidebar({
           type="button"
           data-new-session
           onClick={onNewSession}
-          className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] font-normal text-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.045] pointer-coarse:h-10"
+          className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] font-normal text-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.045] pointer-coarse:h-11"
         >
           <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/12 text-accent-ink"><Icon name="plus" size={12} /></span>
           <span className="min-w-0 flex-1 truncate">{t('sidebar.newSession')}</span>
@@ -3073,7 +3073,7 @@ export function Sidebar({
             placeholder={t('sidebar.searchPlaceholder')}
             title={t('sidebar.searchHint')}
             aria-label={t('sidebar.searchAria')}
-            className="h-8 w-full rounded-lg border border-transparent bg-transparent pr-7 pl-7 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint hover:bg-ink/[0.04] focus:border-hairline-strong focus:bg-paper focus-visible:outline-none pointer-coarse:h-10 pointer-coarse:text-[16px]"
+            className="h-8 w-full rounded-lg border border-transparent bg-transparent pr-7 pl-7 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint hover:bg-ink/[0.04] focus:border-hairline-strong focus:bg-paper focus-visible:outline-none pointer-coarse:h-11 pointer-coarse:pr-10 pointer-coarse:text-[16px]"
           />
           {searchInput === '' ? (
             <kbd aria-hidden className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 rounded border border-hairline px-1 font-sans text-[11px] leading-4 text-ink-faint pointer-coarse:hidden">/</kbd>
@@ -3082,7 +3082,7 @@ export function Sidebar({
               type="button"
               aria-label={t('sidebar.clearSearch')}
               onClick={() => { setSearchInput(''); searchRef.current?.focus(); }}
-              className="absolute top-1/2 right-1 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-ink-faint transition-colors hover:bg-hairline hover:text-ink pointer-coarse:h-9 pointer-coarse:w-9"
+              className="absolute top-1/2 right-0.5 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-ink-faint transition-colors hover:bg-hairline hover:text-ink pointer-coarse:h-11 pointer-coarse:w-11"
             >
               <Icon name="close" size={12} />
             </button>
@@ -3122,7 +3122,7 @@ export function Sidebar({
                   aria-label={tp('sidebar.runningCount', counts.running)}
                   title={tp('sidebar.runningCount', counts.running)}
                   onClick={() => { toggleStatus('running'); }}
-                  className="hidden h-6 shrink-0 items-center gap-1 rounded-md px-1 text-[11.5px] text-ink-soft tabular-nums transition-colors hover:bg-ink/[0.05] hover:text-ink aria-pressed:bg-ink/[0.06] aria-pressed:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-9 pointer-coarse:px-1.5 @[215px]:flex"
+                  className="hidden h-6 shrink-0 items-center gap-1 rounded-md px-1 text-[11.5px] text-ink-soft tabular-nums transition-colors hover:bg-ink/[0.05] hover:text-ink aria-pressed:bg-ink/[0.06] aria-pressed:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-11 pointer-coarse:min-w-11 pointer-coarse:justify-center pointer-coarse:px-2 @[215px]:flex"
                 >
                   <LifeMark markId="sidebar:running" life="working" className="h-1.5 w-1.5" />
                   <span>{counts.running}</span>
@@ -3135,7 +3135,7 @@ export function Sidebar({
                   aria-label={allFolded ? t('sidebar.expandAllGroups') : t('sidebar.collapseAllGroups')}
                   title={allFolded ? t('sidebar.expandAllGroups') : t('sidebar.collapseAllGroups')}
                   onClick={() => { setAllGroupsCollapsed(workspaceGroupKeys, !allFolded); }}
-                  className="hidden h-6 w-6 shrink-0 items-center justify-center rounded-md pointer-coarse:h-9 pointer-coarse:w-9 text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink @[215px]:flex"
+                  className="hidden h-6 w-6 shrink-0 items-center justify-center rounded-md pointer-coarse:h-11 pointer-coarse:w-11 text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink @[215px]:flex"
                 >
                   <Icon name={allFolded ? 'expand' : 'collapse'} size={14} />
                 </button>
@@ -3149,7 +3149,7 @@ export function Sidebar({
                 aria-label={t('sidebar.filterMenu')}
                 title={t('sidebar.filterMenu')}
                 onClick={() => { setOpenMenu((open) => (open === 'filter' ? null : 'filter')); }}
-                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md pointer-coarse:h-9 pointer-coarse:w-9 transition-colors hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink ${filtersActive ? 'text-selected-ink' : 'text-ink-faint'}`}
+                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md pointer-coarse:h-11 pointer-coarse:w-11 transition-colors hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink ${filtersActive ? 'text-selected-ink' : 'text-ink-faint'}`}
               >
                 <Icon name="filter" size={14} />
               </button>
@@ -3162,7 +3162,7 @@ export function Sidebar({
                 aria-label={t('sidebar.viewMenu')}
                 title={t('sidebar.viewMenu')}
                 onClick={() => { setOpenMenu((open) => (open === 'view' ? null : 'view')); }}
-                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md pointer-coarse:h-9 pointer-coarse:w-9 text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink"
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md pointer-coarse:h-11 pointer-coarse:w-11 text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink"
               >
                 <Icon name="sliders" size={14} />
               </button>
@@ -3412,7 +3412,7 @@ export function Sidebar({
             </button>
             <button type="button" data-session-selection-clear aria-label={t('room.clearSelection')} title={t('room.clearSelection')}
               onClick={() => { setSelected(new Set()); }}
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink">
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md pointer-coarse:h-11 pointer-coarse:w-11 text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink">
               <Icon name="close" size={12} />
             </button>
           </div>
@@ -3742,7 +3742,7 @@ export function Sidebar({
         * not the connection words are there). The row never overlaps the
         * list above it: it is a flex sibling, not an overlay, and the list
         * keeps bottom padding for its last row. */}
-      <div className="relative flex h-12 shrink-0 items-center gap-1 px-2.5" data-sidebar-footer>
+      <div className="relative flex min-h-12 shrink-0 items-center gap-1 px-2.5 pointer-coarse:border-t pointer-coarse:border-hairline/70 pointer-coarse:py-1.5" data-sidebar-footer>
         <button
           type="button"
           data-nav-settings
@@ -4401,7 +4401,7 @@ const SessionRow = memo(function SessionRow({
               event.stopPropagation();
               onTogglePin();
             }}
-            className={`flex h-7 w-7 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 [@media(hover:none)]:hidden transition-colors hover:bg-ink/[0.06] disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent ${
+            className={`flex h-7 w-7 items-center justify-center rounded-md pointer-coarse:h-11 pointer-coarse:w-11 [@media(hover:none)]:hidden transition-colors hover:bg-ink/[0.06] disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent ${
               pinned ? 'text-ink-soft' : 'text-ink-faint hover:text-ink'
             }`}
           >
@@ -4416,7 +4416,7 @@ const SessionRow = memo(function SessionRow({
             const rect = event.currentTarget.getBoundingClientRect();
             onMenu(rect.right + 4, rect.top, true);
           }}
-          className="flex h-7 w-7 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 text-[13px] leading-none text-ink-faint transition-colors hover:bg-ink/[0.06] hover:text-ink"
+          className="flex h-7 w-7 items-center justify-center rounded-md pointer-coarse:h-11 pointer-coarse:w-11 text-[13px] leading-none text-ink-faint transition-colors hover:bg-ink/[0.06] hover:text-ink"
         >
           <Icon name="more" size={14} />
         </button>
@@ -4631,7 +4631,7 @@ const RoomConversationRow = memo(function RoomConversationRow({
               event.stopPropagation();
               onTogglePin();
             }}
-            className={`flex h-7 w-7 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 [@media(hover:none)]:hidden transition-colors hover:bg-ink/[0.06] disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent ${
+            className={`flex h-7 w-7 items-center justify-center rounded-md pointer-coarse:h-11 pointer-coarse:w-11 [@media(hover:none)]:hidden transition-colors hover:bg-ink/[0.06] disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent ${
               item.pinned ? 'text-ink-soft' : 'text-ink-faint hover:text-ink'
             }`}
           >
@@ -4647,7 +4647,7 @@ const RoomConversationRow = memo(function RoomConversationRow({
             const rect = event.currentTarget.getBoundingClientRect();
             onMenu(rect.right + 4, rect.top, true);
           }}
-          className="flex h-7 w-7 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 text-[13px] leading-none text-ink-faint transition-colors hover:bg-ink/[0.06] hover:text-ink"
+          className="flex h-7 w-7 items-center justify-center rounded-md pointer-coarse:h-11 pointer-coarse:w-11 text-[13px] leading-none text-ink-faint transition-colors hover:bg-ink/[0.06] hover:text-ink"
         >
           <Icon name="more" size={14} />
         </button>
@@ -5538,7 +5538,7 @@ function searchQueryDisplay(search: SessionSearchState): string {
 const MENU_WORKSPACE_ROWS = 8;
 const MENU_HEADING = 'px-3 pt-1.5 pb-0.5 text-[11px] font-normal text-ink-faint phone:px-4 phone:pt-2 phone:pb-1 phone:text-[13px]';
 const MENU_ITEM =
-  'flex h-7 min-w-0 flex-1 items-center gap-2 rounded-md px-3 text-left text-[12.5px] text-ink transition-colors hover:bg-paper phone:h-9 phone:text-[14px] pointer-coarse:min-h-10';
+  'flex h-7 min-w-0 flex-1 items-center gap-2 rounded-md px-3 text-left text-[12.5px] text-ink transition-colors hover:bg-paper phone:h-9 phone:text-[14px] pointer-coarse:min-h-11';
 
 /** The selection column: reserved on every row so labels stay aligned. */
 function MenuMark({ on }: { on: boolean }) {
@@ -5802,7 +5802,7 @@ function SidebarFilterMenu({
                 onClick={() => { onToggleWorkspacePin(workspace); }}
                 // Without hover the unpinned mark would never show, leaving
                 // an invisible target in the row: touch keeps it faint.
-                className={`mr-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded transition-colors hover:bg-paper disabled:opacity-50 pointer-coarse:h-10 pointer-coarse:w-10 ${
+                className={`mr-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded transition-colors hover:bg-paper disabled:opacity-50 pointer-coarse:h-11 pointer-coarse:w-11 ${
                   workspace.pinned
                     ? 'text-ink-soft'
                     : 'text-transparent group-focus-within:text-ink-faint group-hover:text-ink-faint hover:!text-ink [@media(hover:none)]:text-ink-faint'

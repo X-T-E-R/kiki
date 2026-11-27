@@ -6,6 +6,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { copyKikiDocs } from './local-docs.mjs';
+import { stageWebBundle } from '../../kiki-gui/scripts/web-bundle-integrity.mjs';
 import { resolvePnpmInvocation } from './native/01-bundle.mjs';
 import { run } from './native/exec.mjs';
 import { copySourceOwnedAdapterAssets } from './native/external-harness-assets.mjs';
@@ -183,7 +184,11 @@ export async function buildAndroidBundle() {
 
   await run(process.execPath, [tsdownCliPath, '--config', 'tsdown.android.config.ts']);
 
-  await cp(guiDist, resolve(outDir, 'web'), { recursive: true });
+  await stageWebBundle({
+    sourceDistDir: guiDist,
+    targetWebDir: resolve(outDir, 'web'),
+    minFileCount: 100,
+  });
   await cp(
     resolve(repoRoot, 'packages/agent-core-v2/src/app/plugin/hostRunner.mjs'),
     resolve(outDir, 'hostRunner.mjs'),

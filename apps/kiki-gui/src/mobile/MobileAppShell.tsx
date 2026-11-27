@@ -568,7 +568,7 @@ export function MobileAppShell() {
             <Drawer.SwipeArea
               swipeDirection="right"
               data-mobile-swipe-area=""
-              className="fixed inset-y-0 left-0 z-30 w-5"
+              className="fixed top-[calc(3rem+var(--kiki-safe-top-inset,0px))] bottom-[calc(5.5rem+var(--kiki-safe-bottom-inset,0px))] left-0 z-30 w-9"
             />
           ) : null}
 
@@ -849,6 +849,10 @@ export function MobileAppShell() {
             onCreatedSession={(spaceKey, sessionId) => {
               void queryClient.invalidateQueries({ queryKey: ['mobile-sessions'] });
               void navigate(mobileChatPath(spaceKey, sessionId));
+            }}
+            onOpenProviderSettings={() => {
+              setQuickOpen(false);
+              openProviderSettings(targetCaptureSpaceKey);
             }}
           />
         ) : null}

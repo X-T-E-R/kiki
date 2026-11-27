@@ -130,6 +130,7 @@ export function AssistantTab({
           resolveClient={resolveClient}
           onStarted={startAssistant}
           onPairComputer={onPairComputer}
+          onOpenProviderSettings={onOpenProviderSettings}
         />
         {needsYouSheet}
       </div>
@@ -217,6 +218,14 @@ export function AssistantTab({
               setSwitcherOpen(false);
               onPairComputer();
             }}
+            onOpenProviderSettings={
+              onOpenProviderSettings === undefined
+                ? undefined
+                : (targetSpaceKey) => {
+                    setSwitcherOpen(false);
+                    onOpenProviderSettings(targetSpaceKey);
+                  }
+            }
           />
         </ActionSheet>
       ) : null}

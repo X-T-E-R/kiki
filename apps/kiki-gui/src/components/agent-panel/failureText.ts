@@ -226,7 +226,7 @@ export function classifyDiagnosticCategory(input: {
 
   if (
     status === '401' ||
-    /invalid[_ -]?api[_ -]?key|authentication[_ -]?error|invalid credentials|unauthorized|api key not valid/i.test(scrubbed) ||
+    /invalid[_ -]?api[_ -]?key|authentication[_ -]?error|invalid credentials|unauthorized|api key not valid|model and thinking effort are required to bind profile|no default model configured/i.test(scrubbed) ||
     code === 'authentication_error' ||
     code === 'invalid_api_key'
   ) {
