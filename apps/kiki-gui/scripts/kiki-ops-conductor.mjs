@@ -2225,7 +2225,9 @@ function formatSummary(command, result) {
   if (command === 'reconcile') {
     return [
       `Reconcile (${result.nudgeEnabled ? 'nudge' : 'report-only'}): ${result.interruptedCount} session(s)`,
-      `  Server:  ${result.liveServer.server_id} (pid=${result.liveServer.pid}, build=${result.liveServer.build_id})`,
+      result.liveServer
+        ? `  Server:  ${result.liveServer.server_id} (pid=${result.liveServer.pid}, build=${result.liveServer.build_id})`
+        : '  Server:  none',
       ...result.results.map(
         (r) => `  - ${r.sessionId}: activity=${r.activityStatus ?? 'unknown'}, control=${r.controlPhase}, nudged=${r.nudged}${r.reason ? ` (${r.reason})` : ''}${r.error ? ` [error: ${r.error}]` : ''}`,
       ),

@@ -773,4 +773,51 @@ describe('DaemonSupervisor', () => {
     expect(env['KIKI_WINDOWS_PROCESS_HELPER']).toBeUndefined();
     expect(env['KIKI_CLI']).toBeUndefined();
   });
+
+  it('suppresses automatic daemon recovery while an external hot-switch.json is active', async () => {
+    const runtimeRoot = makeTempHome();
+    const activeDir = join(runtimeRoot, 'active');
+    const homeDir = makeTempHome();
+    mkdirSync(activeDir, { recursive: true });
+    mkdirSync(join(homeDir, 'server', 'instances'), { recursive: true });
+    writeFileSync(join(homeDir, 'server.local-owner'), 'tok-hs');
+    writeFileSync(
+      join(homeDir, 'server', 'instances', 'hs.json'),
+      JSON.stringify({ server_id: 'srv-hs', pid: 7701, port: 57701, started_at: 1000 }),
+    );
+
+    let serverReachable = true;
+    let spawnCount = 0;
+    const supervisor = new DaemonSupervisor(
+      {
+        electronBinary: join(activeDir, 'kiki-desktop.exe'),
+        serverEntry: join(activeDir, 'resources', 'app.asar.unpacked', 'dist', 'server', 'server-entry.mjs'),
+        homeDir,
+      },
+      {
+        isPidAlive: () => serverReachable,
+        spawnFn: () => {
+          spawnCount += 1;
+          return new FakeDaemonChild(9999);
+        },
+        fetchFn: async (input) => {
+          const url = new URL(requestUrlString(input));
+          if (!serverReachable) throw new Error('ECONNREFUSED');
+          if (url.pathname === '/api/meta') {
+            return jsonResponse({ code: 0, data: { server_id: 'srv-hs', home_id: 'main', desktop_managed: true } });
+          }
+          if (url.pathname === '/api/desktop-lifecycle') {
+            return jsonResponse({ code: 0, data: { server_id: 'srv-hs', home_id: 'main', managed: true, draining: false, work_pending: [] } });
+          }
+          return jsonResponse({ code: 1 }, 404);
+        },
+      },
+    );
+
+    await supervisor.discoverConnection();
+    writeFileSync(join(runtimeRoot, 'hot-switch.json'), JSON.stringify({ schemaVersion: 1, phase: 'stopping' }));
+    serverReachable = false;
+    await supervisor.checkHealthAndRecoverIfNeeded();
+    expect(spawnCount).toBe(0);
+  });
 });

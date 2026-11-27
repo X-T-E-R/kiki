@@ -278,7 +278,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     if (failure !== undefined) throw failure.error;
     if (!this.deferredObservable.has(event)) {
       this.deferredObservable.add(event);
-      try { await this.dispatch(event); }
+      try { await this.dispatchInternal(event, true); }
       catch (error) {
         this.deferredObservable.delete(event);
         this.durableDispatchFailures.set(event, { error });
@@ -295,10 +295,26 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
   }
 
   dispatch(event: Event2<any>): Promise<void> {
-    if (this.dispatching) {
-      return new Promise<void>((resolve, reject) => {
-        this.queue.push({ event, resolve, reject });
+    return this.dispatchInternal(event, false);
+  }
+
+  private attachUnhandledGuard(promise: Promise<void>, callerHandlesRejection: boolean): Promise<void> {
+    if (!callerHandlesRejection) {
+      promise.catch((error: unknown) => {
+        if (!this.disposed) onUnexpectedError(error);
       });
+    }
+    return promise;
+  }
+
+  private dispatchInternal(event: Event2<any>, callerHandlesRejection: boolean): Promise<void> {
+    if (this.dispatching) {
+      return this.attachUnhandledGuard(
+        new Promise<void>((resolve, reject) => {
+          this.queue.push({ event, resolve, reject });
+        }),
+        callerHandlesRejection,
+      );
     }
     this.dispatching = true;
     try {
@@ -324,7 +340,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       for (const entry of this.queue.splice(0)) {
         entry.reject(error);
       }
-      return Promise.reject(error);
+      return this.attachUnhandledGuard(Promise.reject(error), callerHandlesRejection);
     } finally {
       this.queue.length = 0;
       this.dispatching = false;
@@ -336,7 +352,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     this.queue.push({
       event,
       resolve: () => {},
-      reject: (error: unknown) => onUnexpectedError(error),
+      reject: () => {},
     });
   }
 

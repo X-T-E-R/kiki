@@ -1019,7 +1019,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       operation: () => unknown,
       domain: AgentFailureDomain,
       deadlineAt = drainDeadline,
-    ): Promise<void> => {
+    ): Promise<boolean> => {
       try {
         await runWithinDeadline(operation, deadlineAt, () => {
           this.log.warn('agent exit drain timed out; continuing teardown', {
@@ -1029,8 +1029,10 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
           });
           return new Error(`Agent "${agentId}" exit drain timed out at stage "${stage}" after ${String(drainTimeoutMs)}ms`);
         });
+        return true;
       } catch (error) {
         failures.push({ error, domain });
+        return false;
       }
     };
     this.inFlightLifecycleOps += 1;
@@ -1080,7 +1082,18 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       if (execution !== undefined) await collectBounded('execution_shutdown', () => execution!.shutdown(reason), 'cleanup');
       if (compaction?.promise !== undefined) await collectBounded('compaction', () => compaction!.promise.catch(() => undefined), 'cleanup');
       if (promptDrain !== undefined) await collectBounded('prompt_drain', () => promptDrain!, 'cleanup');
-      if (loop !== undefined) await collectBounded('loop_settled', () => loop!.settled(), 'cleanup');
+      const loopSettled = loop === undefined
+        ? true
+        : await collectBounded('loop_settled', () => loop!.settled(), 'cleanup');
+      let loopQuiescent = loopSettled;
+      if (loopQuiescent && loop !== undefined) {
+        try {
+          const loopState = loop.status();
+          loopQuiescent = loopState.state === 'idle' && !loopState.finalizing;
+        } catch {
+          loopQuiescent = false;
+        }
+      }
       await collect(() => this.onWillSealTranscriptEmitter.fireAsync({ handle,
         fail: (error) => { failures.push({ error, domain: 'persistence' }); },
       }, new AbortController().signal), 'persistence');
@@ -1092,14 +1105,16 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
           throw error;
         }
       }, 'persistence');
-      await collect(async () => {
-        try {
-          await handle.accessor.get(IWireService).sealTranscriptEpoch?.();
-        } catch (error) {
-          onUnexpectedError(error);
-          throw error;
-        }
-      }, 'persistence');
+      if (loopQuiescent) {
+        await collect(async () => {
+          try {
+            await handle.accessor.get(IWireService).sealTranscriptEpoch?.();
+          } catch (error) {
+            onUnexpectedError(error);
+            throw error;
+          }
+        }, 'persistence');
+      }
       await collect(async () => {
         if (this.inFlightLifecycleOps > 1) await this.yieldIfTurnBudgetExceeded();
         try {

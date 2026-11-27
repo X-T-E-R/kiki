@@ -999,7 +999,14 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   }
 
   private schedulePersistenceRecovery(finalization: NonNullable<AgentLoopService['finalization']>): void {
-    if (this.disposing || this.finalization !== finalization || this.persistenceRecoveryTimer !== undefined) return;
+    if (
+      this.disposing ||
+      this.finalization !== finalization ||
+      this.persistenceRecoveryTimer !== undefined ||
+      (finalization.error instanceof Error && finalization.error.message === 'Transcript epoch has been sealed')
+    ) {
+      return;
+    }
     const attempt = finalization.recoveryAttempts ?? 0;
     const continuing = isError2(finalization.error) && PERSISTENCE_CONTINUING_RECOVERY_CODES.has(finalization.error.code);
     const delay = PERSISTENCE_RECOVERY_DELAYS_MS[attempt] ?? (continuing ? PERSISTENCE_SLOW_RECOVERY_DELAY_MS : undefined);

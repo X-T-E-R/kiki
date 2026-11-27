@@ -1,11 +1,11 @@
 import { execFile, spawn, type SpawnOptions } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { closeSync, existsSync } from 'node:fs';
+import { closeSync, existsSync, readFileSync } from 'node:fs';
 import { mkdir, open, readdir, readFile, stat, unlink } from 'node:fs/promises';
 import { totalmem } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
-import { join } from 'pathe';
+import { dirname, join, resolve } from 'pathe';
 import { z } from 'zod';
 import { removeInjectedHeapOption } from '@kiki/node-sdk/worker-heap-policy';
 import {
@@ -1092,7 +1092,14 @@ export class DaemonSupervisor extends EventEmitter {
     serverId: string,
   ): void {
     child.on('exit', () => {
-      if (this.shuttingDown || this.detachedFromUi || this.intentionalStopCount > 0) return;
+      if (
+        this.shuttingDown ||
+        this.detachedFromUi ||
+        this.intentionalStopCount > 0 ||
+        this.isExternalHotSwitchInProgress()
+      ) {
+        return;
+      }
       if (!this.isActiveHome(homeDir)) return;
       if (this.attached !== null && this.attached.serverId !== serverId) return;
       this.attached = null;
@@ -1100,12 +1107,39 @@ export class DaemonSupervisor extends EventEmitter {
     });
   }
 
+  private isExternalHotSwitchInProgress(): boolean {
+    const execDir = dirname(this.descriptor.electronBinary);
+    const candidates = [
+      resolve(execDir, '..', 'hot-switch.json'),
+      resolve(execDir, '..', '..', 'hot-switch.json'),
+    ];
+    for (const recordPath of candidates) {
+      try {
+        if (!existsSync(recordPath)) continue;
+        const parsed = JSON.parse(readFileSync(recordPath, 'utf8').replace(/^\uFEFF/, '')) as {
+          readonly phase?: unknown;
+        };
+        if (
+          parsed?.phase === 'pausing' ||
+          parsed?.phase === 'stopping' ||
+          parsed?.phase === 'starting'
+        ) {
+          return true;
+        }
+      } catch {
+        continue;
+      }
+    }
+    return false;
+  }
+
   async checkHealthAndRecoverIfNeeded(): Promise<void> {
     if (
       this.shuttingDown ||
       this.detachedFromUi ||
       this.intentionalStopCount > 0 ||
-      this.discoveryFlight !== null
+      this.discoveryFlight !== null ||
+      this.isExternalHotSwitchInProgress()
     ) {
       return;
     }
@@ -1114,7 +1148,14 @@ export class DaemonSupervisor extends EventEmitter {
     const port = parsedUrl !== null ? Number(parsedUrl.port) : 0;
     if (port <= 0) return;
     const healthy = await this.verifyEndpoint(port, this.attached.config.token);
-    if (this.shuttingDown || this.detachedFromUi || this.intentionalStopCount > 0) return;
+    if (
+      this.shuttingDown ||
+      this.detachedFromUi ||
+      this.intentionalStopCount > 0 ||
+      this.isExternalHotSwitchInProgress()
+    ) {
+      return;
+    }
     if (healthy !== null) {
       this.attached = {
         ...healthy,
@@ -1131,10 +1172,24 @@ export class DaemonSupervisor extends EventEmitter {
   }
 
   private async triggerManagedRecovery(reason: string): Promise<void> {
-    if (this.shuttingDown || this.detachedFromUi || this.intentionalStopCount > 0) return;
+    if (
+      this.shuttingDown ||
+      this.detachedFromUi ||
+      this.intentionalStopCount > 0 ||
+      this.isExternalHotSwitchInProgress()
+    ) {
+      return;
+    }
     if (this.recoveryInFlight !== null) return this.recoveryInFlight;
     const run = (async () => {
-      if (this.shuttingDown || this.detachedFromUi || this.intentionalStopCount > 0) return;
+      if (
+        this.shuttingDown ||
+        this.detachedFromUi ||
+        this.intentionalStopCount > 0 ||
+        this.isExternalHotSwitchInProgress()
+      ) {
+        return;
+      }
       if (this.lastReadyAt > 0 && this.now() - this.lastReadyAt >= RECOVERY_STABLE_WINDOW_MS) {
         this.recoveryAttempts = 0;
       }

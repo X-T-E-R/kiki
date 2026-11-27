@@ -741,6 +741,7 @@ describe('AgentLifecycleService', () => {
       controllerIx.stub(ILogService, noopLog);
       controllerIx.stub(ITelemetryService, ix.get(ITelemetryService));
       controllerIx.stub(IAppendLogStore, ix.get(IAppendLogStore));
+      controllerIx.stub(IAtomicDocumentStore, ix.get(IAtomicDocumentStore));
       controllerIx.set(ISessionLifecycleService, new SyncDescriptor(SessionLifecycleService, [{}]));
       const controller = controllerIx.get(ISessionLifecycleService);
       const owner = controller as unknown as { materializeSession(): Promise<ISessionScopeHandle>; sessions: Map<string, ISessionScopeHandle> };
@@ -777,7 +778,7 @@ describe('AgentLifecycleService', () => {
       if (scenario === 'persistent-close') {
         await expect(runtime.controller.close(runtime.session.id)).rejects.toMatchObject({ code: 'storage.disk_full' });
         expect(ix.get(IAgentLifecycleService).list()).toEqual([]);
-        expect(ix.get(ISessionStateService).get(pendingSubagentReceiptsKey)).toBe(1);
+        expect(ix.get(ISessionStateService).get(pendingSubagentReceiptsKey)).toBe(0);
         expect(delivered).toEqual([]);
         expect((await readPendingAutonomousReceipts(scope, ix.get(IAppendLogStore), ix.get(IAtomicDocumentStore)))['7']?.summary).toBe('Original durable child output.');
         unavailable = false;
@@ -1051,11 +1052,14 @@ describe('AgentLifecycleService', () => {
       const handle = await lifecycle.create({ agentId: 'main' });
       loopSettled.mockImplementation(() => new Promise<void>(() => {}));
       const flushSpy = vi.spyOn(handle.accessor.get(IEventDispatcher), 'flush');
+      const sealSpy = vi.fn(async () => {});
+      handle.accessor.get(IWireService).sealTranscriptEpoch = sealSpy;
       const disposeSpy = vi.spyOn(handle, 'dispose');
       const startedAt = Date.now();
       await expect(lifecycle.remove('main', 'preserve-pending')).rejects.toThrow(/timed out at stage "loop_settled"/);
       expect(Date.now() - startedAt).toBeLessThan(1_500);
       expect(flushSpy).toHaveBeenCalledTimes(1);
+      expect(sealSpy).not.toHaveBeenCalled();
       expect(disposeSpy).toHaveBeenCalledTimes(1);
       expect(lifecycle.get('main')).toBeUndefined();
     } finally {
@@ -2724,13 +2728,13 @@ describe('AgentLifecycleService', () => {
     expect(sourceRuntime.current.runtimeId).toBe('local');
   });
 
-  it('run throws when the agent does not exist', () => {
+  it('run throws when the agent does not exist', async () => {
     ix.stub(IFlagService, stubFlag(true));
     ix.set(ISessionSubagentService, new SyncDescriptor(SessionSubagentService));
     const svc = ix.get(ISessionSubagentService);
-    expect(() =>
+    await expect(
       svc.run('missing', { kind: 'prompt', prompt: 'hi' }, { signal: new AbortController().signal }),
-    ).toThrow('Agent "missing" does not exist');
+    ).rejects.toThrow('Agent "missing" does not exist');
   });
 
   it('fires onWillCreate before onDidCreate and onDidDispose on remove', async () => {

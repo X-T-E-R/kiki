@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import {
@@ -385,12 +385,33 @@ if (!singleInstanceLock) {
     }).catch(() => undefined);
   };
 
+  const readDiskCloseToTray = (): boolean => {
+    const activePath = spaces.getActiveSpace().path;
+    const candidates =
+      canonicalHomeKey(activePath) === canonicalHomeKey(mainHome)
+        ? [join(mainHome, 'desktop.json')]
+        : [join(activePath, 'desktop.json'), join(mainHome, 'desktop.json')];
+    for (const filePath of candidates) {
+      try {
+        if (!existsSync(filePath)) continue;
+        const parsed = JSON.parse(readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '')) as Record<string, unknown>;
+        if (typeof parsed?.['closeToTray'] === 'boolean') {
+          closeToTrayCached = parsed['closeToTray'];
+          return parsed['closeToTray'];
+        }
+      } catch {
+        continue;
+      }
+    }
+    return closeToTrayCached;
+  };
+
   const windows = new WindowService({
     windowMode: instanceIdentity.descriptor,
     spaceWindowMode: instanceIdentity.effectiveWindowMode,
     startWindowless: launchArgs.startWindowless,
     rendererOrigin: effectiveRendererOrigin,
-    getCloseToTray: () => closeToTrayCached,
+    getCloseToTray: readDiskCloseToTray,
     isTrayActive: () => trayActive,
     getDaemonOrigin: () => daemon.currentConnection?.url ?? null,
     ensureDaemonOrigin: async () => (await daemon.discoverConnection()).config.url,

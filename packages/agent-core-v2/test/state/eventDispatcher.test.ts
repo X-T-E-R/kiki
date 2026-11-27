@@ -1146,4 +1146,52 @@ describe('EventDispatcherService', () => {
     expect(readStarts).toEqual([undefined, savedAfterAbort!.wire.size]);
     expect(second.state.get(counterKey).value).toBe(21);
   });
+
+  it('guards fire-and-forget dispatch against unhandledRejection when transcript epoch is sealed while preserving awaited rejections', async () => {
+    const unexpected: unknown[] = [];
+    setUnexpectedErrorHandler((err) => {
+      unexpected.push(err);
+    });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const sealedWire: IWireService = {
+        _serviceBrand: undefined,
+        seal: async () => {},
+        appendRecord: () => {
+          throw new Error('Transcript epoch has been sealed');
+        },
+        flush: async () => {},
+        readJournal: async function* () {},
+      };
+      const host = disposables.add(new TestInstantiationService());
+      host.set(IEventBus, new SyncDescriptor(EventBusService));
+      host.set(IAgentBlobService, noopBlob);
+      host.set(IWireService, sealedWire);
+      host.set(IAgentStateService, new AgentStateService());
+      host.set(IEventDispatcher, new SyncDescriptor(EventDispatcherService));
+      const dispatcher = host.get(IEventDispatcher);
+      const state = host.get(IAgentStateService);
+      state.contributeState(counterKey);
+
+      void dispatcher.dispatch(new CounterAdd({ by: 1 }));
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(unhandled).toEqual([]);
+      expect(unexpected).toHaveLength(1);
+      expect((unexpected[0] as Error).message).toBe('Transcript epoch has been sealed');
+
+      await expect(dispatcher.dispatch(new CounterAdd({ by: 2 }))).rejects.toThrow(
+        'Transcript epoch has been sealed',
+      );
+      await new Promise((r) => setTimeout(r, 20));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+      resetUnexpectedErrorHandler();
+    }
+  });
 });

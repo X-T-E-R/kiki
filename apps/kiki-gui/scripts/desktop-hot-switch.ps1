@@ -2813,8 +2813,13 @@ try {
     # Revalidate ownership before entering stopping phase so an unplanned space opened during settle aborts cleanly while still in pausing.
     Assert-NoUnplannedRuntimeProcesses $spacePlans
 
-    # Persist 'stopping' BEFORE sending the first 'update' request so any partial shutdown failure stays recoverable and never falls back to 'pausing' cleanup.
+    # Persist 'stopping' BEFORE closing shells or sending the first 'update' request so any partial shutdown failure stays recoverable and never falls back to 'pausing' cleanup.
     $state.phase = 'stopping'; Save-State
+    foreach ($plan in $spacePlans) {
+        foreach ($shell in @($plan.shells)) {
+            Close-DesktopShell $shell $plan.kikiHome
+        }
+    }
     foreach ($plan in $spacePlans) {
         Stop-SpaceServerGracefully $plan.server ([bool]$plan.interruptedAfterSettle) $plan.lastLifecycle
     }
