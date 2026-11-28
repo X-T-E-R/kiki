@@ -1,3 +1,4 @@
+import { getHeapStatistics } from 'node:v8';
 import { parentPort } from 'node:worker_threads';
 import { toErrorPayload, isCodedError } from '#/_base/errors/serialize';
 import type { CpuRequest, CpuResponse } from './protocol';
@@ -44,10 +45,11 @@ async function execute(request: CpuRequest): Promise<void> {
     signal.throwIfAborted();
     const result = await executeCpuOperation(request.operation as CpuOperation, signal);
     signal.throwIfAborted();
-    response = { id: request.id, result };
+    response = { id: request.id, result, heapTotalBytes: getHeapStatistics().total_heap_size };
   } catch (error) {
+    const heapTotalBytes = getHeapStatistics().total_heap_size;
     if (signal.aborted) {
-      response = { id: request.id, cancelled: true };
+      response = { id: request.id, cancelled: true, heapTotalBytes };
     } else {
       const value = error instanceof Error ? error : new Error(String(error));
       response = {
@@ -58,6 +60,7 @@ async function execute(request: CpuRequest): Promise<void> {
           code: 'code' in value && typeof value.code === 'string' ? value.code : undefined,
           payload: isCodedError(error) ? toErrorPayload(error) : undefined,
         },
+        heapTotalBytes,
       };
     }
   } finally {

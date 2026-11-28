@@ -1222,8 +1222,8 @@ public static class Program {
         if (string.IsNullOrEmpty(home) || !joined.Contains("serve")) {
             return 3;
         }
-        if (Environment.GetEnvironmentVariable("ELECTRON_RUN_AS_NODE") == "1" && !joined.Contains("--max-old-space-size=8192")) {
-            Console.Error.WriteLine("Missing --max-old-space-size=8192 on CLI argv");
+        if (Environment.GetEnvironmentVariable("ELECTRON_RUN_AS_NODE") == "1" && !joined.Contains("--max-old-space-size=2560")) {
+            Console.Error.WriteLine("Missing --max-old-space-size=2560 on CLI argv");
             return 4;
         }
         string buildId = Environment.GetEnvironmentVariable("KIKI_BUILD_ID") ?? "";

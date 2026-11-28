@@ -11,8 +11,11 @@ const policy = import.meta.resolve('@kiki/node-sdk/worker-heap-policy');
 const launcher = new URL('../../src/native/main-heap.ts', import.meta.url).href;
 
 it('sizes the main heap and exempts short commands', () => {
-  expect(mainHeapMb(16 * 1024 ** 3)).toBe(8192);
-  expect(mainHeapMb(64 * 1024 ** 3)).toBe(16384);
+  expect(mainHeapMb(16 * 1024 ** 3, false)).toBe(8192);
+  expect(mainHeapMb(64 * 1024 ** 3, false)).toBe(16384);
+  expect(mainHeapMb(4 * 1024 ** 3, true)).toBe(1536);
+  expect(mainHeapMb(8 * 1024 ** 3, true)).toBe(2048);
+  expect(mainHeapMb(64 * 1024 ** 3, true)).toBe(2560);
   for (const args of [['serve'], ['acp'], ['-p', 'hello'], ['--prompt-file=prompt.txt'], ['-m', 'web', '-p', 'serve']]) expect(needsLargeHeap(args)).toBe(true);
   for (const args of [[], ['--session', 'example'], ['--continue'], ['--version'], ['web'], ['serve', '--ensure'], ['serve', '--query'], ['serve', '--stop'], ['acp', '--login'], ['tools', 'Read', 'call'], ['completion'], ['serve', '--help'], ['-m', 'serve'], ['-p', 'ignored', '__plugin_run_node', 'entry.mjs']]) expect(needsLargeHeap(args)).toBe(false);
   expect(legacyHeapOptions(['exe', '--node-options=--max-old-space-size=9000', 'serve'])).toEqual({ argv: ['exe', 'serve'], options: ['--max-old-space-size=9000'] });

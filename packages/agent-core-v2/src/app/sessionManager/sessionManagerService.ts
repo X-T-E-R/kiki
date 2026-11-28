@@ -342,7 +342,7 @@ export class SessionManager implements ISessionManager {
       const idleSince = entry.idleSince;
       if (idleSince === undefined) return this.skipEviction('active');
       const config = this.residencyConfig();
-      const capacityPressure = this.sessions.size > config.maxLiveSessions;
+      const capacityPressure = this.sessions.size > config.maxLiveSessions || this.isOverResidentHeap(config);
       const minimum = capacityPressure ? config.minIdleMs : config.idleTtlMs;
       if (options?.ignoreIdleTtl !== true && Date.now() - idleSince < minimum) return this.skipEviction('idle_ttl');
       const generation = entry.generation;
@@ -996,18 +996,26 @@ export class SessionManager implements ISessionManager {
     return this.flags?.enabled(SESSION_IDLE_EVICTION_FLAG_ID) === true;
   }
 
-  private startResidencyReclaim(openingSessionId: string): void {
+  private isOverResidentHeap(config: Required<SessionResidencyConfig>): boolean {
+    if (config.maxResidentHeapBytes <= 0) return false;
+    const usage = process.memoryUsage();
+    return Math.max(usage.heapUsed, usage.heapTotal) >= config.maxResidentHeapBytes;
+  }
+
+  private startResidencyReclaim(openingSessionId?: string): void {
     if (this.residencyReclaim !== undefined || !this.evictionEnabled()) return;
     this.residencyReclaim = withoutRestoreAttempt(() => this.reclaimIdleResidency(openingSessionId))
       .catch(onUnexpectedError).finally(() => { this.residencyReclaim = undefined; });
   }
 
-  private async reclaimIdleResidency(openingSessionId: string): Promise<void> {
+  private async reclaimIdleResidency(openingSessionId?: string): Promise<void> {
     const config = this.residencyConfig();
     const skipped = new Set<string>();
     while (!this.disposed) {
-      const overHeap = config.maxResidentHeapBytes > 0 && process.memoryUsage().heapUsed >= config.maxResidentHeapBytes;
-      const overCapacity = this.sessions.size >= config.maxLiveSessions;
+      const overHeap = this.isOverResidentHeap(config);
+      const overCapacity = openingSessionId !== undefined
+        ? this.sessions.size >= config.maxLiveSessions
+        : this.sessions.size > config.maxLiveSessions;
       if (!overHeap && !overCapacity) return;
       const now = Date.now();
       const candidate = [...this.residency.entries()]
@@ -1032,6 +1040,11 @@ export class SessionManager implements ISessionManager {
   private async evictOne(): Promise<void> {
     if (!this.evictionEnabled()) return;
     const config = this.residencyConfig();
+    if (this.isOverResidentHeap(config)) {
+      this.startResidencyReclaim(undefined);
+      await this.residencyReclaim;
+      return;
+    }
     const capacityPressure = this.sessions.size > config.maxLiveSessions;
     const minimum = capacityPressure ? config.minIdleMs : config.idleTtlMs;
     const now = Date.now();

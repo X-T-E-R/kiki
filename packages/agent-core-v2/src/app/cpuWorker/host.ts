@@ -2,7 +2,7 @@ import { availableParallelism } from 'node:os';
 import { Worker, type Transferable } from 'node:worker_threads';
 import type { CpuRequest, CpuResponse } from './protocol';
 import { fromErrorPayload } from '#/_base/errors/serialize';
-import { RESOURCE_DEFAULTS } from '#/_base/node/resourceDefaults';
+import { isSharedPointerCage, RESOURCE_DEFAULTS } from '#/_base/node/resourceDefaults';
 
 const DEFAULT_IDLE_TIMEOUT_MS = 60_000;
 const HARD_TERMINATE_GRACE_MS = 5_000;
@@ -20,6 +20,7 @@ export interface CpuPoolOptions {
   readonly bootTimeoutMs?: number;
   readonly closeTimeoutMs?: number;
   readonly warmWorkers?: number;
+  readonly maxRetainedHeapBytes?: number;
 }
 
 export interface CpuRequestOptions {
@@ -98,6 +99,7 @@ export class CpuWorkerPool {
   private readonly bootTimeoutMs: number;
   private readonly closeTimeoutMs: number;
   private readonly warmWorkerFloor: number;
+  private readonly maxRetainedHeapBytes: number;
   private queuedBytes = 0;
   private serial = 0;
   private closing?: Promise<void>;
@@ -116,6 +118,9 @@ export class CpuWorkerPool {
     this.closeTimeoutMs = positiveInteger(options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS, 'closeTimeoutMs');
     const requestedWarm = options.warmWorkers === undefined ? WARM_WORKER_FLOOR : Math.max(0, Math.floor(options.warmWorkers));
     this.warmWorkerFloor = Math.min(this.size, requestedWarm);
+    this.maxRetainedHeapBytes = options.maxRetainedHeapBytes === undefined
+      ? defaultMaxRetainedHeapBytes()
+      : nonnegativeInteger(options.maxRetainedHeapBytes, 'maxRetainedHeapBytes');
   }
 
   get liveWorkerCount(): number {
@@ -497,8 +502,9 @@ export class CpuWorkerPool {
       const draining = slot.drainingCancel;
       if (draining !== undefined && response.id === draining.id) {
         this.clearDrainingCancel(slot);
-        if (this.closing !== undefined) {
+        if (this.closing !== undefined || this.shouldRetireForHeap(response.heapTotalBytes)) {
           void this.retire(slot);
+          this.pump();
           return;
         }
         worker.unref();
@@ -513,7 +519,11 @@ export class CpuWorkerPool {
         ? Object.assign(new Error(response.error.message), { name: response.error.name, code: response.error.code })
         : fromErrorPayload(response.error.payload));
       else this.settle(pending, undefined, response.result);
-      worker.unref();
+      if (this.shouldRetireForHeap(response.heapTotalBytes)) {
+        void this.retire(slot);
+      } else {
+        worker.unref();
+      }
       this.pump();
     });
     worker.on('error', (cause) => {
@@ -586,6 +596,10 @@ export class CpuWorkerPool {
     this.settle(pending, error);
     this.beginDrainingCancel(slot, pending.id, hardTimeout, pending.options.priority, pending.deadlineAt);
     this.reconcileIdleTimers();
+  }
+
+  private shouldRetireForHeap(heapTotalBytes: number | undefined): boolean {
+    return this.maxRetainedHeapBytes > 0 && typeof heapTotalBytes === 'number' && heapTotalBytes > this.maxRetainedHeapBytes;
   }
 
   private retire(slot: Slot): Promise<number> | undefined {
@@ -669,4 +683,15 @@ function optionsTransfer(options: CpuRequestOptions): Transferable[] {
 function positiveInteger(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value <= 0) throw new RangeError(`${name} must be a positive safe integer`);
   return value;
+}
+
+function nonnegativeInteger(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value < 0) throw new RangeError(`${name} must be a nonnegative safe integer`);
+  return value;
+}
+
+function defaultMaxRetainedHeapBytes(): number {
+  const capMiB = isSharedPointerCage() ? 192 : 512;
+  const targetMiB = Math.max(64, Math.min(capMiB, Math.floor(RESOURCE_DEFAULTS.workerHeapMb * 0.75)));
+  return targetMiB * 1024 * 1024;
 }

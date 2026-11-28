@@ -1294,19 +1294,19 @@ function Publish-ElectronCliShim([string]$Root, [string]$ReleaseId, [string]$Ser
         'set "ELECTRON_RUN_AS_NODE=1"',
         'set "_KIKI_RUNTIME=%~dp0.."',
         ('if exist "%_KIKI_RUNTIME%\active\kiki-desktop.exe" if exist "%_KIKI_RUNTIME%\active\{0}" (' -f $winRel),
-        ('  "%_KIKI_RUNTIME%\active\kiki-desktop.exe" --max-old-space-size=8192 "%_KIKI_RUNTIME%\active\{0}" %*' -f $winRel),
+        ('  "%_KIKI_RUNTIME%\active\kiki-desktop.exe" --max-old-space-size=2560 "%_KIKI_RUNTIME%\active\{0}" %*' -f $winRel),
         '  exit /b %ERRORLEVEL%',
         ')',
-        ('"%_KIKI_RUNTIME%\releases\{0}\kiki-desktop.exe" --max-old-space-size=8192 "%_KIKI_RUNTIME%\releases\{0}\{1}" %*' -f $ReleaseId, $winRel),
+        ('"%_KIKI_RUNTIME%\releases\{0}\kiki-desktop.exe" --max-old-space-size=2560 "%_KIKI_RUNTIME%\releases\{0}\{1}" %*' -f $ReleaseId, $winRel),
         'exit /b %ERRORLEVEL%'
     ) -join "`r`n"
     $shText = @(
         '#!/usr/bin/env sh',
         'RUNTIME_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"',
         ('if [ -f "$RUNTIME_DIR/active/kiki-desktop.exe" ] && [ -f "$RUNTIME_DIR/active/{0}" ]; then' -f $posixRel),
-        ('  ELECTRON_RUN_AS_NODE=1 exec "$RUNTIME_DIR/active/kiki-desktop.exe" --max-old-space-size=8192 "$RUNTIME_DIR/active/{0}" "$@"' -f $posixRel),
+        ('  ELECTRON_RUN_AS_NODE=1 exec "$RUNTIME_DIR/active/kiki-desktop.exe" --max-old-space-size=2560 "$RUNTIME_DIR/active/{0}" "$@"' -f $posixRel),
         'fi',
-        ('ELECTRON_RUN_AS_NODE=1 exec "$RUNTIME_DIR/releases/{0}/kiki-desktop.exe" --max-old-space-size=8192 "$RUNTIME_DIR/releases/{0}/{1}" "$@"' -f $ReleaseId, $posixRel),
+        ('ELECTRON_RUN_AS_NODE=1 exec "$RUNTIME_DIR/releases/{0}/kiki-desktop.exe" --max-old-space-size=2560 "$RUNTIME_DIR/releases/{0}/{1}" "$@"' -f $ReleaseId, $posixRel),
         ''
     ) -join "`n"
     $utf8NoBom = New-Object Text.UTF8Encoding($false)
@@ -1708,7 +1708,7 @@ function Invoke-HeadlessLaunch(
                 $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
                 if ($null -ne $cs -and $cs.TotalPhysicalMemory -gt 0) { $totalMemBytes = [int64]$cs.TotalPhysicalMemory }
             } catch {}
-            $heapMb = [Math]::Max(8192, [int][Math]::Floor([double]$totalMemBytes / 1048576.0 / 4.0))
+            $heapMb = [Math]::Min(2560, [Math]::Max(1536, [int][Math]::Floor([double]$totalMemBytes / 1048576.0 / 4.0)))
             $effectiveArgs = ('--max-old-space-size={0} {1} {2}' -f $heapMb, (Format-WindowsProcessArgument $target.ServerEntryPath), $effectiveArgs)
         }
         else {

@@ -8,6 +8,7 @@ import {
   buildDaemonSpawnEnv,
   computeDaemonHeapMb,
   DaemonSupervisor,
+  resolveDaemonHeapCliArg,
   type SpawnedDaemonChild,
 } from '#/main/daemonSupervisor';
 import {
@@ -63,12 +64,42 @@ afterEach(() => {
 });
 
 describe('DaemonSupervisor', () => {
-  it('computes heap sizing policy and injects ELECTRON_RUN_AS_NODE + KIKI_INJECTED_HEAP_OPTION without leaking redirect guard', () => {
-    expect(computeDaemonHeapMb(16 * 1024 * 1024 * 1024)).toBe(8192);
-    expect(computeDaemonHeapMb(64 * 1024 * 1024 * 1024)).toBe(16384);
-    expect(buildDaemonNodeOptions('--max_old_space_size=4096', 64 * 1024 * 1024 * 1024)).toEqual({
-      nodeOptions: '--max_old_space_size=4096',
+  it('computes Electron 4GiB-cage-safe heap sizing policy and injects ELECTRON_RUN_AS_NODE + KIKI_INJECTED_HEAP_OPTION without leaking redirect guard', () => {
+    expect(computeDaemonHeapMb(4 * 1024 * 1024 * 1024)).toBe(1536);
+    expect(computeDaemonHeapMb(8 * 1024 * 1024 * 1024)).toBe(2048);
+    expect(computeDaemonHeapMb(16 * 1024 * 1024 * 1024)).toBe(2560);
+    expect(computeDaemonHeapMb(64 * 1024 * 1024 * 1024)).toBe(2560);
+    expect(buildDaemonNodeOptions('--max_old_space_size=2048', 64 * 1024 * 1024 * 1024)).toEqual({
+      nodeOptions: '--max_old_space_size=2048',
       injectedHeapOption: '',
+    });
+    expect(buildDaemonNodeOptions('--max_old_space_size=8192', 64 * 1024 * 1024 * 1024)).toEqual({
+      nodeOptions: '--max-old-space-size=3072',
+      injectedHeapOption: '',
+    });
+    expect(resolveDaemonHeapCliArg('--max-old-space-size=2048', 64 * 1024 * 1024 * 1024)).toEqual({
+      cliHeapArg: '--max-old-space-size=2048',
+      injectedHeapOption: '',
+    });
+    expect(resolveDaemonHeapCliArg('--max-old-space-size=16384', 64 * 1024 * 1024 * 1024)).toEqual({
+      cliHeapArg: '--max-old-space-size=3072',
+      injectedHeapOption: '',
+    });
+    expect(
+      resolveDaemonHeapCliArg('--max-old-space-size=2048 --max-old-space-size=16384', 64 * 1024 * 1024 * 1024),
+    ).toEqual({
+      cliHeapArg: '--max-old-space-size=3072',
+      injectedHeapOption: '',
+    });
+    expect(
+      buildDaemonNodeOptions('--max-old-space-size=2048 --max-old-space-size=16384', 64 * 1024 * 1024 * 1024),
+    ).toEqual({
+      nodeOptions: '--max-old-space-size=2048 --max-old-space-size=3072',
+      injectedHeapOption: '',
+    });
+    expect(resolveDaemonHeapCliArg('', 64 * 1024 * 1024 * 1024)).toEqual({
+      cliHeapArg: '--max-old-space-size=2560',
+      injectedHeapOption: '--max-old-space-size=2560',
     });
 
     const env = buildDaemonSpawnEnv(
@@ -88,8 +119,8 @@ describe('DaemonSupervisor', () => {
     expect(env['ELECTRON_RUN_AS_NODE']).toBe('1');
     expect(env['KIKI_DESKTOP_BUNDLED']).toBe('1');
     expect(env['KIKI_NO_RELEASE_REDIRECT']).toBeUndefined();
-    expect(env['NODE_OPTIONS']).toBe('--trace-warnings --max-old-space-size=16384');
-    expect(env['KIKI_INJECTED_HEAP_OPTION']).toBe('--max-old-space-size=16384');
+    expect(env['NODE_OPTIONS']).toBe('--trace-warnings --max-old-space-size=2560');
+    expect(env['KIKI_INJECTED_HEAP_OPTION']).toBe('--max-old-space-size=2560');
   });
 
   it('spawns detached ELECTRON_RUN_AS_NODE daemon, unrefs on ready, and survives window close (detachDesktop)', async () => {

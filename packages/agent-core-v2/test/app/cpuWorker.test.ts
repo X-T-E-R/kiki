@@ -621,4 +621,40 @@ parentPort.on('message', ({ id, operation }) => {
     await expect(workers.request<string>('recovered-after-boot-stall')).resolves.toBe('recovered-after-boot-stall');
     await workers.close();
   });
+
+  it('retires a bloated warm worker whose retained heapTotalBytes exceeds maxRetainedHeapBytes and keeps healthy warm workers alive', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'cpu-pool-heap-retire-'));
+    dirs.push(dir);
+    const entry = join(dir, 'heap-entry.mjs');
+    await writeFile(
+      entry,
+      `import { parentPort, threadId } from 'node:worker_threads';
+parentPort.postMessage({ type: 'ready' });
+parentPort.on('message', ({ id, operation }) => {
+  parentPort.postMessage({ id, result: threadId, heapTotalBytes: operation.heapTotalBytes });
+});`,
+    );
+    const workers = new CpuWorkerPool(pathToFileURL(entry), {
+      maxWorkers: 1,
+      warmWorkers: 1,
+      maxRetainedHeapBytes: 100 * 1024 * 1024,
+    });
+    pools.push(workers);
+
+    const firstId = await workers.request<number>({ heapTotalBytes: 24 * 1024 * 1024 });
+    const reusedId = await workers.request<number>({ heapTotalBytes: 48 * 1024 * 1024 });
+    expect(reusedId).toBe(firstId);
+    expect(workers.liveWorkerCount).toBe(1);
+
+    const bloatedId = await workers.request<number>({ heapTotalBytes: 256 * 1024 * 1024 });
+    expect(bloatedId).toBe(firstId);
+    await vi.waitFor(() => {
+      expect(workers.liveWorkerCount).toBe(0);
+    }, { timeout: 2_000 });
+
+    const replacementId = await workers.request<number>({ heapTotalBytes: 24 * 1024 * 1024 });
+    expect(replacementId).not.toBe(firstId);
+    expect(workers.liveWorkerCount).toBe(1);
+    await workers.close();
+  });
 });

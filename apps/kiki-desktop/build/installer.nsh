@@ -125,7 +125,7 @@
   FileWrite $0 "@echo off$\r$\n"
   FileWrite $0 "setlocal$\r$\n"
   FileWrite $0 "set $\"ELECTRON_RUN_AS_NODE=1$\"$\r$\n"
-  FileWrite $0 "$\"%~dp0..\kiki-desktop.exe$\" $\"%~dp0..\resources\app.asar.unpacked\dist\server\server-entry.mjs$\" %*$\r$\n"
+  FileWrite $0 "$\"%~dp0..\kiki-desktop.exe$\" --max-old-space-size=2560 $\"%~dp0..\resources\app.asar.unpacked\dist\server\server-entry.mjs$\" %*$\r$\n"
   FileWrite $0 "exit /b %ERRORLEVEL%$\r$\n"
   FileClose $0
   IfErrors kiki_shims_abort
@@ -134,7 +134,7 @@
   IfErrors kiki_shims_abort
   FileWrite $0 "#!/usr/bin/env sh$\n"
   FileWrite $0 "DIR=$\"$$(CDPATH= cd -- $\"$$(dirname -- $\"$$0$\")/..$\" && pwd)$\"$\n"
-  FileWrite $0 "ELECTRON_RUN_AS_NODE=1 exec $\"$$DIR/kiki-desktop.exe$\" $\"$$DIR/resources/app.asar.unpacked/dist/server/server-entry.mjs$\" $\"$$@$\"$\n"
+  FileWrite $0 "ELECTRON_RUN_AS_NODE=1 exec $\"$$DIR/kiki-desktop.exe$\" --max-old-space-size=2560 $\"$$DIR/resources/app.asar.unpacked/dist/server/server-entry.mjs$\" $\"$$@$\"$\n"
   FileClose $0
   IfErrors kiki_shims_abort
   Pop $0

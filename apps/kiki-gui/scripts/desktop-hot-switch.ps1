@@ -1080,7 +1080,7 @@ function Invoke-CanaryCheck([string]$ServerExePath, [string]$ExpectedBuildId = '
         $psi = New-Object Diagnostics.ProcessStartInfo
         $psi.FileName = $ServerExePath
         $psi.Arguments = if (-not [string]::IsNullOrWhiteSpace($ServerEntryPath)) {
-            ('--max-old-space-size=8192 {0} serve --port 0 --idle-exit 2m' -f (Format-WindowsProcessArgument $ServerEntryPath))
+            ('--max-old-space-size=2560 {0} serve --port 0 --idle-exit 2m' -f (Format-WindowsProcessArgument $ServerEntryPath))
         } else {
             'serve --port 0 --idle-exit 2m'
         }
@@ -1094,10 +1094,10 @@ function Invoke-CanaryCheck([string]$ServerExePath, [string]$ExpectedBuildId = '
         } elseif ($psi.EnvironmentVariables.ContainsKey('ELECTRON_RUN_AS_NODE')) {
             $psi.EnvironmentVariables.Remove('ELECTRON_RUN_AS_NODE')
         }
-        # Match desktop sidecar heap injection so production SEA serve does not re-exec into a second PID.
+        # Match desktop sidecar heap injection so production SEA/Electron serve does not re-exec into a second PID.
         $existingNodeOpts = if ($psi.EnvironmentVariables.ContainsKey('NODE_OPTIONS')) { [string]$psi.EnvironmentVariables['NODE_OPTIONS'] } else { '' }
         if ($existingNodeOpts -notmatch '--max[-_]old[-_]space[-_]size') {
-            $heapFlag = '--max-old-space-size=8192'
+            $heapFlag = if (-not [string]::IsNullOrWhiteSpace($ServerEntryPath)) { '--max-old-space-size=2560' } else { '--max-old-space-size=8192' }
             $psi.EnvironmentVariables['NODE_OPTIONS'] = ($existingNodeOpts + ' ' + $heapFlag).Trim()
             $psi.EnvironmentVariables['KIKI_INJECTED_HEAP_OPTION'] = $heapFlag
         }

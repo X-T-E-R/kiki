@@ -200,6 +200,36 @@ describe('kikiShimFiles', () => {
       },
     ]);
   });
+
+  it('sets ELECTRON_RUN_AS_NODE=1 and caps main heap for Electron server-entry shims', async () => {
+    const electronExe = 'C:\\Kiki\\active\\kiki-desktop.exe';
+    const serverEntry = 'C:\\Kiki\\active\\resources\\app.asar.unpacked\\dist\\server\\server-entry.mjs';
+    const launch = await resolveKikiCliLaunch({
+      isSea: () => false,
+      execPath: electronExe,
+      argv: [electronExe, serverEntry, 'serve'],
+      isFile: () => Promise.resolve(true),
+    });
+    expect(launch).toEqual({
+      kind: 'node',
+      nodePath: electronExe,
+      entryPath: serverEntry,
+      electronRunAsNode: true,
+    });
+    const files = kikiShimFiles(launch!, 'win32');
+    expect(files).toEqual([
+      {
+        name: 'kiki',
+        content: `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec '${toShellExecutablePath(electronExe)}' '--max-old-space-size=2560' '${toShellExecutablePath(serverEntry)}' "$@"\n`,
+        mode: 0o755,
+      },
+      {
+        name: 'kiki.cmd',
+        content: `@echo off\r\nsetlocal\r\nset "ELECTRON_RUN_AS_NODE=1"\r\n"${electronExe}" --max-old-space-size=2560 "${serverEntry}" %*\r\n`,
+        mode: 0o755,
+      },
+    ]);
+  });
 });
 
 describe('prependPathEntry', () => {

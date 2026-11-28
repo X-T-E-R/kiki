@@ -7,6 +7,7 @@ import { resolveKikiHome } from '@kiki/oauth';
 
 const CLI_ENTRY_BASENAME = 'main.mjs';
 const ELECTRON_SERVER_ENTRY_BASENAME = 'server-entry.mjs';
+const ELECTRON_SHIM_HEAP_FLAG = '--max-old-space-size=2560';
 const SHIM_DIRECTORY = 'shim';
 const NODE_SHIM_DIRECTORY = 'node-shim';
 const SHIM_FILE_MODE = 0o755;
@@ -90,11 +91,13 @@ export function toShellExecutablePath(nativePath: string): string {
  */
 export function kikiShimFiles(launch: KikiCliLaunch, platform: string): readonly KikiShimFile[] {
   const shellPath = platform === 'win32' ? toShellExecutablePath : (path: string) => path;
+  const electronRunAsNode = launch.kind === 'node' && launch.electronRunAsNode === true;
   const shellArgs =
     launch.kind === 'executable'
       ? [shellPath(launch.executable)]
-      : [shellPath(launch.nodePath), shellPath(launch.entryPath)];
-  const electronRunAsNode = launch.kind === 'node' && launch.electronRunAsNode === true;
+      : electronRunAsNode
+        ? [shellPath(launch.nodePath), ELECTRON_SHIM_HEAP_FLAG, shellPath(launch.entryPath)]
+        : [shellPath(launch.nodePath), shellPath(launch.entryPath)];
   const files: KikiShimFile[] = [
     {
       name: POSIX_SHIM_NAME,
@@ -122,11 +125,11 @@ function quoteShell(value: string): string {
 }
 
 function renderCmdShim(launch: KikiCliLaunch): string {
+  if (launch.kind === 'node' && launch.electronRunAsNode === true) {
+    return `@echo off\r\nsetlocal\r\nset "ELECTRON_RUN_AS_NODE=1"\r\n${quoteDouble(launch.nodePath)} ${ELECTRON_SHIM_HEAP_FLAG} ${quoteDouble(launch.entryPath)} %*\r\n`;
+  }
   const args =
     launch.kind === 'executable' ? [launch.executable] : [launch.nodePath, launch.entryPath];
-  if (launch.kind === 'node' && launch.electronRunAsNode === true) {
-    return `@echo off\r\nsetlocal\r\nset "ELECTRON_RUN_AS_NODE=1"\r\n${args.map(quoteDouble).join(' ')} %*\r\n`;
-  }
   return `@echo off\r\n${args.map(quoteDouble).join(' ')} %*\r\n`;
 }
 

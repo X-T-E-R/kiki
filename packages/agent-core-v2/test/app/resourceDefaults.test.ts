@@ -8,7 +8,7 @@ import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices } from '#/_base/di/test';
 import type { ISessionScopeHandle } from '#/_base/di/scope';
 import { Emitter, Event } from '#/_base/event';
-import { RESOURCE_DEFAULTS, mobilePlatformOf, resourceDefaults } from '#/_base/node/resourceDefaults';
+import { RESOURCE_DEFAULTS, isSharedPointerCage, mobilePlatformOf, resourceDefaults } from '#/_base/node/resourceDefaults';
 import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
 import { CpuWorkersConfigSchema } from '#/app/cpuWorker/configSection';
@@ -74,6 +74,29 @@ it('caps worker heap, CPU workers, and search indexer budgets on Android, iOS, a
   expect(budgetedIos.searchIndexerSoftMb).toBeLessThanOrEqual(160);
   expect(budgetedIos.searchIndexerHardMb).toBeLessThanOrEqual(256);
   expect(budgetedIos.residentHeapBytes).toBeLessThanOrEqual(256 * 1024 ** 2);
+});
+
+it('bounds worker heaps, CPU workers, live sessions, and resident heap inside a 4 GiB shared V8 pointer cage', () => {
+  expect(isSharedPointerCage({ memoryBytes: 64 * GiB }, { electron: '44.0.0' })).toBe(true);
+  expect(isSharedPointerCage({ memoryBytes: 64 * GiB, heapLimitBytes: 4_395_630_592 }, {})).toBe(true);
+  expect(isSharedPointerCage({ memoryBytes: 64 * GiB, heapLimitBytes: 16 * GiB }, {})).toBe(false);
+  expect(isSharedPointerCage({ memoryBytes: 8 * GiB, heapLimitBytes: 4_395_630_592 }, {})).toBe(false);
+  expect(isSharedPointerCage({ memoryBytes: 64 * GiB, sharedPointerCage: false }, { electron: '44.0.0' })).toBe(false);
+
+  const caged64 = resourceDefaults({ parallelism: 20, memoryBytes: 64 * GiB, sharedPointerCage: true });
+  expect(caged64.workerHeapMb).toBe(256);
+  expect(caged64.cpuWorkers).toBe(4);
+  expect(caged64.liveSessions).toBe(24);
+  expect(caged64.residentHeapBytes).toBe(1024 * 1024 ** 2);
+  expect(caged64.cpuQueuedBytes).toBe(32 * 1024 ** 2);
+
+  const inferredCage = resourceDefaults({ parallelism: 20, memoryBytes: 64 * GiB, heapLimitBytes: 4_395_630_592 });
+  expect(inferredCage).toEqual(caged64);
+
+  const cagedSmallHeap = resourceDefaults({ parallelism: 4, memoryBytes: 4 * GiB, sharedPointerCage: true, heapLimitBytes: 1536 * 1024 ** 2 });
+  expect(cagedSmallHeap.workerHeapMb).toBe(256);
+  expect(cagedSmallHeap.cpuWorkers).toBe(3);
+  expect(cagedSmallHeap.residentHeapBytes).toBe(Math.floor(1536 * 0.45) * 1024 ** 2);
 });
 
 it('keeps explicit resource choices above old schema caps and preserves uncapped provider rules', () => {

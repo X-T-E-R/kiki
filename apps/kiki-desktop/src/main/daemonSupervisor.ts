@@ -159,20 +159,39 @@ interface EnsureLease {
   retain(): void;
 }
 
-const EXPLICIT_HEAP_FLAG_RE = /(?:^|\s)--max[-_]old[-_]space[-_]size(?:=|\s+)(\d+)(?=\s|$)/i;
+const EXPLICIT_HEAP_FLAG_GLOBAL_RE = /(^|\s)--max[-_]old[-_]space[-_]size(?:=|\s+)(\d+)(?=\s|$)/gi;
+const ELECTRON_DAEMON_MIN_HEAP_MB = 1536;
+const ELECTRON_DAEMON_MAX_HEAP_MB = 2560;
+const ELECTRON_EXPLICIT_HEAP_CAP_MB = 3072;
 
 export function computeDaemonHeapMb(totalMemoryBytes: number): number {
-  return Math.max(8192, Math.floor(totalMemoryBytes / 1_048_576 / 4));
+  return Math.min(
+    ELECTRON_DAEMON_MAX_HEAP_MB,
+    Math.max(ELECTRON_DAEMON_MIN_HEAP_MB, Math.floor(totalMemoryBytes / 1_048_576 / 4)),
+  );
+}
+
+function lastExplicitHeapMb(existingNodeOptions: string): number | undefined {
+  let lastValid: number | undefined;
+  for (const match of existingNodeOptions.matchAll(EXPLICIT_HEAP_FLAG_GLOBAL_RE)) {
+    const raw = match[2];
+    if (raw === undefined) continue;
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isSafeInteger(parsed) && parsed > 0) {
+      lastValid = parsed;
+    }
+  }
+  return lastValid;
 }
 
 export function resolveDaemonHeapCliArg(
   existingNodeOptions: string,
   totalMemoryBytes: number = totalmem(),
 ): { readonly cliHeapArg: string; readonly injectedHeapOption: string } {
-  const match = EXPLICIT_HEAP_FLAG_RE.exec(existingNodeOptions);
-  if (match !== null && match[1] !== undefined) {
+  const explicitMb = lastExplicitHeapMb(existingNodeOptions);
+  if (explicitMb !== undefined) {
     return {
-      cliHeapArg: `--max-old-space-size=${match[1]}`,
+      cliHeapArg: `--max-old-space-size=${Math.min(ELECTRON_EXPLICIT_HEAP_CAP_MB, explicitMb)}`,
       injectedHeapOption: '',
     };
   }
@@ -187,6 +206,22 @@ export function buildDaemonNodeOptions(
   existingNodeOptions: string,
   totalMemoryBytes: number = totalmem(),
 ): { readonly nodeOptions: string; readonly injectedHeapOption: string } {
+  const explicitMb = lastExplicitHeapMb(existingNodeOptions);
+  if (explicitMb !== undefined) {
+    let changed = false;
+    const clamped = existingNodeOptions.replace(
+      EXPLICIT_HEAP_FLAG_GLOBAL_RE,
+      (fullMatch, prefix: string, rawMb: string) => {
+        const parsed = Number.parseInt(rawMb, 10);
+        if (Number.isSafeInteger(parsed) && parsed > ELECTRON_EXPLICIT_HEAP_CAP_MB) {
+          changed = true;
+          return `${prefix}--max-old-space-size=${ELECTRON_EXPLICIT_HEAP_CAP_MB}`;
+        }
+        return fullMatch;
+      },
+    );
+    return { nodeOptions: changed ? clamped : existingNodeOptions, injectedHeapOption: '' };
+  }
   const normalized = existingNodeOptions.replaceAll('_', '-');
   if (normalized.includes('--max-old-space-size')) {
     return { nodeOptions: existingNodeOptions, injectedHeapOption: '' };

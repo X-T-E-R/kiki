@@ -1,6 +1,7 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { Disposable } from '#/_base/di/lifecycle';
 import { registerScopedService, ScopeActivation } from '#/_base/di/scope';
+import { isSharedPointerCage } from '#/_base/node/resourceDefaults';
 import { IConfigService } from '#/app/config/config';
 import { LifecycleScope } from '#/app/scopes';
 import { CPU_WORKERS_SECTION, CpuWorkersConfigSchema } from './configSection';
@@ -21,7 +22,7 @@ export class CpuWorkerService extends Disposable implements ICpuWorkerService {
     super();
     const parsed = CpuWorkersConfigSchema.parse(config.get(CPU_WORKERS_SECTION) ?? {});
     const isProductionRuntime = process.env['VITEST'] === undefined;
-    this.pool = createCpuPool(isProductionRuntime ? { ...parsed, warmWorkers: 2 } : parsed);
+    this.pool = createCpuPool(isProductionRuntime ? { ...parsed, warmWorkers: isSharedPointerCage() ? 1 : 2 } : parsed);
     this._register(registerCpuPool(this.pool));
     if (isProductionRuntime) {
       this.pool.warm();

@@ -99,7 +99,7 @@ export function createRuntimeProcessDriver(homeDir: string, options?: { readonly
       if (target.args.length > 0) childEnv['ELECTRON_RUN_AS_NODE'] = '1';
       else delete childEnv['ELECTRON_RUN_AS_NODE'];
       const nodeHeapArgs = target.args.length > 0
-        ? [`--max-old-space-size=${Math.max(8192, Math.floor(totalmem() / 1_048_576 / 4))}`]
+        ? [`--max-old-space-size=${Math.min(2560, Math.max(1536, Math.floor(totalmem() / 1_048_576 / 4)))}`]
         : [];
       const child = spawn(target.executable, [...nodeHeapArgs, ...target.args, 'serve', '--home', homeDir, '--idle-exit', target.idleExit ?? '0ms', '--port', String(target.port ?? 0), '--json'], {
         detached: true, stdio: 'ignore', ...options?.spawnOptions, windowsHide: true,

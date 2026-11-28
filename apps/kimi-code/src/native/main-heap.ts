@@ -6,8 +6,10 @@ import { getHeapStatistics } from 'node:v8';
 let initialized = false;
 const heapFlag = /--max[-_]old[-_]space[-_]size(?:[-_]percentage)?(?:=|\s|$)/;
 
-export function mainHeapMb(memoryBytes = totalmem()): number {
-  return Math.max(8192, Math.floor(memoryBytes / 1024 / 1024 / 4));
+export function mainHeapMb(memoryBytes = totalmem(), isElectron = process.versions['electron'] !== undefined): number {
+  const quarterMb = Math.floor(memoryBytes / 1024 / 1024 / 4);
+  if (isElectron) return Math.min(2560, Math.max(1536, quarterMb));
+  return Math.max(8192, quarterMb);
 }
 
 export function legacyHeapOptions(argv: readonly string[]): { argv: string[]; options: string[] } {

@@ -7,6 +7,28 @@ export interface ResourceHardware {
   readonly memoryBytes: number;
   readonly platform?: string;
   readonly env?: Readonly<Record<string, string | undefined>>;
+  readonly heapLimitBytes?: number;
+  readonly sharedPointerCage?: boolean;
+}
+
+const SHARED_POINTER_CAGE_LIMIT_BYTES = 4_500_000_000;
+const SHARED_POINTER_CAGE_MEMORY_THRESHOLD_BYTES = 8 * 1024 ** 3;
+const SHARED_POINTER_CAGE_BUDGET_MIB = 4096;
+
+export function isSharedPointerCage(
+  hardware?: Pick<ResourceHardware, 'memoryBytes' | 'heapLimitBytes' | 'sharedPointerCage'>,
+  versions: Readonly<Record<string, string | undefined>> = process.versions,
+): boolean {
+  if (hardware?.sharedPointerCage !== undefined) return hardware.sharedPointerCage;
+  if (versions['electron'] !== undefined) return true;
+  if (
+    hardware?.heapLimitBytes !== undefined &&
+    hardware.heapLimitBytes <= SHARED_POINTER_CAGE_LIMIT_BYTES &&
+    hardware.memoryBytes > SHARED_POINTER_CAGE_MEMORY_THRESHOLD_BYTES
+  ) {
+    return true;
+  }
+  return false;
 }
 
 export function mobilePlatformOf(
@@ -64,6 +86,27 @@ export function resourceDefaults(hardware: ResourceHardware = { parallelism: ava
       cpuQueue: Math.max(128, cpuWorkers * 16),
       cpuQueuedBytes: Math.max(32, Math.floor(effectiveMiB / 128)) * 1024 * 1024,
       liveSessions: Math.max(8, Math.floor(effectiveMiB / 128)),
+      queuedRestores: Math.max(128, hardware.parallelism * 16),
+      residentHeapBytes: residentHeapMiB * 1024 * 1024,
+    };
+  }
+  if (isSharedPointerCage(hardware)) {
+    const effectiveMiB = Math.min(memoryMiB, SHARED_POINTER_CAGE_BUDGET_MIB);
+    const workerHeapMb = Math.min(256, Math.max(192, Math.floor(effectiveMiB / 16)));
+    const cpuWorkers = Math.max(1, Math.min(4, spareCpus, Math.floor(effectiveMiB / 4 / workerHeapMb)));
+    const heapCapMiB = hardware.heapLimitBytes !== undefined
+      ? Math.floor((hardware.heapLimitBytes * 0.45) / 1024 / 1024)
+      : 1024;
+    const residentHeapMiB = Math.max(256, Math.min(1024, heapCapMiB, Math.floor(effectiveMiB / 4)));
+    return {
+      workerHeapMb,
+      searchIndexerSoftMb: workerHeapMb * 2 + 256,
+      searchIndexerHardMb: workerHeapMb * 3 + 256,
+      cpuWorkers,
+      workerQueue: Math.max(128, hardware.parallelism * 16),
+      cpuQueue: Math.max(128, cpuWorkers * 16),
+      cpuQueuedBytes: Math.max(32, Math.floor(effectiveMiB / 128)) * 1024 * 1024,
+      liveSessions: Math.max(8, Math.min(24, Math.floor(effectiveMiB / 128))),
       queuedRestores: Math.max(128, hardware.parallelism * 16),
       residentHeapBytes: residentHeapMiB * 1024 * 1024,
     };

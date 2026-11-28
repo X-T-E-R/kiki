@@ -1948,4 +1948,70 @@ describe('SessionManager controller retirement', () => {
     program.dispose();
     await registry.dispose();
   });
+
+  it('evicts idle sessions when committed heapTotal crosses maxResidentHeapBytes even if heapUsed is lower', async () => {
+    const didCreate = new Emitter<SessionCreatedEvent>();
+    const didClose = new Emitter<SessionClosedEvent>();
+    const unloaded: string[] = [];
+    const service = {
+      onWillCreateSession: Event.None,
+      onDidCreateSession: didCreate.event,
+      onWillCloseSession: Event.None,
+      onDidCloseSession: didClose.event,
+      onDidArchiveSession: Event.None,
+      onDidForkSession: Event.None,
+      create: async () => {
+        const handle = { id: 'idle-warm' } as unknown as ISessionScopeHandle;
+        didCreate.fire({ sessionId: 'idle-warm', handle, source: 'startup' });
+        return handle;
+      },
+      resume: async (sessionId: string) => {
+        const handle = { id: sessionId } as unknown as ISessionScopeHandle;
+        didCreate.fire({ sessionId, handle, source: 'resume' });
+        return handle;
+      },
+      unload: async (sessionId: string, canCommit?: () => boolean) => {
+        if (canCommit?.() === false) return false;
+        unloaded.push(sessionId);
+        didClose.fire({ sessionId, reason: 'evict' });
+        return true;
+      },
+      dispose: () => {},
+    } as unknown as SessionLifecycleService;
+    const workspace = {
+      id: 'workspace-1',
+      program: { sessionControllerGeneration: 'generation-1', createSessionController: () => service },
+    } as unknown as WorkspaceInstance;
+    const budget = 512 * 1024 * 1024;
+    const memSpy = vi.spyOn(process, 'memoryUsage').mockReturnValue({
+      rss: 900 * 1024 * 1024,
+      heapTotal: 640 * 1024 * 1024,
+      heapUsed: 256 * 1024 * 1024,
+      external: 0,
+      arrayBuffers: 0,
+    });
+    const manager = new SessionManager(
+      { acquire: async () => ({ instance: workspace, dispose: () => {} }), get: () => workspace } as unknown as IWorkspaceInstanceManager,
+      { get: async () => ({ workspaceId: workspace.id, cwd: '/workspace' }) } as unknown as ISessionIndex,
+      {
+        ready: Promise.resolve(),
+        get: () => ({ idleTtlMs: 600_000, minIdleMs: 60_000, maxLiveSessions: 24, maxResidentHeapBytes: budget, sweepIntervalMs: 300_000 }),
+      } as never,
+      { enabled: () => true } as never,
+    );
+    try {
+      await manager.create({ workDir: '/workspace' });
+      await manager.resume('incoming');
+      expect(unloaded).toEqual(['idle-warm']);
+      expect(manager.get('idle-warm')).toBeUndefined();
+      expect(manager.get('incoming')).toBeDefined();
+
+      await (manager as unknown as { evictOne(): Promise<void> }).evictOne();
+      expect(unloaded).toEqual(['idle-warm', 'incoming']);
+      expect(manager.get('incoming')).toBeUndefined();
+    } finally {
+      memSpy.mockRestore();
+      await manager.dispose();
+    }
+  });
 });
