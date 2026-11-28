@@ -187,6 +187,7 @@ try {
     import { once } from 'node:events';
     import { join } from 'node:path';
     import { DatabaseSync } from 'node:sqlite';
+    import { setFlagsFromString } from 'node:v8';
     import { Worker } from 'node:worker_threads';
 
     const dbPath = join(${JSON.stringify(scratchRoot)}, 'fts-wal-probe.sqlite');
@@ -199,7 +200,10 @@ try {
     assert.equal(hit.title, 'electron');
     db.close();
 
-    const cpuWorker = new Worker(join(${JSON.stringify(serverDir)}, 'cpu-worker.mjs'));
+    setFlagsFromString('--max-old-space-size=0');
+    const cpuWorker = new Worker(join(${JSON.stringify(serverDir)}, 'cpu-worker.mjs'), {
+      resourceLimits: { maxOldGenerationSizeMb: 256 },
+    });
     try {
       const [firstMsg] = await once(cpuWorker, 'message');
       assert.deepEqual(firstMsg, { type: 'ready' });
@@ -209,7 +213,10 @@ try {
         operation: { type: 'image.decode', bytes: new Uint8Array([1, 2, 3]), mimeType: 'image/png' },
       });
       const [reply] = await replyPromise;
-      assert.deepEqual(reply, { id: 1, result: false });
+      assert.equal(reply.id, 1);
+      assert.equal(reply.result, false);
+      assert.equal(typeof reply.heapTotalBytes, 'number');
+      assert.ok(reply.heapTotalBytes > 0);
     } finally {
       await cpuWorker.terminate();
     }
@@ -221,6 +228,7 @@ try {
     KIKI_HOME: tempHome,
     KIKI_CACHE_DIR: tempCache,
   });
+  assert.doesNotMatch(probeRes.stderr, /KIKI_WORKER_HEAP_LIMIT/);
   assert.match(probeRes.stdout, /SQLITE_AND_WORKERS_OK/);
 
   console.log('[smoke:node] 4/4 Booting live server-entry.mjs serve --port 0 in isolated KIKI_HOME...');
